@@ -68,6 +68,15 @@
   .loading-wrap { text-align: center; padding: 60px 20px; color: var(--ink-soft); font-family: 'IBM Plex Mono', monospace; font-size: 13px; }
   button.icon-del { background: none; border: none; cursor: pointer; color: var(--ink-soft); font-size: 13px; }
   button.icon-del:hover { color: var(--err); }
+  .drop-zone { border: 2px dashed var(--line); border-radius: 3px; padding: 18px; text-align: center; cursor: pointer; background: #fff; }
+  .drop-zone:hover { border-color: var(--accent); }
+  .drop-label { font-family: 'IBM Plex Mono', monospace; font-size: 11px; text-transform: uppercase; letter-spacing: 0.6px; color: var(--ink-soft); margin-bottom: 6px; }
+  .drop-filename { font-size: 12.5px; font-weight: 500; }
+  .kpi-row { display: grid; grid-template-columns: repeat(3,1fr); gap: 12px; }
+  @media (max-width: 640px) { .kpi-row { grid-template-columns: 1fr 1fr; } }
+  .kpi { background: var(--surface); border: 1px solid var(--line); border-radius: 3px; padding: 14px 16px; }
+  .kpi-label { font-family: 'IBM Plex Mono', monospace; font-size: 10px; text-transform: uppercase; letter-spacing: 1px; color: var(--ink-soft); margin-bottom: 5px; }
+  .kpi-value { font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 20px; }
 </style>
 </head>
 <body>
@@ -79,7 +88,7 @@
   <nav class="tabs" id="tabs" style="display:none;">
     <button data-tab="master" class="active">Data Master</button>
     <button data-tab="kontrak">Produk &amp; Kontrak</button>
-    <button data-tab="import" disabled title="Segera">Import Mingguan</button>
+    <button data-tab="import">Import Mingguan</button>
   </nav>
   <div id="app"></div>
 </div>
@@ -99,6 +108,9 @@ let STATE = {
   contracts: [],           // {id, produk, capitalPartnerId, kodeKontrak, tanggalMasuk, stockAwal, stockAkhir, hargaModalPcs, nilaiMargin, status}
   colorCodeMap: {},         // {kode3huruf: namaWarna}
   pembagiPctManual: {},      // override manual (opsional): {produk: {kode2: pct}}
+  orderDb: [],                // hasil proses Import Mingguan, permanen: {orderId, sku, produk, qty, ...}
+  payouts: [],                  // kewajiban bayar ke capital partner per batch: {id, produk, kode2, capitalPartnerId, kodeKontrak, qty, rate, payout, tanggalDihitung, tanggalDibayar}
+  vendorPayouts: [],              // kewajiban bayar ke konveksi/supplier: {id, brand, produk, qty, total, tanggalDihitung, tanggalDibayar}
 };
 let stateFileId = null;
 let accessToken = null;
@@ -184,6 +196,234 @@ function lookupHargaKonveksiBySku(sku) {
 }
 
 /* =========================================================================
+   IMPORT MINGGUAN -- helper baca Excel & kategorisasi biaya (tervalidasi Fase 1)
+   ========================================================================= */
+function sheetToRows(ws) {
+  // baca SEMUA baris apa adanya, termasuk kalau !ref rusak (bug TikTok export) -> scan cell keys manual
+  const XU = XLSX.utils;
+  let ref = ws['!ref'];
+  let range = ref ? XU.decode_range(ref) : null;
+  let maxR = range ? range.e.r : 0, maxC = range ? range.e.c : 0;
+  Object.keys(ws).forEach(k => {
+    if (k[0] === '!') return;
+    const cell = XU.decode_cell(k);
+    if (cell.r > maxR) maxR = cell.r;
+    if (cell.c > maxC) maxC = cell.c;
+  });
+  const rows = [];
+  for (let r = 0; r <= maxR; r++) {
+    const row = [];
+    for (let c = 0; c <= maxC; c++) {
+      const cell = ws[XU.encode_cell({r, c})];
+      row.push(cell ? cell.v : null);
+    }
+    rows.push(row);
+  }
+  return rows;
+}
+function rowsToObjects(rows, headerRowIdx, dataStartIdx) {
+  const header = rows[headerRowIdx];
+  return rows.slice(dataStartIdx).map(r => {
+    const o = {}; header.forEach((h,i) => { if (h) o[h] = r[i]; }); return o;
+  }).filter(o => Object.values(o).some(v => v !== null && v !== undefined));
+}
+
+const SHOPEE_CATMAP = {
+  komisi_platform: ['Biaya Administrasi (termasuk PPN 11%)'],
+  biaya_layanan: ['Biaya Proses Pesanan','Biaya Gratis Ongkir XTRA - Ukuran Biasa (Kategori F)','Biaya Layanan Promo XTRA','Biaya Layanan Shopee Live XTRA'],
+  biaya_pembayaran: ['Biaya Pembayaran','Biaya Transaksi'],
+  komisi_afiliasi: ['Biaya Komisi AMS'], // AMS = Affiliate Marketing Solutions
+  komisi_dinamis: [],
+  biaya_iklan: ['Biaya Kampanye'],
+  pajak: [],
+  lainnya: ['Premi','FBS Fee','Biaya Isi Saldo Otomatis (dari Penghasilan)'],
+};
+const TIKTOK_CATMAP = {
+  komisi_platform: ['Biaya komisi platform'],
+  biaya_layanan: ['Biaya layanan pre-order','Biaya layanan Mall','Biaya layanan logistik','Biaya layanan Program Bebas Ongkir',
+    'Biaya layanan cashback bonus','Biaya layanan Khusus LIVE','Biaya akses keuntungan eksklusif','Biaya layanan Program EAMS',
+    'Biaya layanan Brands Crazy Deal/Flash Sale','Biaya Dilayani Tokopedia','Biaya penanganan Dilayani Tokopedia',
+    'Biaya layanan penginstalan','Biaya layanan khusus platform','Biaya pemrosesan pesanan'],
+  biaya_pembayaran: ['Biaya Pembayaran','Biaya program PayLater'],
+  komisi_afiliasi: ['Komisi Afiliasi','Komisi mitra afiliasi','Komisi Iklan Toko afiliasi','Komisi iklan toko Mitra Afiliasi'],
+  komisi_dinamis: ['Komisi dinamis'],
+  biaya_iklan: ['Biaya sumber daya campaign','Biaya iklan GMV Max'],
+  pajak: ['PPh Pasal 22 dipungut','Pajak penjualan atas voucher GMV Max','Program layanan terkelola (Pajak penjualan)'],
+  lainnya: ['Biaya asuransi','Program layanan terkelola (Biaya per pesanan)'],
+};
+function sumCategory(row, cols) { return cols.reduce((s,c) => s + (Number(row[c])||0), 0); }
+
+// Alokasi largest-remainder method: floor tiap kode2, sisa dikasih ke fraksi desimal terbesar (tervalidasi Fase 1)
+function allocateLargestRemainder(qtyTotal, pctMap) {
+  const floors = {}; let sumFloor = 0; const remainders = [];
+  Object.entries(pctMap).forEach(([kode2, pct]) => {
+    const raw = qtyTotal * pct; const f = Math.floor(raw);
+    floors[kode2] = f; sumFloor += f; remainders.push({ kode2, frac: raw - f });
+  });
+  let sisa = qtyTotal - sumFloor;
+  remainders.sort((a,b) => b.frac - a.frac);
+  for (let i = 0; i < sisa; i++) floors[remainders[i % remainders.length].kode2]++;
+  return floors;
+}
+
+async function processWeeklyBatch(wbSOs, wbSIs, wbTOs, wbTIs) {
+  // ---- Shopee: gabung order_all dari semua toko ----
+  const shopeeOrderLookup = {};
+  wbSOs.forEach(wb => {
+    const objs = rowsToObjects(sheetToRows(wb.Sheets['orders']), 0, 1);
+    const perFile = {};
+    objs.forEach(o => {
+      const id = String(o['No. Pesanan']);
+      perFile[id] = perFile[id] || [];
+      perFile[id].push({ sku: o['Nomor Referensi SKU'], qty: Number(o['Jumlah'])||0, warna: parseWarna(o['Nama Variasi']) });
+    });
+    Object.assign(shopeeOrderLookup, perFile);
+  });
+  const shopeeFinance = {};
+  wbSIs.forEach(wb => {
+    const objs = rowsToObjects(sheetToRows(wb.Sheets['Penghasilan']), 2, 3);
+    objs.filter(o => o['Lihat berdasarkan'] === 'Order').forEach(o => {
+      const id = String(o['No. Pesanan']);
+      shopeeFinance[id] = {
+        platform: 'Shopee', pendapatan: Number(o['Harga Produk'])||0,
+        komisi_platform: sumCategory(o, SHOPEE_CATMAP.komisi_platform), biaya_layanan: sumCategory(o, SHOPEE_CATMAP.biaya_layanan),
+        biaya_pembayaran: sumCategory(o, SHOPEE_CATMAP.biaya_pembayaran), komisi_afiliasi: sumCategory(o, SHOPEE_CATMAP.komisi_afiliasi),
+        komisi_dinamis: sumCategory(o, SHOPEE_CATMAP.komisi_dinamis), biaya_iklan: sumCategory(o, SHOPEE_CATMAP.biaya_iklan),
+        pajak: sumCategory(o, SHOPEE_CATMAP.pajak), lainnya: sumCategory(o, SHOPEE_CATMAP.lainnya),
+        netSettlement: Number(o['Total Penghasilan'])||0, tanggalCair: o['Tanggal Dana Dilepaskan'] || null,
+      };
+    });
+  });
+
+  // ---- TikTok/Tokopedia: gabung Semua Pesanan dari semua toko ----
+  const tiktokOrderLookup = {};
+  wbTOs.forEach(wb => {
+    const objs = rowsToObjects(sheetToRows(wb.Sheets['OrderSKUList']), 0, 2);
+    const perFile = {};
+    objs.forEach(o => {
+      const id = String(o['Order ID']);
+      perFile[id] = perFile[id] || [];
+      perFile[id].push({ sku: o['Seller SKU'], qty: Number(o['Quantity'])||0, warna: parseWarna(o['Variation']) });
+    });
+    Object.assign(tiktokOrderLookup, perFile);
+  });
+  const tiktokFinance = {};
+  wbTIs.forEach(wb => {
+    const objs = rowsToObjects(sheetToRows(wb.Sheets['Detail pesanan']), 0, 2);
+    objs.filter(o => o['Jenis transaksi'] === 'Pesanan').forEach(o => {
+      const id = String(o['ID Pesanan/Penyesuaian']);
+      tiktokFinance[id] = {
+        platform: o['Sumber pesanan'] || 'TikTok Shop', pendapatan: Number(o['Total Pendapatan'])||0,
+        komisi_platform: sumCategory(o, TIKTOK_CATMAP.komisi_platform), biaya_layanan: sumCategory(o, TIKTOK_CATMAP.biaya_layanan),
+        biaya_pembayaran: sumCategory(o, TIKTOK_CATMAP.biaya_pembayaran), komisi_afiliasi: sumCategory(o, TIKTOK_CATMAP.komisi_afiliasi),
+        komisi_dinamis: sumCategory(o, TIKTOK_CATMAP.komisi_dinamis), biaya_iklan: sumCategory(o, TIKTOK_CATMAP.biaya_iklan),
+        pajak: sumCategory(o, TIKTOK_CATMAP.pajak), lainnya: sumCategory(o, TIKTOK_CATMAP.lainnya),
+        netSettlement: Number(o['Jumlah penyelesaian pembayaran'])||0, tanggalCair: o['Waktu pembayaran pesanan'] || null,
+      };
+    });
+  });
+
+  // ---- Gabungkan baris SKU cair (fallback ke histori orderDb kalau order lama tidak ada di file minggu ini) ----
+  const historicalOrderSku = {};
+  STATE.orderDb.forEach(r => { if (r.orderId && r.sku) { historicalOrderSku[r.orderId] = historicalOrderSku[r.orderId] || []; historicalOrderSku[r.orderId].push({ sku: r.sku, qty: r.qty, warna: r.warna }); } });
+
+  const cairSkuRows = [];
+  const matchStats = { shopeeTotal:0, shopeeFallback:0, shopeeNotFound:0, tiktokTotal:0, tiktokFallback:0, tiktokNotFound:0 };
+  Object.keys(shopeeFinance).forEach(id => {
+    matchStats.shopeeTotal++;
+    let rows = shopeeOrderLookup[id];
+    if (!rows) { rows = historicalOrderSku[id]; if (rows) matchStats.shopeeFallback++; }
+    if (rows) rows.forEach(r => cairSkuRows.push({ orderId:id, sku:r.sku, qty:r.qty, warna:r.warna, ...shopeeFinanceShare(shopeeFinance[id], r, rows) }));
+    else matchStats.shopeeNotFound++;
+  });
+  Object.keys(tiktokFinance).forEach(id => {
+    matchStats.tiktokTotal++;
+    let rows = tiktokOrderLookup[id];
+    if (!rows) { rows = historicalOrderSku[id]; if (rows) matchStats.tiktokFallback++; }
+    if (rows) rows.forEach(r => cairSkuRows.push({ orderId:id, sku:r.sku, qty:r.qty, warna:r.warna, ...shopeeFinanceShare(tiktokFinance[id], r, rows) }));
+    else matchStats.tiktokNotFound++;
+  });
+
+  function shopeeFinanceShare(fin, row, allRows) {
+    const totalQty = allRows.reduce((s,r) => s + r.qty, 0);
+    const share = totalQty > 0 ? row.qty / totalQty : 1;
+    const totalBiaya = (fin.komisi_platform+fin.biaya_layanan+fin.biaya_pembayaran+fin.komisi_afiliasi+fin.komisi_dinamis+fin.biaya_iklan+fin.pajak+fin.lainnya) * share;
+    return {
+      sumber: fin.platform, pendapatan: fin.pendapatan*share, komisiPlatform: fin.komisi_platform*share, biayaLayanan: fin.biaya_layanan*share,
+      biayaPembayaran: fin.biaya_pembayaran*share, komisiAfiliasi: fin.komisi_afiliasi*share, komisiDinamis: fin.komisi_dinamis*share,
+      biayaIklan: fin.biaya_iklan*share, pajak: fin.pajak*share, totalBiaya, netSettlement: fin.netSettlement*share, tanggalCair: fin.tanggalCair,
+    };
+  }
+
+  // ---- Map SKU -> produk + brand, hargaKonveksi, warna fallback ----
+  const qtyPerProduk = {}; // hanya produk URBAN OUTDOOR (jalur capital partner)
+  const vendorSkuRows = [];
+  cairSkuRows.forEach(r => {
+    if (!r.sku) return;
+    const prefix = String(r.sku).slice(0,3).toUpperCase();
+    const p = STATE.products.find(pr => pr.prefix === prefix);
+    r.produk = p ? p.nama : null;
+    r.brand = p ? p.brand : null;
+    r.hargaKonveksi = lookupHargaKonveksiBySku(r.sku);
+    if (!r.warna) r.warna = deriveWarnaFromSku(r.sku);
+    if (!p) return;
+    if (p.brand === 'URBAN OUTDOOR') {
+      const cp = capitalPartnerProduk(p.nama);
+      qtyPerProduk[cp] = (qtyPerProduk[cp]||0) + r.qty;
+    } else {
+      vendorSkuRows.push(r);
+    }
+  });
+
+  // ---- Pembayaran ke Konveksi/Supplier ----
+  const vendorPayments = {};
+  vendorSkuRows.forEach(r => {
+    if (!r.hargaKonveksi) return;
+    const b = r.brand || 'TIDAK DIKETAHUI';
+    vendorPayments[b] = vendorPayments[b] || { qty:0, total:0, produk:new Set() };
+    vendorPayments[b].qty += r.qty; vendorPayments[b].total += r.qty*r.hargaKonveksi; vendorPayments[b].produk.add(r.produk);
+  });
+
+  // ---- Alokasi FIFO (per investor) + largest remainder (antar investor) ----
+  const allocations = [];
+  Object.entries(qtyPerProduk).forEach(([produk, qtyTotalF]) => {
+    const qtyTotal = Math.round(qtyTotalF);
+    const pct = computePembagiPct(produk);
+    if (!Object.keys(pct).length) {
+      allocations.push({ produk, kode2:null, namaInvestor:null, kodeKontrak:null, qty:qtyTotal, rate:null, payout:null, catatan:'Tidak ada kontrak aktif utk produk ini' });
+      return;
+    }
+    const floors = allocateLargestRemainder(qtyTotal, pct);
+    Object.entries(floors).forEach(([kode2, qty]) => {
+      if (qty <= 0) return;
+      const partner = findPartnerByKode2(kode2);
+      const kontrak = partner ? activeContractFor(produk, partner.id) : null;
+      allocations.push({
+        produk, kode2, namaInvestor: partner ? partner.nama : kode2, capitalPartnerId: partner ? partner.id : null,
+        kodeKontrak: kontrak ? kontrak.kodeKontrak : null, contractId: kontrak ? kontrak.id : null,
+        qty, rate: kontrak ? kontrak.nilaiMargin : null, payout: kontrak ? qty*kontrak.nilaiMargin : null,
+        catatan: `${(pct[kode2]*100).toFixed(2)}% dari ${qtyTotal} unit ${produk}` + (kontrak ? '' : ' -- TIDAK ADA kontrak aktif, cek manual'),
+      });
+    });
+  });
+
+  // ---- Surplus per produk (harga investor flat - harga konveksi per SKU) ----
+  const surplusRows = Object.entries(qtyPerProduk).map(([produk, qtyTotal]) => {
+    const activeC = STATE.contracts.find(c => c.produk === produk && c.status === 'DANA BELUM CAIR');
+    const hargaInvestor = activeC ? activeC.hargaModalPcs : null;
+    const skusOfProduk = cairSkuRows.filter(r => capitalPartnerProduk(r.produk) === produk);
+    let totalKonveksi = 0, qtyDenganHarga = 0;
+    skusOfProduk.forEach(r => { if (r.hargaKonveksi) { totalKonveksi += r.qty*r.hargaKonveksi; qtyDenganHarga += r.qty; } });
+    if (!hargaInvestor || qtyDenganHarga === 0) return { produk, qty: Math.round(qtyTotal), surplusPerUnit:null, totalSurplus:null };
+    const totalInvestorRevenue = qtyDenganHarga * hargaInvestor;
+    const totalSurplus = totalInvestorRevenue - totalKonveksi;
+    return { produk, qty: Math.round(qtyTotal), hargaInvestor, totalKonveksi, totalSurplus, surplusPerUnit: totalSurplus/qtyDenganHarga };
+  });
+
+  return { cairSkuRows, qtyPerProduk, allocations, vendorPayments, surplusRows, matchStats, timestamp: new Date().toISOString() };
+}
+
+/* =========================================================================
    GOOGLE DRIVE STORAGE LAYER
    ========================================================================= */
 async function driveApi(path, opts) {
@@ -224,7 +464,7 @@ async function loadState() {
   const loaded = text ? JSON.parse(text) : {};
   // DEFAULT_STATE mencakup SEMUA field yg pernah ada -- supaya file lama (dari sebelum field baru ditambahkan)
   // tidak jadi undefined pas dimuat. Tiap kali nambah field baru ke STATE, tambahkan juga di sini.
-  const DEFAULT_STATE = { capitalPartners: [], stores: [], products: [], contracts: [], colorCodeMap: {}, pembagiPctManual: {} };
+  const DEFAULT_STATE = { capitalPartners: [], stores: [], products: [], contracts: [], colorCodeMap: {}, pembagiPctManual: {}, orderDb: [], payouts: [], vendorPayouts: [] };
   STATE = Object.assign({}, DEFAULT_STATE, loaded);
 }
 
@@ -523,7 +763,49 @@ function renderMaster(container) {
       }
 
       await saveState();
-      showMsg(msg, 'ok', `Selesai: ${nPartnerAdded} Capital Partner, ${nStoreAdded} toko, ${nProductAdded} produk, ${nColorAdded} kode warna, ${nContractAdded} kontrak baru, ${nContractUpdated} kontrak diperbarui.`);
+      // ---- Histori PENJUALAN -> orderDb (level order/SKU, 1 baris = 1 unit, utk fallback pencarian SKU order lama) ----
+      let nHistAdded = 0;
+      if (wsPJ) {
+        function toNumOrNull(v) { const n = Number(v); return (v!==null&&v!==undefined&&v!==''&&!isNaN(n)) ? n : null; }
+        const histRows = XU.sheet_to_json(wsPJ, { header: 1 });
+        const hh = histRows[0];
+        const iNoRef = hh.indexOf('No Referensi')>=0?hh.indexOf('No Referensi'):hh.indexOf('No. Referensi');
+        const iNamaBarang2 = hh.indexOf('Nama Barang'), iSKU2 = hh.indexOf('No. SKU')>=0?hh.indexOf('No. SKU'):hh.indexOf('No SKU');
+        const iBrand2 = hh.indexOf('BRAND'), iWarna2 = hh.indexOf('Warna'), iSumber2 = hh.indexOf('SUMBER');
+        const iAdmin2 = hh.indexOf('Admin'), iKomisiDinamis2 = hh.indexOf('Komisi Dinamis'), iOngkir2 = hh.indexOf('Ongkir');
+        const iAfiliasi2 = hh.indexOf('Afiliasi'), iBiayaLayanan2 = hh.indexOf('Biaya Layanan'), iBiayaPesanan2 = hh.indexOf('Biaya Pesanan');
+        const iPajak2 = hh.indexOf('Pajak'), iPendapatan2 = hh.indexOf('Pendapatan'), iProfit2 = hh.indexOf('Profit');
+        const iModalInv2 = hh.indexOf('Modal Investor'), iProfitSetelah2 = hh.indexOf('Profit Setelah Investor');
+        const iTglPenarikan2 = hh.indexOf('Tanggal Penarikan'), iTglPesan2 = hh.indexOf('Tanggal Pesan'), iStatus2 = hh.indexOf('Status');
+        const existingOrderKeys = new Set(STATE.orderDb.map(r => r.orderId + '|' + r.sku));
+        for (let r = 1; r < histRows.length; r++) {
+          const row = histRows[r];
+          if (!row) continue;
+          const noRef = iNoRef>=0 ? row[iNoRef] : null;
+          const nama = row[iNamaBarang2];
+          if (!noRef || !nama) continue;
+          const sku = row[iSKU2];
+          const key = String(noRef) + '|' + (sku||'');
+          if (existingOrderKeys.has(key)) continue;
+          let tglPenarikan = null; if (row[iTglPenarikan2]) { try { const d = new Date(row[iTglPenarikan2]); if (!isNaN(d)) tglPenarikan = d.toISOString(); } catch(e){} }
+          let tglPesan = null; if (row[iTglPesan2]) { try { const d = new Date(row[iTglPesan2]); if (!isNaN(d)) tglPesan = d.toISOString(); } catch(e){} }
+          const biayaLayananGabungan = (toNumOrNull(row[iBiayaLayanan2])||0) + (toNumOrNull(row[iOngkir2])||0) + (toNumOrNull(row[iBiayaPesanan2])||0);
+          STATE.orderDb.push({
+            orderId: String(noRef), sumber: row[iSumber2]||null, produk: nama, sku: sku||null, brand: row[iBrand2]||null, warna: row[iWarna2]||null,
+            qty: 1, hargaKonveksi: null, tanggalPenarikan: tglPenarikan, tanggalCair: null, tanggalPesan: tglPesan, status: row[iStatus2]||null,
+            pendapatan: toNumOrNull(row[iPendapatan2]), komisiPlatform: toNumOrNull(row[iAdmin2]),
+            biayaLayanan: (iBiayaLayanan2>=0||iOngkir2>=0||iBiayaPesanan2>=0) ? biayaLayananGabungan : null,
+            biayaPembayaran: null, komisiAfiliasi: toNumOrNull(row[iAfiliasi2]), komisiDinamis: toNumOrNull(row[iKomisiDinamis2]),
+            biayaIklan: null, pajak: toNumOrNull(row[iPajak2]), totalBiaya: null, netSettlement: null,
+            profit: toNumOrNull(row[iProfit2]), modalInvestor: toNumOrNull(row[iModalInv2]), profitSetelahInvestor: toNumOrNull(row[iProfitSetelah2]),
+            capitalPartnerProduk: null, sumberData: 'migrasi_penjualan',
+          });
+          existingOrderKeys.add(key);
+          nHistAdded++;
+        }
+      }
+
+      showMsg(msg, 'ok', `Selesai: ${nPartnerAdded} Capital Partner, ${nStoreAdded} toko, ${nProductAdded} produk, ${nColorAdded} kode warna, ${nContractAdded} kontrak baru, ${nContractUpdated} kontrak diperbarui, ${nHistAdded} baris histori penjualan.`);
       renderPartnerList(document.getElementById('partnerList'));
       renderStoreList(document.getElementById('storeList'));
     } catch (e) {
@@ -630,9 +912,175 @@ function renderStoreList(el) {
   });
 }
 
+async function applyBatchResult(result) {
+  const existingKeys = new Set(STATE.orderDb.map(r => r.orderId + '|' + r.sku));
+  const nowIso = new Date().toISOString();
+  let added = 0;
+
+  result.cairSkuRows.forEach(r => {
+    const key = r.orderId + '|' + r.sku;
+    if (existingKeys.has(key)) return;
+    existingKeys.add(key); added++;
+    const cpProduk = r.brand === 'URBAN OUTDOOR' ? capitalPartnerProduk(r.produk) : null;
+    STATE.orderDb.push({
+      orderId: r.orderId, sumber: r.sumber||null, produk: r.produk, sku: r.sku, brand: r.brand, warna: r.warna||null,
+      qty: r.qty, hargaKonveksi: r.hargaKonveksi||null, tanggalPenarikan: nowIso, tanggalCair: r.tanggalCair||null,
+      pendapatan: r.pendapatan??null, komisiPlatform: r.komisiPlatform??null, biayaLayanan: r.biayaLayanan??null,
+      biayaPembayaran: r.biayaPembayaran??null, komisiAfiliasi: r.komisiAfiliasi??null, komisiDinamis: r.komisiDinamis??null,
+      biayaIklan: r.biayaIklan??null, pajak: r.pajak??null, totalBiaya: r.totalBiaya??null, netSettlement: r.netSettlement??null,
+      capitalPartnerProduk: cpProduk, sumberData: 'import_mingguan',
+    });
+  });
+
+  // kurangi stock kontrak sesuai alokasi, auto-tutup kalau habis
+  result.allocations.forEach(a => {
+    if (!a.contractId) return;
+    const c = STATE.contracts.find(x => x.id === a.contractId);
+    if (!c) return;
+    c.stockAkhir = Math.max(0, (c.stockAkhir||0) - a.qty);
+    if (c.stockAkhir === 0) c.status = 'DANA SUDAH CAIR';
+  });
+
+  // catat kewajiban payout
+  result.allocations.forEach(a => {
+    if (!a.capitalPartnerId) return;
+    STATE.payouts.push({ id: uid('po'), tanggalDihitung: nowIso, produk: a.produk, kode2: a.kode2, namaInvestor: a.namaInvestor,
+      capitalPartnerId: a.capitalPartnerId, kodeKontrak: a.kodeKontrak, qty: a.qty, rate: a.rate, payout: a.payout, tanggalDibayar: null });
+  });
+  Object.entries(result.vendorPayments).forEach(([brand, d]) => {
+    STATE.vendorPayouts.push({ id: uid('vpo'), tanggalDihitung: nowIso, brand, produk: [...d.produk].join(', '), qty: d.qty, total: d.total, tanggalDibayar: null });
+  });
+
+  await saveState();
+  return added;
+}
+
 /* =========================================================================
-   TAB: PRODUK & KONTRAK (versi awal -- lihat hasil migrasi, CRUD lengkap menyusul)
+   TAB: IMPORT MINGGUAN
    ========================================================================= */
+let importFiles = { shopeeOrders:[], shopeeIncome:[], tiktokOrders:[], tiktokIncome:[] };
+let lastBatchResult = null;
+
+function dropZoneHtml(id, label) {
+  return `
+    <div>
+      <div class="drop-zone" id="${id}">
+        <div class="drop-label">${label}</div>
+        <div class="drop-filename" id="${id}_label">Belum ada file dipilih</div>
+      </div>
+      <input type="file" id="${id}_input" accept=".xlsx" multiple style="display:none">
+    </div>
+  `;
+}
+
+function renderImport(container) {
+  container.innerHTML = `
+    <div class="panel">
+      <h2>Upload File Minggu Ini</h2>
+      <div class="desc">4 kategori, tiap kategori boleh lebih dari 1 file (toko utama + toko kedua). Nama file bebas.</div>
+      <div class="grid2">
+        ${dropZoneHtml('dz_shopeeOrders', 'Order All -- Shopee')}
+        ${dropZoneHtml('dz_shopeeIncome', 'Income Sudah Dilepas -- Shopee')}
+        ${dropZoneHtml('dz_tiktokOrders', 'Semua Pesanan -- TikTok/Tokopedia')}
+        ${dropZoneHtml('dz_tiktokIncome', 'Income -- TikTok/Tokopedia')}
+      </div>
+      <button class="btn btn-primary" id="btnRunImport" style="margin-top:14px;">Proses Minggu Ini</button>
+      <div class="status-box" id="importStatus"></div>
+    </div>
+    <div id="importPreview"></div>
+  `;
+  const map = { dz_shopeeOrders:'shopeeOrders', dz_shopeeIncome:'shopeeIncome', dz_tiktokOrders:'tiktokOrders', dz_tiktokIncome:'tiktokIncome' };
+  Object.entries(map).forEach(([domId, key]) => {
+    const drop = document.getElementById(domId);
+    const input = document.getElementById(domId + '_input');
+    drop.addEventListener('click', () => input.click());
+    input.addEventListener('change', () => {
+      if (input.files.length) {
+        importFiles[key] = Array.from(input.files);
+        document.getElementById(domId + '_label').innerHTML = importFiles[key].map(f=>f.name).join('<br>');
+      }
+    });
+  });
+  document.getElementById('btnRunImport').addEventListener('click', runWeeklyImport);
+  if (lastBatchResult) renderImportPreview(document.getElementById('importPreview'), lastBatchResult);
+}
+
+async function runWeeklyImport() {
+  const msg = document.getElementById('importStatus');
+  const missing = Object.entries(importFiles).filter(([k,v]) => !v.length);
+  if (missing.length) { showMsg(msg, 'err', 'Lengkapi semua 4 kategori file dulu.'); return; }
+  if (!STATE.contracts.length) { showMsg(msg, 'err', 'Belum ada kontrak. Tambah/migrasi kontrak di tab Produk & Kontrak dulu.'); return; }
+  showMsg(msg, 'info', 'Memproses file...');
+  try {
+    const readWB = async (f) => XLSX.read(await f.arrayBuffer(), { type:'array', cellDates:true });
+    const readAll = (files) => Promise.all(files.map(readWB));
+    const [wbSOs, wbSIs, wbTOs, wbTIs] = await Promise.all([
+      readAll(importFiles.shopeeOrders), readAll(importFiles.shopeeIncome), readAll(importFiles.tiktokOrders), readAll(importFiles.tiktokIncome)
+    ]);
+    const result = await processWeeklyBatch(wbSOs, wbSIs, wbTOs, wbTIs);
+    lastBatchResult = result;
+    const ms = result.matchStats;
+    const fallbackTotal = ms.shopeeFallback + ms.tiktokFallback, notFoundTotal = ms.shopeeNotFound + ms.tiktokNotFound;
+    let text = `Berhasil: ${result.cairSkuRows.length} baris SKU cair, ${Object.keys(result.qtyPerProduk).length} produk Urban Outdoor terdampak.`;
+    if (fallbackTotal) text += ` (${fallbackTotal} order pakai fallback histori)`;
+    showMsg(msg, notFoundTotal ? 'err' : 'ok', text + (notFoundTotal ? ` ⚠ ${notFoundTotal} order tidak ketemu sama sekali.` : ''));
+    renderImportPreview(document.getElementById('importPreview'), result);
+  } catch (e) {
+    console.error(e);
+    showMsg(msg, 'err', 'Gagal: ' + e.message);
+  }
+}
+
+function renderImportPreview(el, result) {
+  const totalPayout = result.allocations.reduce((s,a) => s + (a.payout||0), 0);
+  const totalVendor = Object.values(result.vendorPayments).reduce((s,v) => s + v.total, 0);
+  el.innerHTML = `
+    <div class="panel">
+      <div class="status-box show info">Angka mencakup semua order cair di file yg diupload -- kalau rentangnya lebih dari 1 periode penarikan biasamu, hasilnya otomatis gabungan.</div>
+      <div class="kpi-row" style="margin-top:14px;">
+        <div class="kpi"><div class="kpi-label">Total Payout Investor</div><div class="kpi-value">${fmtRp(totalPayout)}</div></div>
+        <div class="kpi"><div class="kpi-label">Total Bayar Konveksi</div><div class="kpi-value">${fmtRp(totalVendor)}</div></div>
+        <div class="kpi"><div class="kpi-label">Qty Urban Outdoor</div><div class="kpi-value">${Object.values(result.qtyPerProduk).reduce((a,b)=>a+Math.round(b),0)}</div></div>
+      </div>
+      <h2 style="margin-top:18px;">Alokasi per Kontrak</h2>
+      <table class="data compact">
+        <thead><tr><th>Produk</th><th>Investor</th><th>Kode Kontrak</th><th class="num">Qty</th><th class="num">Rate</th><th class="num">Payout</th><th>Catatan</th></tr></thead>
+        <tbody>${result.allocations.map(a => `<tr>
+          <td>${a.produk}</td><td>${a.namaInvestor||'-'}</td><td>${a.kodeKontrak||'-'}</td>
+          <td class="num">${a.qty}</td><td class="num">${a.rate?fmtRpCompact(a.rate):'-'}</td><td class="num">${a.payout?fmtRpCompact(a.payout):'-'}</td>
+          <td style="font-size:11px;color:var(--ink-soft);white-space:normal;">${a.catatan}</td>
+        </tr>`).join('')}</tbody>
+      </table>
+      <h2 style="margin-top:18px;">Pembayaran Konveksi/Supplier</h2>
+      ${!Object.keys(result.vendorPayments).length ? '<div class="empty-note">Tidak ada.</div>' : `
+      <table class="data compact">
+        <thead><tr><th>Brand</th><th>Produk</th><th class="num">Qty</th><th class="num">Total</th></tr></thead>
+        <tbody>${Object.entries(result.vendorPayments).map(([b,d]) => `<tr><td>${b}</td><td>${[...d.produk].join(', ')}</td><td class="num">${d.qty}</td><td class="num">${fmtRp(d.total)}</td></tr>`).join('')}</tbody>
+      </table>`}
+      <h2 style="margin-top:18px;">Surplus Perusahaan</h2>
+      <table class="data compact">
+        <thead><tr><th>Produk</th><th class="num">Qty</th><th class="num">Harga Investor</th><th class="num">Total Konveksi</th><th class="num">Total Surplus</th></tr></thead>
+        <tbody>${result.surplusRows.map(r => `<tr><td>${r.produk}</td><td class="num">${r.qty}</td>
+          <td class="num">${r.hargaInvestor?fmtRp(r.hargaInvestor):'-'}</td><td class="num">${r.totalKonveksi?fmtRp(r.totalKonveksi):'-'}</td>
+          <td class="num">${r.totalSurplus!=null?fmtRp(r.totalSurplus):'-'}</td></tr>`).join('')}</tbody>
+      </table>
+      <button class="btn btn-primary" id="btnApplyBatch" style="margin-top:16px;">Simpan ke Database &amp; Kurangi Stok Kontrak</button>
+      <div class="status-box" id="applyMsg"></div>
+    </div>
+  `;
+  document.getElementById('btnApplyBatch').addEventListener('click', async (ev) => {
+    const btn = ev.target; btn.disabled = true; btn.textContent = 'Menyimpan...';
+    const msg = document.getElementById('applyMsg');
+    try {
+      const added = await applyBatchResult(result);
+      showMsg(msg, 'ok', `${added} baris baru tersimpan ke database. Stok kontrak diperbarui.`);
+      btn.textContent = 'Tersimpan ✓';
+    } catch (e) {
+      showMsg(msg, 'err', 'Gagal simpan: ' + e.message);
+      btn.disabled = false; btn.textContent = 'Simpan ke Database & Kurangi Stok Kontrak';
+    }
+  });
+}
 let expandedProduk = null;
 
 function renderProdukDetailHtml(p) {
@@ -964,7 +1412,7 @@ function fmtRpCompact(n) {
 /* =========================================================================
    NAV
    ========================================================================= */
-const renderers = { master: renderMaster, kontrak: renderKontrak };
+const renderers = { master: renderMaster, kontrak: renderKontrak, import: renderImport };
 function switchTab(tab) {
   document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
   renderers[tab](document.getElementById('app'));
