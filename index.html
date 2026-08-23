@@ -89,6 +89,7 @@
     <button data-tab="master" class="active">Data Master</button>
     <button data-tab="kontrak">Produk &amp; Kontrak</button>
     <button data-tab="import">Import Mingguan</button>
+    <button data-tab="database">Database Penjualan</button>
   </nav>
   <div id="app"></div>
 </div>
@@ -1115,6 +1116,95 @@ function renderColorCodeList(el) {
   el.innerHTML = entries.map(([kode,nama]) => `<div class="pill" style="text-align:left; padding:6px 10px;">${kode} &rarr; ${nama}</div>`).join('');
 }
 
+/* =========================================================================
+   TAB: DATABASE PENJUALAN
+   ========================================================================= */
+let dbFilters = { produk: '', brand: '', sumber: '', search: '', page: 1 };
+const DB_PAGE_SIZE = 50;
+
+function renderDatabase(container) {
+  const db = STATE.orderDb;
+  if (!db.length) {
+    container.innerHTML = `<div class="panel"><div class="empty-note">Database masih kosong. Migrasi dari file UJUSO di tab Data Master, atau proses Import Mingguan dulu.</div></div>`;
+    return;
+  }
+  const produkList = [...new Set(db.map(r => r.produk))].filter(Boolean).sort();
+  const brandList = [...new Set(db.map(r => r.brand))].filter(Boolean).sort();
+  const sumberList = [...new Set(db.map(r => r.sumber))].filter(Boolean).sort();
+
+  let filtered = db;
+  if (dbFilters.produk) filtered = filtered.filter(r => r.produk === dbFilters.produk);
+  if (dbFilters.brand) filtered = filtered.filter(r => r.brand === dbFilters.brand);
+  if (dbFilters.sumber) filtered = filtered.filter(r => r.sumber === dbFilters.sumber);
+  if (dbFilters.search) {
+    const s = dbFilters.search.toLowerCase();
+    filtered = filtered.filter(r => (r.orderId||'').toLowerCase().includes(s) || (r.sku||'').toLowerCase().includes(s));
+  }
+  filtered = filtered.slice().sort((a,b) => new Date(b.tanggalPenarikan||b.tanggalPesan||0) - new Date(a.tanggalPenarikan||a.tanggalPesan||0));
+
+  const totalPages = Math.max(1, Math.ceil(filtered.length / DB_PAGE_SIZE));
+  dbFilters.page = Math.min(dbFilters.page, totalPages);
+  const pageRows = filtered.slice((dbFilters.page-1)*DB_PAGE_SIZE, dbFilters.page*DB_PAGE_SIZE);
+  const fromImport = db.filter(r => r.sumberData === 'import_mingguan').length;
+  const sumFiltered = (f) => filtered.reduce((s,r) => s + (r[f]||0), 0);
+
+  container.innerHTML = `
+    <div class="kpi-row">
+      <div class="kpi"><div class="kpi-label">Total Baris</div><div class="kpi-value">${db.length.toLocaleString('id-ID')}</div></div>
+      <div class="kpi"><div class="kpi-label">Dari Migrasi PENJUALAN</div><div class="kpi-value">${(db.length-fromImport).toLocaleString('id-ID')}</div></div>
+      <div class="kpi"><div class="kpi-label">Ditambahkan via App</div><div class="kpi-value">${fromImport.toLocaleString('id-ID')}</div></div>
+    </div>
+    <div class="panel">
+      <div class="grid2" style="margin-bottom:10px;">
+        <div class="field"><label>Filter Produk</label>
+          <select id="dbFilterProduk"><option value="">Semua Produk</option>${produkList.map(p=>`<option value="${p}" ${dbFilters.produk===p?'selected':''}>${p}</option>`).join('')}</select>
+        </div>
+        <div class="field"><label>Filter Brand</label>
+          <select id="dbFilterBrand"><option value="">Semua Brand</option>${brandList.map(b=>`<option value="${b}" ${dbFilters.brand===b?'selected':''}>${b}</option>`).join('')}</select>
+        </div>
+      </div>
+      <div class="field"><label>Filter Sumber/Platform</label>
+        <select id="dbFilterSumber"><option value="">Semua Sumber</option>${sumberList.map(s=>`<option value="${s}" ${dbFilters.sumber===s?'selected':''}>${s}</option>`).join('')}</select>
+      </div>
+      <div class="field"><label>Cari Order ID / SKU</label><input type="text" id="dbFilterSearch" value="${dbFilters.search}" placeholder="ketik order ID atau SKU..."></div>
+      <div class="desc" style="margin-top:10px;">${filtered.length.toLocaleString('id-ID')} baris cocok filter &middot; halaman ${dbFilters.page} dari ${totalPages}</div>
+      <div class="desc">Total (sesuai filter): Pendapatan <b>${fmtRp(sumFiltered('pendapatan'))}</b> &middot; Profit <b>${fmtRp(sumFiltered('profit'))}</b></div>
+      <div style="overflow-x:auto; margin-top:8px;">
+      <table class="data compact">
+        <thead><tr>
+          <th>Order ID</th><th>Produk</th><th>SKU</th><th>Warna</th><th>Brand</th><th>Sumber</th>
+          <th class="num">Qty</th><th class="num">Pendapatan</th><th class="num">Komisi Platform</th>
+          <th class="num">Afiliasi</th><th class="num">Profit</th><th>Tgl Penarikan</th>
+        </tr></thead>
+        <tbody>
+          ${pageRows.map(r => `<tr>
+            <td style="font-family:'IBM Plex Mono',monospace;font-size:10.5px;">${r.orderId}</td>
+            <td>${r.produk||'-'}</td><td style="font-size:10.5px;">${r.sku||'-'}</td><td style="font-size:10.5px;">${r.warna||'-'}</td>
+            <td>${r.brand||'-'}</td><td>${r.sumber||'-'}</td>
+            <td class="num">${r.qty!=null?r.qty:1}</td>
+            <td class="num">${r.pendapatan!=null?fmtRpCompact(r.pendapatan):'-'}</td>
+            <td class="num">${r.komisiPlatform!=null?fmtRpCompact(r.komisiPlatform):'-'}</td>
+            <td class="num">${r.komisiAfiliasi!=null?fmtRpCompact(r.komisiAfiliasi):'-'}</td>
+            <td class="num">${r.profit!=null?fmtRpCompact(r.profit):(r.netSettlement!=null?fmtRpCompact(r.netSettlement)+'*':'-')}</td>
+            <td style="font-size:10.5px;">${r.tanggalPenarikan ? new Date(r.tanggalPenarikan).toLocaleDateString('id-ID') : '-'}</td>
+          </tr>`).join('')}
+        </tbody>
+      </table>
+      </div>
+      <div style="display:flex; justify-content:space-between; margin-top:12px;">
+        <button class="btn btn-ghost" id="dbPrevPage" ${dbFilters.page<=1?'disabled':''}>&larr; Sebelumnya</button>
+        <button class="btn btn-ghost" id="dbNextPage" ${dbFilters.page>=totalPages?'disabled':''}>Selanjutnya &rarr;</button>
+      </div>
+    </div>
+  `;
+  document.getElementById('dbFilterProduk').addEventListener('change', (e) => { dbFilters.produk = e.target.value; dbFilters.page = 1; renderDatabase(container); });
+  document.getElementById('dbFilterBrand').addEventListener('change', (e) => { dbFilters.brand = e.target.value; dbFilters.page = 1; renderDatabase(container); });
+  document.getElementById('dbFilterSumber').addEventListener('change', (e) => { dbFilters.sumber = e.target.value; dbFilters.page = 1; renderDatabase(container); });
+  document.getElementById('dbFilterSearch').addEventListener('input', (e) => { dbFilters.search = e.target.value; dbFilters.page = 1; renderDatabase(container); });
+  document.getElementById('dbPrevPage').addEventListener('click', () => { dbFilters.page--; renderDatabase(container); });
+  document.getElementById('dbNextPage').addEventListener('click', () => { dbFilters.page++; renderDatabase(container); });
+}
+
 function renderKontrak(container) {
   const activeContracts = STATE.contracts.filter(c => c.status === 'DANA BELUM CAIR')
     .sort((a,b) => (a.produk||'').localeCompare(b.produk||'') || new Date(a.tanggalMasuk) - new Date(b.tanggalMasuk));
@@ -1412,7 +1502,7 @@ function fmtRpCompact(n) {
 /* =========================================================================
    NAV
    ========================================================================= */
-const renderers = { master: renderMaster, kontrak: renderKontrak, import: renderImport };
+const renderers = { master: renderMaster, kontrak: renderKontrak, import: renderImport, database: renderDatabase };
 function switchTab(tab) {
   document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
   renderers[tab](document.getElementById('app'));
