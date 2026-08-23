@@ -110,6 +110,8 @@ let STATE = {
   colorCodeMap: {},         // {kode3huruf: namaWarna}
   pembagiPctManual: {},      // override manual (opsional): {produk: {kode2: pct}}
   orderDb: [],                // hasil proses Import Mingguan, permanen: {orderId, sku, produk, qty, ...}
+  pendingOrderSku: {},          // {orderId: [{sku,qty,warna,storeName}]} -- SEMUA order dari file "Semua Pesanan"/"Order All",
+                                  // cair maupun belum, supaya SKU-nya "diingat" sampai kapan pun akhirnya cair
   payouts: [],                  // kewajiban bayar ke capital partner per batch: {id, produk, kode2, capitalPartnerId, kodeKontrak, qty, rate, payout, tanggalDihitung, tanggalDibayar}
   vendorPayouts: [],              // kewajiban bayar ke konveksi/supplier: {id, brand, produk, qty, total, tanggalDihitung, tanggalDibayar}
 };
@@ -320,7 +322,26 @@ async function processWeeklyBatch(storeImports) {
     });
   });
 
-  // ---- Gabungkan baris SKU cair (fallback ke histori orderDb kalau order lama tidak ada di file minggu ini) ----
+  // ---- Simpan SEMUA order dari file Order All/Semua Pesanan (cair ATAU belum) ke registry permanen ----
+  // supaya SKU-nya tetap "diingat" kapan pun order itu akhirnya cair, bukan cuma kalau kebetulan cair minggu ini
+  shopeeImports.forEach(si => {
+    const objs = rowsToObjects(sheetToRows(si.orderWb.Sheets['orders']), 0, 1);
+    objs.forEach(o => {
+      const id = String(o['No. Pesanan']);
+      STATE.pendingOrderSku[id] = STATE.pendingOrderSku[id] || [];
+      STATE.pendingOrderSku[id].push({ sku: o['Nomor Referensi SKU'], qty: Number(o['Jumlah'])||0, warna: parseWarna(o['Nama Variasi']), storeName: si.store.nama });
+    });
+  });
+  tiktokImports.forEach(si => {
+    const objs = rowsToObjects(sheetToRows(si.orderWb.Sheets['OrderSKUList']), 0, 2);
+    objs.forEach(o => {
+      const id = String(o['Order ID']);
+      STATE.pendingOrderSku[id] = STATE.pendingOrderSku[id] || [];
+      STATE.pendingOrderSku[id].push({ sku: o['Seller SKU'], qty: Number(o['Quantity'])||0, warna: parseWarna(o['Variation']), storeName: si.store.nama });
+    });
+  });
+
+  // ---- Gabungkan baris SKU cair (fallback: file minggu ini -> pendingOrderSku registry -> histori orderDb) ----
   const historicalOrderSku = {};
   STATE.orderDb.forEach(r => { if (r.orderId && r.sku) { historicalOrderSku[r.orderId] = historicalOrderSku[r.orderId] || []; historicalOrderSku[r.orderId].push({ sku: r.sku, qty: r.qty, warna: r.warna }); } });
 
@@ -328,15 +349,15 @@ async function processWeeklyBatch(storeImports) {
   const matchStats = { shopeeTotal:0, shopeeFallback:0, shopeeNotFound:0, tiktokTotal:0, tiktokFallback:0, tiktokNotFound:0 };
   Object.keys(shopeeFinance).forEach(id => {
     matchStats.shopeeTotal++;
-    let rows = shopeeOrderLookup[id];
-    if (!rows) { rows = historicalOrderSku[id]; if (rows) matchStats.shopeeFallback++; }
+    let rows = shopeeOrderLookup[id] || STATE.pendingOrderSku[id] || historicalOrderSku[id];
+    if (rows && !shopeeOrderLookup[id]) matchStats.shopeeFallback++;
     if (rows) rows.forEach(r => cairSkuRows.push({ orderId:id, sku:r.sku, qty:r.qty, warna:r.warna, ...financeShare(shopeeFinance[id], r, rows) }));
     else matchStats.shopeeNotFound++;
   });
   Object.keys(tiktokFinance).forEach(id => {
     matchStats.tiktokTotal++;
-    let rows = tiktokOrderLookup[id];
-    if (!rows) { rows = historicalOrderSku[id]; if (rows) matchStats.tiktokFallback++; }
+    let rows = tiktokOrderLookup[id] || STATE.pendingOrderSku[id] || historicalOrderSku[id];
+    if (rows && !tiktokOrderLookup[id]) matchStats.tiktokFallback++;
     if (rows) rows.forEach(r => cairSkuRows.push({ orderId:id, sku:r.sku, qty:r.qty, warna:r.warna, ...financeShare(tiktokFinance[id], r, rows) }));
     else matchStats.tiktokNotFound++;
   });
@@ -352,10 +373,17 @@ async function processWeeklyBatch(storeImports) {
     };
   }
 
+  // ---- Saring order yg SUDAH tercatat sebelumnya (migrasi ATAU batch mingguan lalu) -- cegah dihitung dobel ----
+  // kalau order yg sama entah bagaimana muncul lagi sbg "cair" di file minggu ini (rentang tanggal tumpang tindih dsb),
+  // jangan dihitung lagi ke alokasi/payout, karena sudah pernah diproses & dibayarkan sebelumnya.
+  const alreadyRecorded = new Set(STATE.orderDb.map(r => r.orderId + '|' + r.sku));
+  const skippedAlreadyRecorded = cairSkuRows.filter(r => alreadyRecorded.has(r.orderId + '|' + r.sku));
+  const newCairSkuRows = cairSkuRows.filter(r => !alreadyRecorded.has(r.orderId + '|' + r.sku));
+
   // ---- Map SKU -> produk + brand, hargaKonveksi, warna fallback ----
   const qtyPerProduk = {}; // hanya produk URBAN OUTDOOR (jalur capital partner)
   const vendorSkuRows = [];
-  cairSkuRows.forEach(r => {
+  newCairSkuRows.forEach(r => {
     if (!r.sku) return;
     const prefix = String(r.sku).slice(0,3).toUpperCase();
     const p = STATE.products.find(pr => pr.prefix === prefix);
@@ -408,7 +436,7 @@ async function processWeeklyBatch(storeImports) {
   const surplusRows = Object.entries(qtyPerProduk).map(([produk, qtyTotal]) => {
     const activeC = STATE.contracts.find(c => c.produk === produk && c.status === 'DANA BELUM CAIR');
     const hargaInvestor = activeC ? activeC.hargaModalPcs : null;
-    const skusOfProduk = cairSkuRows.filter(r => capitalPartnerProduk(r.produk) === produk);
+    const skusOfProduk = newCairSkuRows.filter(r => capitalPartnerProduk(r.produk) === produk);
     let totalKonveksi = 0, qtyDenganHarga = 0;
     skusOfProduk.forEach(r => { if (r.hargaKonveksi) { totalKonveksi += r.qty*r.hargaKonveksi; qtyDenganHarga += r.qty; } });
     if (!hargaInvestor || qtyDenganHarga === 0) return { produk, qty: Math.round(qtyTotal), surplusPerUnit:null, totalSurplus:null };
@@ -417,7 +445,7 @@ async function processWeeklyBatch(storeImports) {
     return { produk, qty: Math.round(qtyTotal), hargaInvestor, totalKonveksi, totalSurplus, surplusPerUnit: totalSurplus/qtyDenganHarga };
   });
 
-  return { cairSkuRows, qtyPerProduk, allocations, vendorPayments, surplusRows, matchStats, timestamp: new Date().toISOString() };
+  return { cairSkuRows: newCairSkuRows, qtyPerProduk, allocations, vendorPayments, surplusRows, matchStats, nSkippedAlreadyRecorded: skippedAlreadyRecorded.length, timestamp: new Date().toISOString() };
 }
 
 /* =========================================================================
@@ -434,12 +462,28 @@ async function driveApi(path, opts) {
 }
 
 async function getOrCreateStateFile() {
+  // cek cache lokal dulu -- hindari re-search berulang yg rawan race condition/salah pilih kalau ada duplikat
+  const cachedId = localStorage.getItem('outmark-os-state-file-id');
+  if (cachedId) {
+    try {
+      const res = await driveApi(`/drive/v3/files/${cachedId}?fields=id,trashed`);
+      const meta = await res.json();
+      if (!meta.trashed) return cachedId;
+    } catch (e) { /* file mungkin sudah tidak ada/berubah, lanjut cari ulang di bawah */ }
+  }
+
   // cari file yg sudah pernah dibuat app ini (drive.file scope: cuma file yg dibuat app ini yg kelihatan)
+  // urutkan by modifiedTime desc -- kalau (seharusnya tidak terjadi lagi) ada duplikat, pakai yg PALING BARU diubah, bukan asal ambil pertama
   const q = encodeURIComponent(`name='${STATE_FILENAME}' and trashed=false`);
-  const listRes = await driveApi(`/drive/v3/files?q=${q}&fields=files(id,name)`);
+  const listRes = await driveApi(`/drive/v3/files?q=${q}&fields=files(id,name,modifiedTime,size)&orderBy=modifiedTime desc`);
   const list = await listRes.json();
   if (list.files && list.files.length) {
-    return list.files[0].id;
+    if (list.files.length > 1) {
+      console.warn(`PERINGATAN: ditemukan ${list.files.length} file "${STATE_FILENAME}" di Drive. Memakai yang paling baru diubah (${list.files[0].modifiedTime}). Sebaiknya hapus manual file duplikat lainnya di Drive supaya tidak membingungkan.`);
+    }
+    const chosenId = list.files[0].id;
+    localStorage.setItem('outmark-os-state-file-id', chosenId);
+    return chosenId;
   }
   // belum ada -> buat baru, isi kosong
   const initialContent = JSON.stringify({ capitalPartners: [], stores: [] });
@@ -451,6 +495,7 @@ async function getOrCreateStateFile() {
     method: 'POST', headers: { 'Content-Type': `multipart/related; boundary=${boundary}` }, body,
   });
   const created = await createRes.json();
+  localStorage.setItem('outmark-os-state-file-id', created.id);
   return created.id;
 }
 
@@ -461,15 +506,46 @@ async function loadState() {
   const loaded = text ? JSON.parse(text) : {};
   // DEFAULT_STATE mencakup SEMUA field yg pernah ada -- supaya file lama (dari sebelum field baru ditambahkan)
   // tidak jadi undefined pas dimuat. Tiap kali nambah field baru ke STATE, tambahkan juga di sini.
-  const DEFAULT_STATE = { capitalPartners: [], stores: [], products: [], contracts: [], colorCodeMap: {}, pembagiPctManual: {}, orderDb: [], payouts: [], vendorPayouts: [] };
+  const DEFAULT_STATE = { capitalPartners: [], stores: [], products: [], contracts: [], colorCodeMap: {}, pembagiPctManual: {}, orderDb: [], pendingOrderSku: {}, payouts: [], vendorPayouts: [] };
   STATE = Object.assign({}, DEFAULT_STATE, loaded);
 }
 
 async function saveState() {
   const body = JSON.stringify(STATE);
-  await driveApi(`/upload/drive/v3/files/${stateFileId}?uploadType=media`, {
-    method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body,
+  // PENGAMAN: kalau data yg mau disimpan jauh lebih kecil dari yg sudah ada di Drive, kemungkinan
+  // STATE di memori belum termuat penuh (race condition/bug) -- jangan timpa diam-diam, minta konfirmasi dulu.
+  try {
+    const metaRes = await driveApi(`/drive/v3/files/${stateFileId}?fields=size`);
+    const meta = await metaRes.json();
+    const currentSize = Number(meta.size) || 0;
+    const newSize = body.length;
+    if (currentSize > 50000 && newSize < currentSize * 0.3) {
+      const proceed = confirm(
+        `PERINGATAN: Data yang mau disimpan (${(newSize/1024).toFixed(0)}KB) jauh lebih kecil dari yang tersimpan sekarang di Drive (${(currentSize/1024).toFixed(0)}KB).\n\n` +
+        `Ini bisa jadi tanda sebagian data belum termuat sempurna di sesi ini. Kalau tidak yakin, klik Batal, REFRESH halaman, lalu coba lagi.\n\n` +
+        `Tetap simpan (timpa data lama)?`
+      );
+      if (!proceed) throw new Error('Penyimpanan dibatalkan demi keamanan data (ukuran anomali terdeteksi).');
+    }
+  } catch (e) {
+    if (String(e.message).includes('dibatalkan demi keamanan')) throw e;
+    // gagal cek metadata (mis. file baru) -- lanjut simpan normal, jangan blokir
+  }
+  // Simple upload (uploadType=media) cuma andal sampai ~5MB. Data kita (ribuan baris orderDb) bisa lebih
+  // besar dari itu dan GAGAL DIAM-DIAM kalau pakai cara lama. Pakai resumable upload supaya andal di ukuran besar.
+  const initRes = await driveApi(`/upload/drive/v3/files/${stateFileId}?uploadType=resumable`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json; charset=UTF-8' },
+    body: JSON.stringify({}), // metadata kosong (nama file tidak berubah)
   });
+  const uploadUrl = initRes.headers.get('Location');
+  if (!uploadUrl) throw new Error('Gagal memulai resumable upload (tidak dapat URL sesi dari Drive).');
+  const putRes = await fetch(uploadUrl, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body,
+  });
+  if (!putRes.ok) throw new Error(`Gagal upload data (HTTP ${putRes.status}): ${await putRes.text()}`);
 }
 
 /* =========================================================================
@@ -1046,6 +1122,7 @@ async function runWeeklyImport() {
     const fallbackTotal = ms.shopeeFallback + ms.tiktokFallback, notFoundTotal = ms.shopeeNotFound + ms.tiktokNotFound;
     let text = `Berhasil: ${result.cairSkuRows.length} baris SKU cair, ${Object.keys(result.qtyPerProduk).length} produk Urban Outdoor terdampak.`;
     if (fallbackTotal) text += ` (${fallbackTotal} order pakai fallback histori)`;
+    if (result.nSkippedAlreadyRecorded) text += ` (${result.nSkippedAlreadyRecorded} order sudah pernah tercatat, tidak dihitung ulang)`;
     showMsg(msg, notFoundTotal ? 'err' : 'ok', text + (notFoundTotal ? ` ⚠ ${notFoundTotal} order tidak ketemu sama sekali.` : ''));
     renderImportPreview(document.getElementById('importPreview'), result);
   } catch (e) {
