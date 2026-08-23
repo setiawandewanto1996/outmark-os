@@ -221,7 +221,10 @@ async function loadState() {
   const res = await driveApi(`/drive/v3/files/${stateFileId}?alt=media`);
   const text = await res.text();
   const loaded = text ? JSON.parse(text) : {};
-  STATE = Object.assign({ capitalPartners: [], stores: [] }, loaded);
+  // DEFAULT_STATE mencakup SEMUA field yg pernah ada -- supaya file lama (dari sebelum field baru ditambahkan)
+  // tidak jadi undefined pas dimuat. Tiap kali nambah field baru ke STATE, tambahkan juga di sini.
+  const DEFAULT_STATE = { capitalPartners: [], stores: [], products: [], contracts: [], colorCodeMap: {}, pembagiPctManual: {} };
+  STATE = Object.assign({}, DEFAULT_STATE, loaded);
 }
 
 async function saveState() {
