@@ -77,7 +77,7 @@
   </header>
   <nav class="tabs" id="tabs" style="display:none;">
     <button data-tab="master" class="active">Data Master</button>
-    <button data-tab="kontrak" disabled title="Segera">Produk &amp; Kontrak</button>
+    <button data-tab="kontrak">Produk &amp; Kontrak</button>
     <button data-tab="import" disabled title="Segera">Import Mingguan</button>
   </nav>
   <div id="app"></div>
@@ -94,11 +94,93 @@ const STATE_FILENAME = 'outmark-os-state.json';
 let STATE = {
   capitalPartners: [],  // {id, nama, kode2, kontak, tanggalBergabung, status}
   stores: [],            // {id, nama, platform, status}
+  products: [],           // {id, nama, brand, prefix, hargaKonveksi: {SIZE: [{harga,tanggal,sumber}]}}
+  contracts: [],           // {id, produk, capitalPartnerId, kodeKontrak, tanggalMasuk, stockAwal, stockAkhir, hargaModalPcs, nilaiMargin, status}
+  colorCodeMap: {},         // {kode3huruf: namaWarna}
+  pembagiPctManual: {},      // override manual (opsional): {produk: {kode2: pct}}
 };
 let stateFileId = null;
 let accessToken = null;
 
 function uid(prefix) { return prefix + '_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7); }
+
+/* =========================================================================
+   LOGIKA INTI (dipindahkan dari versi sebelumnya, sudah tervalidasi)
+   ========================================================================= */
+const SIZE_CODE_MAP = { '01':'S','02':'M','03':'L','04':'XL','05':'XXL','06':'3XL','07':'4XL','08':'5XL','09':'6XL','10':'7XL' };
+const SIZES = ['S','M','L','XL','XXL','3XL','4XL','5XL','6XL','7XL'];
+const SIZE_TOKENS = new Set(['S','M','L','XL','XXL','2XL','3XL','4XL','5XL','6XL','7XL','8XL']);
+const CAPITAL_PARTNER_PRODUCT_ALIAS = { 'FORSAKERWB': 'FORSAKERVOL2' }; // FORSAKERWB berbagi pool modal dgn FORSAKERVOL2 (ditemukan dari data nyata)
+function capitalPartnerProduk(produk) { return CAPITAL_PARTNER_PRODUCT_ALIAS[produk] || produk; }
+
+function findProduct(nama) { return STATE.products.find(p => p.nama === nama); }
+function findPartnerByKode2(kode2) { return STATE.capitalPartners.find(p => p.kode2 === kode2); }
+function findPartnerById(id) { return STATE.capitalPartners.find(p => p.id === id); }
+
+function getCurrentHarga(produkNama, size) {
+  const p = findProduct(produkNama);
+  if (!p || !p.hargaKonveksi || !p.hargaKonveksi[size] || !p.hargaKonveksi[size].length) return null;
+  const hist = p.hargaKonveksi[size];
+  return hist[hist.length - 1].harga;
+}
+function addHargaHistory(produkNama, size, harga, sumber) {
+  const p = findProduct(produkNama);
+  if (!p) return;
+  p.hargaKonveksi = p.hargaKonveksi || {};
+  p.hargaKonveksi[size] = p.hargaKonveksi[size] || [];
+  p.hargaKonveksi[size].push({ harga, tanggal: new Date().toISOString(), sumber: sumber || 'manual' });
+}
+
+// Hitung persentase Pembagi Qty SW dari besaran modal kontrak AKTIF (DANA BELUM CAIR) saat ini, per produk (setelah alias)
+function computePembagiPct(produkAsli) {
+  const produk = capitalPartnerProduk(produkAsli);
+  if (STATE.pembagiPctManual[produk]) return STATE.pembagiPctManual[produk]; // manual override menang
+  const active = STATE.contracts.filter(c => capitalPartnerProduk(c.produk) === produk && c.status === 'DANA BELUM CAIR');
+  const capitalByPartner = {};
+  active.forEach(c => {
+    const partner = findPartnerById(c.capitalPartnerId);
+    if (!partner) return;
+    const modal = (c.stockAwal || 0) * (c.hargaModalPcs || 0);
+    capitalByPartner[partner.kode2] = (capitalByPartner[partner.kode2] || 0) + modal;
+  });
+  const total = Object.values(capitalByPartner).reduce((a,b) => a+b, 0);
+  if (total <= 0) return {};
+  const pct = {};
+  Object.entries(capitalByPartner).forEach(([k,v]) => { pct[k] = v / total; });
+  return pct;
+}
+
+// Kontrak aktif (FIFO) milik 1 capital partner utk 1 produk -- yg paling awal tanggal masuk dgn status DANA BELUM CAIR
+function activeContractFor(produkAsli, capitalPartnerId) {
+  const list = STATE.contracts
+    .filter(c => c.produk === produkAsli && c.capitalPartnerId === capitalPartnerId && c.status === 'DANA BELUM CAIR')
+    .sort((a,b) => new Date(a.tanggalMasuk) - new Date(b.tanggalMasuk));
+  return list[0] || null;
+}
+
+function parseWarna(variasiText) {
+  if (!variasiText) return null;
+  const parts = String(variasiText).split(',').map(s => s.trim()).filter(Boolean);
+  if (!parts.length) return null;
+  const first = parts[0].toUpperCase();
+  if (SIZE_TOKENS.has(first)) return null;
+  return parts[0];
+}
+function deriveWarnaFromSku(sku) {
+  if (!sku || String(sku).length < 6) return null;
+  const kode = String(sku).toUpperCase().slice(3,6);
+  return STATE.colorCodeMap[kode] || null;
+}
+function lookupHargaKonveksiBySku(sku) {
+  if (!sku) return null;
+  const skuUpper = String(sku).toUpperCase();
+  const prefix = skuUpper.slice(0,3);
+  const sizeCode = skuUpper.slice(-2);
+  const p = STATE.products.find(pr => pr.prefix === prefix);
+  const ukuran = SIZE_CODE_MAP[sizeCode];
+  if (p && ukuran) return getCurrentHarga(p.nama, ukuran);
+  return null;
+}
 
 /* =========================================================================
    GOOGLE DRIVE STORAGE LAYER
@@ -352,8 +434,87 @@ function renderMaster(container) {
         });
       }
 
+      // ---- Produk (dari PENJUALAN: prefix SKU, brand, harga konveksi BE:BF) ----
+      let nProductAdded = 0, nColorAdded = 0;
+      if (wsPJ) {
+        const pjRows = XU.sheet_to_json(wsPJ, { header: 1 });
+        const pjHeader = pjRows[0];
+        const counts = {}; const brandCounts = {}; const colorCounts = {};
+        const iSKU = pjHeader.indexOf('No. SKU') >= 0 ? pjHeader.indexOf('No. SKU') : pjHeader.indexOf('No SKU');
+        const iBrand = pjHeader.indexOf('BRAND');
+        const iNamaBarang = pjHeader.indexOf('Nama Barang');
+        const iWarnaCol = pjHeader.indexOf('Warna');
+        for (let r = 1; r < pjRows.length; r++) {
+          const row = pjRows[r];
+          if (!row) continue;
+          const sku = row[iSKU], nama = row[iNamaBarang], brand = row[iBrand], warnaVal = row[iWarnaCol];
+          if (sku && nama) { const prefix = String(sku).slice(0,3).toUpperCase(); counts[prefix] = counts[prefix] || {}; counts[prefix][nama] = (counts[prefix][nama]||0)+1; }
+          if (nama && brand) { brandCounts[nama] = brandCounts[nama] || {}; brandCounts[nama][brand] = (brandCounts[nama][brand]||0)+1; }
+          if (sku && warnaVal && String(sku).length >= 6) {
+            const kw = String(sku).slice(3,6).toUpperCase();
+            colorCounts[kw] = colorCounts[kw] || {}; colorCounts[kw][String(warnaVal).toUpperCase()] = (colorCounts[kw][String(warnaVal).toUpperCase()]||0)+1;
+          }
+        }
+        const majority = (obj) => Object.entries(obj).reduce((best,[k,n]) => n > (best[1]||-1) ? [k,n] : best, [null,-1])[0];
+        Object.entries(colorCounts).forEach(([kode,obj]) => { if (!STATE.colorCodeMap[kode]) { STATE.colorCodeMap[kode] = majority(obj); nColorAdded++; } });
+
+        const h2 = pjRows[1] || [];
+        const iModel = h2.indexOf('MODEL'), iHarga = h2.indexOf('HARGA');
+        const bePriceByKodeProduk = {};
+        if (iModel >= 0 && iHarga >= 0) {
+          for (let r = 2; r < pjRows.length; r++) {
+            const row = pjRows[r];
+            if (row && row[iModel] && typeof row[iHarga] === 'number') bePriceByKodeProduk[String(row[iModel]).toUpperCase()] = row[iHarga];
+          }
+        }
+        Object.entries(counts).forEach(([prefix, obj]) => {
+          const nama = majority(obj);
+          if (STATE.products.some(p => p.nama === nama)) return;
+          const brand = majority(brandCounts[nama] || {}) || '';
+          const hargaKonveksi = {};
+          SIZES.forEach(s => {
+            const h = bePriceByKodeProduk[(nama + s).toUpperCase()];
+            if (h != null) hargaKonveksi[s] = [{ harga: h, tanggal: null, sumber: 'migrasi' }];
+          });
+          STATE.products.push({ id: uid('pr'), nama, brand, prefix, hargaKonveksi });
+          nProductAdded++;
+        });
+      }
+
+      // ---- Kontrak (dari SYIRKAH WAKALAH, ditautkan ke Capital Partner via kode2) ----
+      let nContractAdded = 0;
+      if (wsSW) {
+        const swRows = XU.sheet_to_json(wsSW, { header: 1 });
+        const swHeader = swRows[0];
+        const iProduk = swHeader.indexOf('PRODUK'), iKodeInv = swHeader.indexOf('KODE INVESTOR');
+        const iTglMasuk = swHeader.indexOf('TANGGAL MASUK'), iStockAwal = swHeader.indexOf('STOCK AWAL'), iStockAkhir = swHeader.indexOf('STOCK AKHIR');
+        const iHargaModal = swHeader.indexOf('HARGA MODAL/PCS'), iNilaiMargin = swHeader.indexOf('NILAI MARGIN');
+        const statusIdxs = swHeader.reduce((acc,h,i) => { if (h==='STATUS') acc.push(i); return acc; }, []);
+        const iStatus = statusIdxs[0];
+        const existingKode = new Set(STATE.contracts.map(c => c.kodeKontrak));
+        for (let r = 1; r < swRows.length; r++) {
+          const row = swRows[r];
+          if (!row || !row[iProduk] || !row[iKodeInv]) continue;
+          const kodeKontrak = String(row[iKodeInv]);
+          if (existingKode.has(kodeKontrak)) continue;
+          const kode2 = kodeKontrak.slice(0,2).toUpperCase();
+          const partner = findPartnerByKode2(kode2);
+          if (!partner) continue;
+          let tglMasuk = null;
+          if (row[iTglMasuk]) { try { const d = new Date(row[iTglMasuk]); if (!isNaN(d)) tglMasuk = d.toISOString(); } catch(e){} }
+          STATE.contracts.push({
+            id: uid('ct'), produk: row[iProduk], capitalPartnerId: partner.id, kodeKontrak,
+            tanggalMasuk: tglMasuk, stockAwal: Number(row[iStockAwal])||0, stockAkhir: Number(row[iStockAkhir])||0,
+            hargaModalPcs: Number(row[iHargaModal])||0, nilaiMargin: Number(row[iNilaiMargin])||0,
+            status: row[iStatus] || 'DANA SUDAH CAIR',
+          });
+          existingKode.add(kodeKontrak);
+          nContractAdded++;
+        }
+      }
+
       await saveState();
-      showMsg(msg, 'ok', `Selesai: ${nPartnerAdded} Capital Partner baru, ${nStoreAdded} toko baru ditambahkan.`);
+      showMsg(msg, 'ok', `Selesai: ${nPartnerAdded} Capital Partner, ${nStoreAdded} toko, ${nProductAdded} produk, ${nColorAdded} kode warna, ${nContractAdded} kontrak ditambahkan.`);
       renderPartnerList(document.getElementById('partnerList'));
       renderStoreList(document.getElementById('storeList'));
     } catch (e) {
@@ -461,9 +622,72 @@ function renderStoreList(el) {
 }
 
 /* =========================================================================
+   TAB: PRODUK & KONTRAK (versi awal -- lihat hasil migrasi, CRUD lengkap menyusul)
+   ========================================================================= */
+function renderKontrak(container) {
+  const activeContracts = STATE.contracts.filter(c => c.status === 'DANA BELUM CAIR')
+    .sort((a,b) => (a.produk||'').localeCompare(b.produk||'') || new Date(a.tanggalMasuk) - new Date(b.tanggalMasuk));
+
+  container.innerHTML = `
+    <div class="panel">
+      <h2>Produk Terdaftar <span class="pill">${STATE.products.length}</span></h2>
+      ${!STATE.products.length ? '<div class="empty-note">Belum ada produk. Migrasi dari file UJUSO di tab Data Master.</div>' : `
+      <table class="data">
+        <thead><tr><th>Nama Produk</th><th>Brand</th><th>Prefix</th><th class="num">Size dgn Harga</th></tr></thead>
+        <tbody>
+          ${STATE.products.map(p => {
+            const nSize = SIZES.filter(s => p.hargaKonveksi && p.hargaKonveksi[s] && p.hargaKonveksi[s].length).length;
+            return `<tr><td>${p.nama}</td><td>${p.brand||'-'}</td><td>${p.prefix}</td><td class="num">${nSize}/${SIZES.length}</td></tr>`;
+          }).join('')}
+        </tbody>
+      </table>`}
+    </div>
+
+    <div class="panel">
+      <h2>Kontrak Aktif (DANA BELUM CAIR) <span class="pill">${activeContracts.length}</span></h2>
+      ${!activeContracts.length ? '<div class="empty-note">Belum ada kontrak aktif.</div>' : `
+      <table class="data">
+        <thead><tr><th>Produk</th><th>Kode Kontrak</th><th>Capital Partner</th><th>Tgl Masuk</th><th class="num">Stock Akhir</th><th class="num">Nilai Margin</th></tr></thead>
+        <tbody>
+          ${activeContracts.map(c => {
+            const partner = findPartnerById(c.capitalPartnerId);
+            return `<tr>
+              <td>${c.produk}</td><td>${c.kodeKontrak}</td><td>${partner ? partner.nama : '(tidak ditemukan)'}</td>
+              <td>${c.tanggalMasuk ? new Date(c.tanggalMasuk).toLocaleDateString('id-ID') : '-'}</td>
+              <td class="num">${c.stockAkhir}</td><td class="num">${fmtRp(c.nilaiMargin)}</td>
+            </tr>`;
+          }).join('')}
+        </tbody>
+      </table>`}
+    </div>
+
+    <div class="panel">
+      <h2>Persentase Pembagi Qty SW (Otomatis dari Modal)</h2>
+      <div id="pctView"></div>
+    </div>
+
+    <div class="panel">
+      <div class="desc">Form tambah/tutup kontrak manual, edit harga per size, dan kode warna menyusul di update berikutnya.</div>
+    </div>
+  `;
+
+  const produkList = [...new Set(STATE.contracts.map(c => c.produk))].sort();
+  const pctEl = document.getElementById('pctView');
+  if (!produkList.length) { pctEl.innerHTML = '<div class="empty-note">Belum ada kontrak.</div>'; }
+  else {
+    pctEl.innerHTML = produkList.map(p => {
+      const pct = computePembagiPct(p);
+      if (!Object.keys(pct).length) return '';
+      return `<div style="margin-bottom:10px;"><b>${p}</b>: ${Object.entries(pct).map(([k,v]) => `${k} ${(v*100).toFixed(1)}%`).join(' &middot; ')}</div>`;
+    }).join('');
+  }
+}
+function fmtRp(n) { if (n==null||isNaN(n)) return '-'; return 'Rp ' + Math.round(n).toLocaleString('id-ID'); }
+
+/* =========================================================================
    NAV
    ========================================================================= */
-const renderers = { master: renderMaster };
+const renderers = { master: renderMaster, kontrak: renderKontrak };
 function switchTab(tab) {
   document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
   renderers[tab](document.getElementById('app'));
