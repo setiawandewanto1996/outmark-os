@@ -382,7 +382,7 @@ function renderMaster(container) {
     showMsg(msg, 'info', 'Membaca file...');
     try {
       const buf = await pendingMigrateFile.arrayBuffer();
-      const wb = XLSX.read(buf, { type: 'array' });
+      const wb = XLSX.read(buf, { type: 'array', cellDates: true });
       const XU = XLSX.utils;
 
       let nPartnerAdded = 0, nStoreAdded = 0;
@@ -485,7 +485,7 @@ function renderMaster(container) {
       }
 
       // ---- Kontrak (dari SYIRKAH WAKALAH, ditautkan ke Capital Partner via kode2) ----
-      let nContractAdded = 0;
+      let nContractAdded = 0, nContractUpdated = 0;
       if (wsSW) {
         const swRows = XU.sheet_to_json(wsSW, { header: 1 });
         const swHeader = swRows[0];
@@ -494,30 +494,35 @@ function renderMaster(container) {
         const iHargaModal = swHeader.indexOf('HARGA MODAL/PCS'), iNilaiMargin = swHeader.indexOf('NILAI MARGIN');
         const statusIdxs = swHeader.reduce((acc,h,i) => { if (h==='STATUS') acc.push(i); return acc; }, []);
         const iStatus = statusIdxs[0];
-        const existingKode = new Set(STATE.contracts.map(c => c.kodeKontrak));
+        const contractByKode = {}; STATE.contracts.forEach(c => contractByKode[c.kodeKontrak] = c);
         for (let r = 1; r < swRows.length; r++) {
           const row = swRows[r];
           if (!row || !row[iProduk] || !row[iKodeInv]) continue;
           const kodeKontrak = String(row[iKodeInv]);
-          if (existingKode.has(kodeKontrak)) continue;
           const kode2 = kodeKontrak.slice(0,2).toUpperCase();
           const partner = findPartnerByKode2(kode2);
           if (!partner) continue;
           let tglMasuk = null;
           if (row[iTglMasuk]) { try { const d = new Date(row[iTglMasuk]); if (!isNaN(d)) tglMasuk = d.toISOString(); } catch(e){} }
-          STATE.contracts.push({
-            id: uid('ct'), produk: row[iProduk], capitalPartnerId: partner.id, kodeKontrak,
+          const fresh = {
+            produk: row[iProduk], capitalPartnerId: partner.id, kodeKontrak,
             tanggalMasuk: tglMasuk, stockAwal: Number(row[iStockAwal])||0, stockAkhir: Number(row[iStockAkhir])||0,
             hargaModalPcs: Number(row[iHargaModal])||0, nilaiMargin: Number(row[iNilaiMargin])||0,
             status: row[iStatus] || 'DANA SUDAH CAIR',
-          });
-          existingKode.add(kodeKontrak);
-          nContractAdded++;
+          };
+          if (contractByKode[kodeKontrak]) {
+            Object.assign(contractByKode[kodeKontrak], fresh); // update data yg sudah ada (perbaiki kalau ada yg salah, mis. tanggal)
+            nContractUpdated++;
+          } else {
+            const c = { id: uid('ct'), ...fresh };
+            STATE.contracts.push(c); contractByKode[kodeKontrak] = c;
+            nContractAdded++;
+          }
         }
       }
 
       await saveState();
-      showMsg(msg, 'ok', `Selesai: ${nPartnerAdded} Capital Partner, ${nStoreAdded} toko, ${nProductAdded} produk, ${nColorAdded} kode warna, ${nContractAdded} kontrak ditambahkan.`);
+      showMsg(msg, 'ok', `Selesai: ${nPartnerAdded} Capital Partner, ${nStoreAdded} toko, ${nProductAdded} produk, ${nColorAdded} kode warna, ${nContractAdded} kontrak baru, ${nContractUpdated} kontrak diperbarui.`);
       renderPartnerList(document.getElementById('partnerList'));
       renderStoreList(document.getElementById('storeList'));
     } catch (e) {
