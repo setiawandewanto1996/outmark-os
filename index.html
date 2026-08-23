@@ -3,165 +3,397 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Outmark OS — Tes Koneksi</title>
+<title>Outmark OS</title>
 <script src="https://accounts.google.com/gsi/client" async defer></script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
   :root {
-    --ink: #16181D; --paper: #F5F4F0; --line: #D8D6CE;
-    --ok: #2E6B4F; --err: #A83A2E; --accent: #3457D5;
+    --ink: #16181D; --paper: #F5F4F0; --surface: #FFFFFF; --line: #D8D6CE;
+    --ok: #2E6B4F; --err: #A83A2E; --accent: #3457D5; --ink-soft: #6B6A63;
   }
   * { box-sizing: border-box; }
-  body {
-    margin: 0; min-height: 100vh; background: var(--paper); color: var(--ink);
-    font-family: 'IBM Plex Mono', monospace; display: flex; align-items: center; justify-content: center; padding: 24px;
-  }
-  .card { max-width: 520px; width: 100%; }
-  h1 {
-    font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 28px; margin: 0 0 4px;
-    letter-spacing: -0.5px;
-  }
-  .sub { font-size: 12px; letter-spacing: 1px; text-transform: uppercase; color: #6B6A63; margin-bottom: 28px; }
-  .step {
-    border: 1px solid var(--line); border-radius: 2px; padding: 16px 18px; margin-bottom: 10px;
-    background: #fff; display: flex; align-items: flex-start; gap: 12px;
-  }
-  .step-icon {
-    width: 20px; height: 20px; flex-shrink: 0; border-radius: 50%; border: 1.5px solid var(--line);
-    display: flex; align-items: center; justify-content: center; font-size: 12px; margin-top: 1px;
-  }
-  .step.pending .step-icon { color: #6B6A63; }
-  .step.ok .step-icon { background: var(--ok); border-color: var(--ok); color: #fff; }
-  .step.err .step-icon { background: var(--err); border-color: var(--err); color: #fff; }
-  .step-body { flex: 1; }
-  .step-title { font-family: 'Space Grotesk', sans-serif; font-weight: 500; font-size: 14px; margin-bottom: 3px; }
-  .step-detail { font-size: 12px; color: #6B6A63; line-height: 1.5; word-break: break-word; }
-  .step.err .step-detail { color: var(--err); }
-  .step.ok .step-detail { color: var(--ok); }
-  button {
-    font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 14px;
-    background: var(--ink); color: var(--paper); border: none; border-radius: 2px;
-    padding: 12px 22px; cursor: pointer; margin-top: 18px; width: 100%;
-  }
-  button:disabled { opacity: 0.4; cursor: default; }
-  button:hover:not(:disabled) { background: var(--accent); }
-  .result-box {
-    margin-top: 20px; padding: 14px; background: #fff; border: 1px solid var(--line);
-    font-size: 12px; display: none;
-  }
-  .result-box.show { display: block; }
-  .result-box.success { border-color: var(--ok); background: #F0F7F3; }
+  body { margin: 0; background: var(--paper); color: var(--ink); font-family: 'Inter', sans-serif; min-height: 100vh; }
+  .wrap { max-width: 980px; margin: 0 auto; padding: 24px 18px 90px; }
+
+  header.top { display: flex; justify-content: space-between; align-items: flex-end; border-bottom: 2px solid var(--ink); padding-bottom: 14px; margin-bottom: 6px; flex-wrap: wrap; gap: 10px; }
+  .wordmark { font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 26px; letter-spacing: -0.5px; }
+  .auth-status { font-family: 'IBM Plex Mono', monospace; font-size: 11px; text-align: right; }
+  .auth-status .email { color: var(--ok); }
+  .auth-status button { background: none; border: 1px solid var(--line); border-radius: 3px; padding: 5px 10px; font-family: 'IBM Plex Mono', monospace; font-size: 11px; cursor: pointer; margin-top: 4px; }
+
+  nav.tabs { display: flex; gap: 2px; margin: 18px 0 22px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+  nav.tabs button { font-family: 'IBM Plex Mono', monospace; font-size: 12px; letter-spacing: 0.5px; text-transform: uppercase; background: none; border: none; padding: 10px 14px; cursor: pointer; color: var(--ink-soft); border-bottom: 3px solid transparent; margin-bottom: -1px; }
+  nav.tabs button.active { color: var(--ink); border-bottom-color: var(--accent); font-weight: 600; }
+  nav.tabs button:disabled { opacity: 0.35; cursor: not-allowed; }
+
+  .panel { background: var(--surface); border: 1px solid var(--line); border-radius: 3px; padding: 20px; margin-bottom: 20px; }
+  .panel h2 { font-family: 'Space Grotesk', sans-serif; font-size: 17px; margin: 0 0 6px; }
+  .panel .desc { font-size: 13px; color: var(--ink-soft); margin-bottom: 16px; line-height: 1.5; }
+
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  @media (max-width: 640px) { .grid2 { grid-template-columns: 1fr; } }
+  .field { display: flex; flex-direction: column; gap: 5px; margin-bottom: 12px; }
+  label { font-family: 'IBM Plex Mono', monospace; font-size: 10.5px; letter-spacing: 0.8px; text-transform: uppercase; color: var(--ink-soft); }
+  input, select { font-family: 'Inter', sans-serif; font-size: 14px; padding: 9px 10px; border: 1px solid var(--line); border-radius: 3px; }
+  input:focus, select:focus { outline: none; border-color: var(--accent); }
+
+  .btn { font-family: 'Space Grotesk', sans-serif; font-weight: 600; font-size: 14px; border: none; border-radius: 3px; padding: 11px 18px; cursor: pointer; }
+  .btn-primary { background: var(--ink); color: var(--paper); }
+  .btn-primary:hover { background: var(--accent); }
+  .btn-primary:disabled { background: #B8B6AC; cursor: not-allowed; }
+  .btn-ghost { background: transparent; color: var(--ink-soft); border: 1px solid var(--line); font-size: 12.5px; padding: 7px 12px; }
+  .btn-ghost:hover { border-color: var(--accent); color: var(--accent); }
+
+  table.data { width: 100%; border-collapse: collapse; font-size: 13px; }
+  table.data th { font-family: 'IBM Plex Mono', monospace; font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.6px; color: var(--ink-soft); text-align: left; border-bottom: 2px solid var(--ink); padding: 8px 6px; }
+  table.data td { padding: 9px 6px; border-bottom: 1px solid var(--line); }
+  .pill { display: inline-block; font-family: 'IBM Plex Mono', monospace; font-size: 10.5px; padding: 2px 8px; border-radius: 20px; background: var(--line); color: var(--ink-soft); }
+  .pill.ok { background: #E3EFE8; color: var(--ok); }
+  .pill.off { background: #F3E5E2; color: var(--err); }
+
+  .status-box { font-family: 'IBM Plex Mono', monospace; font-size: 12px; padding: 10px 12px; border-radius: 3px; margin-top: 10px; display: none; }
+  .status-box.show { display: block; }
+  .status-box.ok { background: #EEF3EC; color: var(--ok); border: 1px solid #C9D8C4; }
+  .status-box.err { background: #FBEDE9; color: var(--err); border: 1px solid #E8C2B8; }
+  .status-box.info { background: #F2EEE0; color: var(--ink-soft); border: 1px solid var(--line); }
+
+  .empty-note { text-align: center; padding: 30px; color: var(--ink-soft); font-size: 13px; border: 1.5px dashed var(--line); border-radius: 3px; }
+  .gate { text-align: center; padding: 80px 20px; }
+  .gate .wordmark { font-size: 34px; margin-bottom: 6px; }
+  .gate p { color: var(--ink-soft); font-size: 14px; margin-bottom: 24px; }
+  .gate button { font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 15px; background: var(--ink); color: var(--paper); border: none; border-radius: 3px; padding: 13px 26px; cursor: pointer; }
+  .loading-wrap { text-align: center; padding: 60px 20px; color: var(--ink-soft); font-family: 'IBM Plex Mono', monospace; font-size: 13px; }
+  button.icon-del { background: none; border: none; cursor: pointer; color: var(--ink-soft); font-size: 13px; }
+  button.icon-del:hover { color: var(--err); }
 </style>
 </head>
 <body>
-<div class="card">
-  <h1>Outmark OS</h1>
-  <div class="sub">Tes Koneksi Google Drive</div>
-
-  <div class="step pending" id="step-lib"><div class="step-icon">1</div><div class="step-body">
-    <div class="step-title">Library Google dimuat</div><div class="step-detail" id="detail-lib">Menunggu...</div>
-  </div></div>
-
-  <div class="step pending" id="step-login"><div class="step-icon">2</div><div class="step-body">
-    <div class="step-title">Login &amp; izin akses Drive</div><div class="step-detail" id="detail-login">Klik tombol di bawah</div>
-  </div></div>
-
-  <div class="step pending" id="step-write"><div class="step-icon">3</div><div class="step-body">
-    <div class="step-title">Tulis file percobaan ke Drive</div><div class="step-detail" id="detail-write">Menunggu login</div>
-  </div></div>
-
-  <div class="step pending" id="step-read"><div class="step-icon">4</div><div class="step-body">
-    <div class="step-title">Baca kembali file itu</div><div class="step-detail" id="detail-read">Menunggu</div>
-  </div></div>
-
-  <button id="btnLogin" disabled>Memuat...</button>
-
-  <div class="result-box" id="resultBox"></div>
+<div class="wrap">
+  <header class="top">
+    <div class="wordmark">Outmark <span style="color:var(--accent)">OS</span></div>
+    <div class="auth-status" id="authStatus"></div>
+  </header>
+  <nav class="tabs" id="tabs" style="display:none;">
+    <button data-tab="master" class="active">Data Master</button>
+    <button data-tab="kontrak" disabled title="Segera">Produk &amp; Kontrak</button>
+    <button data-tab="import" disabled title="Segera">Import Mingguan</button>
+  </nav>
+  <div id="app"></div>
 </div>
 
 <script>
 const CLIENT_ID = '534061439425-cl0savvhsflp1ub4tgcnf8uih4b2iqso.apps.googleusercontent.com';
 const SCOPE = 'https://www.googleapis.com/auth/drive.file';
+const STATE_FILENAME = 'outmark-os-state.json';
 
-function setStep(id, state, detail) {
-  const el = document.getElementById('step-' + id);
-  el.className = 'step ' + state;
-  el.querySelector('.step-icon').textContent = state === 'ok' ? '✓' : state === 'err' ? '✕' : el.querySelector('.step-icon').textContent;
-  document.getElementById('detail-' + id).textContent = detail;
+/* =========================================================================
+   STATE
+   ========================================================================= */
+let STATE = {
+  capitalPartners: [],  // {id, nama, kode2, kontak, tanggalBergabung, status}
+  stores: [],            // {id, nama, platform, status}
+};
+let stateFileId = null;
+let accessToken = null;
+
+function uid(prefix) { return prefix + '_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7); }
+
+/* =========================================================================
+   GOOGLE DRIVE STORAGE LAYER
+   ========================================================================= */
+async function driveApi(path, opts) {
+  opts = opts || {};
+  const res = await fetch('https://www.googleapis.com' + path, {
+    ...opts,
+    headers: { Authorization: 'Bearer ' + accessToken, ...(opts.headers || {}) },
+  });
+  if (!res.ok) throw new Error(`Drive API ${res.status}: ${await res.text()}`);
+  return res;
 }
 
-let tokenClient, accessToken;
-const btn = document.getElementById('btnLogin');
+async function getOrCreateStateFile() {
+  // cari file yg sudah pernah dibuat app ini (drive.file scope: cuma file yg dibuat app ini yg kelihatan)
+  const q = encodeURIComponent(`name='${STATE_FILENAME}' and trashed=false`);
+  const listRes = await driveApi(`/drive/v3/files?q=${q}&fields=files(id,name)`);
+  const list = await listRes.json();
+  if (list.files && list.files.length) {
+    return list.files[0].id;
+  }
+  // belum ada -> buat baru, isi kosong
+  const initialContent = JSON.stringify({ capitalPartners: [], stores: [] });
+  const metadata = { name: STATE_FILENAME, mimeType: 'application/json' };
+  const boundary = '-------outmarkstate';
+  const body = `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(metadata)}\r\n` +
+               `--${boundary}\r\nContent-Type: application/json\r\n\r\n${initialContent}\r\n--${boundary}--`;
+  const createRes = await driveApi('/upload/drive/v3/files?uploadType=multipart', {
+    method: 'POST', headers: { 'Content-Type': `multipart/related; boundary=${boundary}` }, body,
+  });
+  const created = await createRes.json();
+  return created.id;
+}
 
-window.onload = () => {
-  if (typeof google === 'undefined' || !google.accounts) {
-    setStep('lib', 'err', 'Gagal memuat library Google. Cek koneksi internet, refresh halaman.');
+async function loadState() {
+  stateFileId = await getOrCreateStateFile();
+  const res = await driveApi(`/drive/v3/files/${stateFileId}?alt=media`);
+  const text = await res.text();
+  const loaded = text ? JSON.parse(text) : {};
+  STATE = Object.assign({ capitalPartners: [], stores: [] }, loaded);
+}
+
+async function saveState() {
+  const body = JSON.stringify(STATE);
+  await driveApi(`/upload/drive/v3/files/${stateFileId}?uploadType=media`, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body,
+  });
+}
+
+/* =========================================================================
+   AUTH
+   ========================================================================= */
+let tokenClient;
+let authReady = false;
+
+function setupTokenClient() {
+  if (typeof google === 'undefined' || !google.accounts) throw new Error('Library Google gagal dimuat.');
+  tokenClient = google.accounts.oauth2.initTokenClient({
+    client_id: CLIENT_ID, scope: SCOPE,
+    callback: (resp) => {
+      if (resp.error) { onLoginError(new Error(resp.error)); return; }
+      accessToken = resp.access_token;
+      onLoggedIn();
+    },
+    error_callback: (err) => onLoginError(new Error(err.message || 'Login dibatalkan/gagal.')),
+  });
+  authReady = true;
+}
+
+function login() {
+  if (!authReady) { onLoginError(new Error('Google Sign-In belum siap, coba refresh halaman.')); return; }
+  tokenClient.requestAccessToken();
+}
+
+function onLoginError(e) {
+  const s = document.getElementById('gateStatus');
+  if (s) { s.className = 'status-box show err'; s.textContent = 'Gagal: ' + e.message; }
+  const btn = document.getElementById('btnGateLogin');
+  if (btn) { btn.disabled = false; btn.textContent = 'Login dengan Google'; }
+}
+
+/* =========================================================================
+   RENDER: GATE (belum login)
+   ========================================================================= */
+function renderGate() {
+  document.getElementById('tabs').style.display = 'none';
+  document.getElementById('app').innerHTML = `
+    <div class="gate">
+      <div class="wordmark">Outmark <span style="color:var(--accent)">OS</span></div>
+      <p>Masuk dengan akun Google untuk mulai. Data kamu tersimpan di Google Drive kamu sendiri.</p>
+      <button id="btnGateLogin">Login dengan Google</button>
+      <div class="status-box" id="gateStatus"></div>
+    </div>
+  `;
+  document.getElementById('btnGateLogin').addEventListener('click', () => {
+    const btn = document.getElementById('btnGateLogin');
+    btn.disabled = true; btn.textContent = 'Menunggu login...';
+    login();
+  });
+}
+
+async function onLoggedIn() {
+  document.getElementById('authStatus').innerHTML = `<div class="email">● Tersambung ke Google Drive</div><button id="btnLogout">Keluar</button>`;
+  document.getElementById('app').innerHTML = `<div class="loading-wrap">Memuat data dari Google Drive...</div>`;
+  try {
+    await loadState();
+    document.getElementById('tabs').style.display = 'flex';
+    switchTab('master');
+  } catch (e) {
+    document.getElementById('app').innerHTML = `<div class="panel"><div class="status-box show err">Gagal memuat data: ${e.message}</div></div>`;
+  }
+  document.getElementById('btnLogout').addEventListener('click', () => { location.reload(); });
+}
+
+/* =========================================================================
+   TAB: DATA MASTER
+   ========================================================================= */
+function renderMaster(container) {
+  container.innerHTML = `
+    <div class="panel">
+      <h2>Capital Partner</h2>
+      <div class="desc">Daftar investor. Kode 2 huruf didaftarkan sekali di sini, dicek otomatis supaya tidak tabrakan dengan yang sudah dipakai.</div>
+      <form id="formPartner">
+        <div class="grid2">
+          <div class="field"><label>Nama Lengkap</label><input type="text" id="p_nama" required placeholder="mis. IDA SADIDAH"></div>
+          <div class="field"><label>Kode 2 Huruf</label><input type="text" id="p_kode" required maxlength="2" placeholder="mis. ID" style="text-transform:uppercase;"></div>
+        </div>
+        <div class="grid2">
+          <div class="field"><label>Kontak (WA/Telpon)</label><input type="text" id="p_kontak" placeholder="mis. 0812xxxxxxx"></div>
+          <div class="field"><label>Tanggal Bergabung</label><input type="date" id="p_tanggal"></div>
+        </div>
+        <button type="submit" class="btn btn-primary">+ Tambah Capital Partner</button>
+        <div class="status-box" id="partnerMsg"></div>
+      </form>
+    </div>
+
+    <div class="panel">
+      <h2>Daftar Capital Partner</h2>
+      <div id="partnerList"></div>
+    </div>
+
+    <div class="panel">
+      <h2>Setup Toko</h2>
+      <div class="desc">Identitas tiap toko (bisa lebih dari 1 toko per platform, mis. 2 toko Shopee).</div>
+      <form id="formStore">
+        <div class="grid2">
+          <div class="field"><label>Nama Toko</label><input type="text" id="s_nama" required placeholder='mis. "Shopee - Toko Utama"'></div>
+          <div class="field"><label>Platform</label>
+            <select id="s_platform" required>
+              <option value="">Pilih platform</option>
+              <option value="Shopee">Shopee</option>
+              <option value="TikTok">TikTok</option>
+              <option value="Tokopedia">Tokopedia</option>
+              <option value="Lazada">Lazada</option>
+              <option value="Lainnya">Lainnya</option>
+            </select>
+          </div>
+        </div>
+        <button type="submit" class="btn btn-primary">+ Tambah Toko</button>
+        <div class="status-box" id="storeMsg"></div>
+      </form>
+    </div>
+
+    <div class="panel">
+      <h2>Daftar Toko</h2>
+      <div id="storeList"></div>
+    </div>
+  `;
+
+  renderPartnerList(document.getElementById('partnerList'));
+  renderStoreList(document.getElementById('storeList'));
+
+  document.getElementById('formPartner').addEventListener('submit', async (ev) => {
+    ev.preventDefault();
+    const msg = document.getElementById('partnerMsg');
+    const nama = document.getElementById('p_nama').value.trim().toUpperCase();
+    const kode2 = document.getElementById('p_kode').value.trim().toUpperCase();
+    const kontak = document.getElementById('p_kontak').value.trim();
+    const tanggalBergabung = document.getElementById('p_tanggal').value || null;
+
+    if (kode2.length !== 2) { showMsg(msg, 'err', 'Kode harus persis 2 huruf.'); return; }
+    if (STATE.capitalPartners.some(p => p.kode2 === kode2)) {
+      showMsg(msg, 'err', `Kode "${kode2}" sudah dipakai oleh ${STATE.capitalPartners.find(p=>p.kode2===kode2).nama} -- pakai kode lain.`);
+      return;
+    }
+    STATE.capitalPartners.push({ id: uid('cp'), nama, kode2, kontak, tanggalBergabung, status: 'Aktif' });
+    await withSaving(msg, 'Capital Partner ditambahkan.', async () => {
+      await saveState();
+      document.getElementById('formPartner').reset();
+      renderPartnerList(document.getElementById('partnerList'));
+    });
+  });
+
+  document.getElementById('formStore').addEventListener('submit', async (ev) => {
+    ev.preventDefault();
+    const msg = document.getElementById('storeMsg');
+    const nama = document.getElementById('s_nama').value.trim();
+    const platform = document.getElementById('s_platform').value;
+    if (STATE.stores.some(s => s.nama.toLowerCase() === nama.toLowerCase())) {
+      showMsg(msg, 'err', 'Nama toko ini sudah ada.'); return;
+    }
+    STATE.stores.push({ id: uid('st'), nama, platform, status: 'Aktif' });
+    await withSaving(msg, 'Toko ditambahkan.', async () => {
+      await saveState();
+      document.getElementById('formStore').reset();
+      renderStoreList(document.getElementById('storeList'));
+    });
+  });
+}
+
+function showMsg(el, type, text) { el.className = 'status-box show ' + type; el.textContent = text; }
+
+async function withSaving(msgEl, successText, fn) {
+  showMsg(msgEl, 'info', 'Menyimpan ke Google Drive...');
+  try {
+    await fn();
+    showMsg(msgEl, 'ok', successText);
+  } catch (e) {
+    showMsg(msgEl, 'err', 'Gagal simpan: ' + e.message);
+  }
+}
+
+function renderPartnerList(el) {
+  if (!STATE.capitalPartners.length) { el.innerHTML = '<div class="empty-note">Belum ada Capital Partner terdaftar.</div>'; return; }
+  el.innerHTML = `
+    <table class="data">
+      <thead><tr><th>Kode</th><th>Nama</th><th>Kontak</th><th>Bergabung</th><th>Status</th><th></th></tr></thead>
+      <tbody>
+        ${STATE.capitalPartners.map(p => `<tr>
+          <td><b>${p.kode2}</b></td><td>${p.nama}</td><td>${p.kontak || '-'}</td>
+          <td>${p.tanggalBergabung ? new Date(p.tanggalBergabung).toLocaleDateString('id-ID') : '-'}</td>
+          <td><span class="pill ${p.status==='Aktif'?'ok':'off'}">${p.status}</span></td>
+          <td><button class="icon-del" data-del-partner="${p.id}" title="Hapus">✕</button></td>
+        </tr>`).join('')}
+      </tbody>
+    </table>
+  `;
+  el.querySelectorAll('[data-del-partner]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      if (!confirm('Hapus Capital Partner ini? (Hanya hapus dari daftar master, tidak menghapus kontrak yang sudah ada)')) return;
+      STATE.capitalPartners = STATE.capitalPartners.filter(p => p.id !== btn.dataset.delPartner);
+      await saveState();
+      renderPartnerList(el);
+    });
+  });
+}
+
+function renderStoreList(el) {
+  if (!STATE.stores.length) { el.innerHTML = '<div class="empty-note">Belum ada toko terdaftar.</div>'; return; }
+  el.innerHTML = `
+    <table class="data">
+      <thead><tr><th>Nama Toko</th><th>Platform</th><th>Status</th><th></th></tr></thead>
+      <tbody>
+        ${STATE.stores.map(s => `<tr>
+          <td>${s.nama}</td><td>${s.platform}</td>
+          <td><span class="pill ${s.status==='Aktif'?'ok':'off'}">${s.status}</span></td>
+          <td><button class="icon-del" data-del-store="${s.id}" title="Hapus">✕</button></td>
+        </tr>`).join('')}
+      </tbody>
+    </table>
+  `;
+  el.querySelectorAll('[data-del-store]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      if (!confirm('Hapus toko ini dari daftar?')) return;
+      STATE.stores = STATE.stores.filter(s => s.id !== btn.dataset.delStore);
+      await saveState();
+      renderStoreList(el);
+    });
+  });
+}
+
+/* =========================================================================
+   NAV
+   ========================================================================= */
+const renderers = { master: renderMaster };
+function switchTab(tab) {
+  document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
+  renderers[tab](document.getElementById('app'));
+}
+document.getElementById('tabs').addEventListener('click', (e) => {
+  if (e.target.tagName === 'BUTTON' && !e.target.disabled) switchTab(e.target.dataset.tab);
+});
+
+/* =========================================================================
+   INIT
+   ========================================================================= */
+window.onload = function init() {
+  try {
+    setupTokenClient();
+  } catch (e) {
+    document.getElementById('app').innerHTML = `<div class="panel"><div class="status-box show err">Gagal memuat Google Sign-In: ${e.message}</div></div>`;
     return;
   }
-  setStep('lib', 'ok', 'Berhasil dimuat.');
-  tokenClient = google.accounts.oauth2.initTokenClient({
-    client_id: CLIENT_ID,
-    scope: SCOPE,
-    callback: onLoginSuccess,
-    error_callback: (err) => {
-      setStep('login', 'err', 'Login gagal: ' + (err.message || JSON.stringify(err)));
-      btn.disabled = false; btn.textContent = 'Coba Lagi';
-    },
-  });
-  btn.disabled = false;
-  btn.textContent = 'Login dengan Google';
-  btn.onclick = () => {
-    btn.disabled = true; btn.textContent = 'Menunggu login...';
-    tokenClient.requestAccessToken();
-  };
+  renderGate();
 };
-
-async function onLoginSuccess(resp) {
-  accessToken = resp.access_token;
-  setStep('login', 'ok', 'Login berhasil, izin akses Drive diberikan.');
-  btn.textContent = 'Login Berhasil ✓';
-  await runDriveTest();
-}
-
-async function runDriveTest() {
-  setStep('write', 'pending', 'Menulis...');
-  try {
-    const testContent = JSON.stringify({ test: true, waktu: new Date().toISOString(), pesan: 'Tes koneksi Outmark OS berhasil.' });
-    const metadata = { name: 'outmark-os-test.json', mimeType: 'application/json' };
-    const boundary = '-------outmarkboundary';
-    const body =
-      `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(metadata)}\r\n` +
-      `--${boundary}\r\nContent-Type: application/json\r\n\r\n${testContent}\r\n--${boundary}--`;
-
-    const createRes = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart', {
-      method: 'POST',
-      headers: { Authorization: 'Bearer ' + accessToken, 'Content-Type': `multipart/related; boundary=${boundary}` },
-      body,
-    });
-    if (!createRes.ok) throw new Error(`HTTP ${createRes.status}: ${await createRes.text()}`);
-    const created = await createRes.json();
-    setStep('write', 'ok', `File dibuat, ID: ${created.id}`);
-
-    setStep('read', 'pending', 'Membaca...');
-    const readRes = await fetch(`https://www.googleapis.com/drive/v3/files/${created.id}?alt=media`, {
-      headers: { Authorization: 'Bearer ' + accessToken },
-    });
-    if (!readRes.ok) throw new Error(`HTTP ${readRes.status}: ${await readRes.text()}`);
-    const readBack = await readRes.json();
-    setStep('read', 'ok', 'Berhasil dibaca kembali, isinya cocok.');
-
-    const box = document.getElementById('resultBox');
-    box.className = 'result-box show success';
-    box.innerHTML = `<b>✓ SEMUA TES BERHASIL</b><br><br>Login, tulis, dan baca dari Google Drive semua jalan lancar.<br><br>Isi file tes: <code>${JSON.stringify(readBack)}</code>`;
-  } catch (e) {
-    const failedStep = document.querySelector('.step.pending');
-    if (failedStep) { failedStep.className = 'step err'; failedStep.querySelector('.step-detail').textContent = 'Gagal: ' + e.message; }
-    const box = document.getElementById('resultBox');
-    box.className = 'result-box show';
-    box.innerHTML = `<b>✕ ADA YANG GAGAL</b><br><br>${e.message}`;
-  }
-}
 </script>
 </body>
 </html>
