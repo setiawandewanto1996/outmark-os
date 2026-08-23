@@ -653,20 +653,32 @@ function renderKontrak(container) {
 
     <div class="panel">
       <h2>Kontrak Aktif (DANA BELUM CAIR) <span class="pill">${activeContracts.length}</span></h2>
+      <div class="desc">Modal, Terjual, dan Profit dihitung otomatis dari Stock Awal/Akhir &times; Harga/Nilai Margin.</div>
       ${!activeContracts.length ? '<div class="empty-note">Belum ada kontrak aktif.</div>' : `
+      <div style="overflow-x:auto;">
       <table class="data">
-        <thead><tr><th>Produk</th><th>Kode Kontrak</th><th>Capital Partner</th><th>Tgl Masuk</th><th class="num">Stock Akhir</th><th class="num">Nilai Margin</th></tr></thead>
+        <thead><tr>
+          <th>Produk</th><th>Kode Kontrak</th><th>Capital Partner</th><th>Tgl Masuk</th>
+          <th class="num">Harga/Pcs</th><th class="num">Modal Awal</th><th class="num">Terjual</th>
+          <th class="num">Sisa Stock</th><th class="num">Nilai Margin</th><th class="num">Profit Berjalan</th>
+        </tr></thead>
         <tbody>
           ${activeContracts.map(c => {
             const partner = findPartnerById(c.capitalPartnerId);
+            const modalAwal = (c.stockAwal||0) * (c.hargaModalPcs||0);
+            const terjual = (c.stockAwal||0) - (c.stockAkhir||0);
+            const profitBerjalan = terjual * (c.nilaiMargin||0);
             return `<tr>
               <td>${c.produk}</td><td>${c.kodeKontrak}</td><td>${partner ? partner.nama : '(tidak ditemukan)'}</td>
               <td>${c.tanggalMasuk ? new Date(c.tanggalMasuk).toLocaleDateString('id-ID') : '-'}</td>
-              <td class="num">${c.stockAkhir}</td><td class="num">${fmtRp(c.nilaiMargin)}</td>
+              <td class="num">${fmtRp(c.hargaModalPcs)}</td><td class="num">${fmtRp(modalAwal)}</td>
+              <td class="num">${terjual}</td><td class="num">${c.stockAkhir}</td>
+              <td class="num">${fmtRp(c.nilaiMargin)}</td><td class="num">${fmtRp(profitBerjalan)}</td>
             </tr>`;
           }).join('')}
         </tbody>
-      </table>`}
+      </table>
+      </div>`}
     </div>
 
     <div class="panel">
