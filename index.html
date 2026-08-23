@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Outmark OS</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://accounts.google.com/gsi/client" async defer></script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
@@ -219,6 +220,16 @@ async function onLoggedIn() {
 function renderMaster(container) {
   container.innerHTML = `
     <div class="panel">
+      <h2>Muat dari File UJUSO <span class="pill">opsional</span></h2>
+      <div class="desc">Isi otomatis Capital Partner (dari SYIRKAH WAKALAH) dan Toko (dari kolom SUMBER di PENJUALAN) supaya tidak perlu ketik manual satu-satu. Yang sudah ada tidak akan ditimpa/dobel.</div>
+      <input type="file" id="fileMigrate" accept=".xlsx" style="display:none">
+      <button class="btn btn-ghost" id="btnPickFile">Pilih File UJUSO</button>
+      <span id="fileMigrateLabel" style="font-size:12px; color:var(--ink-soft); margin-left:8px;">Belum ada file dipilih</span>
+      <br><button class="btn btn-primary" id="btnMigrate" style="margin-top:10px;" disabled>Proses Migrasi</button>
+      <div class="status-box" id="migrateMsg"></div>
+    </div>
+
+    <div class="panel">
       <h2>Capital Partner</h2>
       <div class="desc">Daftar investor. Kode 2 huruf didaftarkan sekali di sini, dicek otomatis supaya tidak tabrakan dengan yang sudah dipakai.</div>
       <form id="formPartner">
@@ -270,6 +281,85 @@ function renderMaster(container) {
 
   renderPartnerList(document.getElementById('partnerList'));
   renderStoreList(document.getElementById('storeList'));
+
+  document.getElementById('btnPickFile').addEventListener('click', () => document.getElementById('fileMigrate').click());
+  let pendingMigrateFile = null;
+  document.getElementById('fileMigrate').addEventListener('change', (e) => {
+    if (e.target.files[0]) {
+      pendingMigrateFile = e.target.files[0];
+      document.getElementById('fileMigrateLabel').textContent = pendingMigrateFile.name;
+      document.getElementById('btnMigrate').disabled = false;
+    }
+  });
+  document.getElementById('btnMigrate').addEventListener('click', async () => {
+    const msg = document.getElementById('migrateMsg');
+    if (!pendingMigrateFile) return;
+    showMsg(msg, 'info', 'Membaca file...');
+    try {
+      const buf = await pendingMigrateFile.arrayBuffer();
+      const wb = XLSX.read(buf, { type: 'array' });
+      const XU = XLSX.utils;
+
+      let nPartnerAdded = 0, nStoreAdded = 0;
+
+      // ---- Capital Partner dari SYIRKAH WAKALAH ----
+      const wsSW = wb.Sheets['SYIRKAH WAKALAH'];
+      if (wsSW) {
+        const rows = XU.sheet_to_json(wsSW, { header: 1 });
+        const header = rows[0];
+        const iNama = header.indexOf('NAMA INVESTOR');
+        const iKode = header.indexOf('KODE INVESTOR');
+        const pairs = {}; // kode2 -> nama
+        for (let r = 1; r < rows.length; r++) {
+          const row = rows[r];
+          if (row && row[iKode] && row[iNama]) {
+            const kode2 = String(row[iKode]).slice(0, 2).toUpperCase();
+            if (!pairs[kode2]) pairs[kode2] = String(row[iNama]).toUpperCase();
+          }
+        }
+        Object.entries(pairs).forEach(([kode2, nama]) => {
+          if (!STATE.capitalPartners.some(p => p.kode2 === kode2)) {
+            STATE.capitalPartners.push({ id: uid('cp'), nama, kode2, kontak: '', tanggalBergabung: null, status: 'Aktif' });
+            nPartnerAdded++;
+          }
+        });
+      }
+
+      // ---- Toko dari kolom SUMBER di PENJUALAN ----
+      const wsPJ = wb.Sheets['PENJUALAN'];
+      if (wsPJ) {
+        const rows = XU.sheet_to_json(wsPJ, { header: 1 });
+        const header = rows[0];
+        const iSumber = header.indexOf('SUMBER');
+        const sumberSet = new Set();
+        for (let r = 1; r < rows.length; r++) {
+          const row = rows[r];
+          if (row && row[iSumber]) sumberSet.add(String(row[iSumber]).trim());
+        }
+        const platformGuess = (s) => {
+          const up = s.toUpperCase();
+          if (up.includes('SHOPEE')) return 'Shopee';
+          if (up.includes('TIKTOK')) return 'TikTok';
+          if (up.includes('TOKPED') || up.includes('TOKOPEDIA')) return 'Tokopedia';
+          if (up.includes('LAZADA')) return 'Lazada';
+          return 'Lainnya';
+        };
+        sumberSet.forEach(nama => {
+          if (!STATE.stores.some(s => s.nama.toUpperCase() === nama.toUpperCase())) {
+            STATE.stores.push({ id: uid('st'), nama, platform: platformGuess(nama), status: 'Aktif' });
+            nStoreAdded++;
+          }
+        });
+      }
+
+      await saveState();
+      showMsg(msg, 'ok', `Selesai: ${nPartnerAdded} Capital Partner baru, ${nStoreAdded} toko baru ditambahkan.`);
+      renderPartnerList(document.getElementById('partnerList'));
+      renderStoreList(document.getElementById('storeList'));
+    } catch (e) {
+      showMsg(msg, 'err', 'Gagal migrasi: ' + e.message);
+    }
+  });
 
   document.getElementById('formPartner').addEventListener('submit', async (ev) => {
     ev.preventDefault();
