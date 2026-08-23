@@ -542,10 +542,18 @@ async function saveState() {
   if (!uploadUrl) throw new Error('Gagal memulai resumable upload (tidak dapat URL sesi dari Drive).');
   const putRes = await fetch(uploadUrl, {
     method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + accessToken },
     body,
   });
   if (!putRes.ok) throw new Error(`Gagal upload data (HTTP ${putRes.status}): ${await putRes.text()}`);
+
+  // VERIFIKASI: baca ulang ukuran file dari Drive, pastikan benar-benar tersimpan (bukan cuma HTTP 200 palsu/parsial)
+  const verifyRes = await driveApi(`/drive/v3/files/${stateFileId}?fields=size`);
+  const verifyMeta = await verifyRes.json();
+  const savedSize = Number(verifyMeta.size) || 0;
+  if (Math.abs(savedSize - body.length) > 100) { // toleransi kecil utk encoding, dsb
+    throw new Error(`Verifikasi gagal: ukuran di Drive (${savedSize} byte) tidak cocok dgn yg baru dikirim (${body.length} byte). Data mungkin TIDAK tersimpan dgn benar -- coba lagi, jangan tutup halaman dulu.`);
+  }
 }
 
 /* =========================================================================
