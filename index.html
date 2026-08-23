@@ -1,8 +1,167 @@
 <!DOCTYPE html>
-<html>
-<head><title>Outmark OS</title></head>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Outmark OS — Tes Koneksi</title>
+<script src="https://accounts.google.com/gsi/client" async defer></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --ink: #16181D; --paper: #F5F4F0; --line: #D8D6CE;
+    --ok: #2E6B4F; --err: #A83A2E; --accent: #3457D5;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh; background: var(--paper); color: var(--ink);
+    font-family: 'IBM Plex Mono', monospace; display: flex; align-items: center; justify-content: center; padding: 24px;
+  }
+  .card { max-width: 520px; width: 100%; }
+  h1 {
+    font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 28px; margin: 0 0 4px;
+    letter-spacing: -0.5px;
+  }
+  .sub { font-size: 12px; letter-spacing: 1px; text-transform: uppercase; color: #6B6A63; margin-bottom: 28px; }
+  .step {
+    border: 1px solid var(--line); border-radius: 2px; padding: 16px 18px; margin-bottom: 10px;
+    background: #fff; display: flex; align-items: flex-start; gap: 12px;
+  }
+  .step-icon {
+    width: 20px; height: 20px; flex-shrink: 0; border-radius: 50%; border: 1.5px solid var(--line);
+    display: flex; align-items: center; justify-content: center; font-size: 12px; margin-top: 1px;
+  }
+  .step.pending .step-icon { color: #6B6A63; }
+  .step.ok .step-icon { background: var(--ok); border-color: var(--ok); color: #fff; }
+  .step.err .step-icon { background: var(--err); border-color: var(--err); color: #fff; }
+  .step-body { flex: 1; }
+  .step-title { font-family: 'Space Grotesk', sans-serif; font-weight: 500; font-size: 14px; margin-bottom: 3px; }
+  .step-detail { font-size: 12px; color: #6B6A63; line-height: 1.5; word-break: break-word; }
+  .step.err .step-detail { color: var(--err); }
+  .step.ok .step-detail { color: var(--ok); }
+  button {
+    font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 14px;
+    background: var(--ink); color: var(--paper); border: none; border-radius: 2px;
+    padding: 12px 22px; cursor: pointer; margin-top: 18px; width: 100%;
+  }
+  button:disabled { opacity: 0.4; cursor: default; }
+  button:hover:not(:disabled) { background: var(--accent); }
+  .result-box {
+    margin-top: 20px; padding: 14px; background: #fff; border: 1px solid var(--line);
+    font-size: 12px; display: none;
+  }
+  .result-box.show { display: block; }
+  .result-box.success { border-color: var(--ok); background: #F0F7F3; }
+</style>
+</head>
 <body>
+<div class="card">
   <h1>Outmark OS</h1>
-  <p>Setup sedang berjalan...</p>
+  <div class="sub">Tes Koneksi Google Drive</div>
+
+  <div class="step pending" id="step-lib"><div class="step-icon">1</div><div class="step-body">
+    <div class="step-title">Library Google dimuat</div><div class="step-detail" id="detail-lib">Menunggu...</div>
+  </div></div>
+
+  <div class="step pending" id="step-login"><div class="step-icon">2</div><div class="step-body">
+    <div class="step-title">Login &amp; izin akses Drive</div><div class="step-detail" id="detail-login">Klik tombol di bawah</div>
+  </div></div>
+
+  <div class="step pending" id="step-write"><div class="step-icon">3</div><div class="step-body">
+    <div class="step-title">Tulis file percobaan ke Drive</div><div class="step-detail" id="detail-write">Menunggu login</div>
+  </div></div>
+
+  <div class="step pending" id="step-read"><div class="step-icon">4</div><div class="step-body">
+    <div class="step-title">Baca kembali file itu</div><div class="step-detail" id="detail-read">Menunggu</div>
+  </div></div>
+
+  <button id="btnLogin" disabled>Memuat...</button>
+
+  <div class="result-box" id="resultBox"></div>
+</div>
+
+<script>
+const CLIENT_ID = '534061439425-cl0savvhsflp1ub4tgcnf8uih4b2iqso.apps.googleusercontent.com';
+const SCOPE = 'https://www.googleapis.com/auth/drive.file';
+
+function setStep(id, state, detail) {
+  const el = document.getElementById('step-' + id);
+  el.className = 'step ' + state;
+  el.querySelector('.step-icon').textContent = state === 'ok' ? '✓' : state === 'err' ? '✕' : el.querySelector('.step-icon').textContent;
+  document.getElementById('detail-' + id).textContent = detail;
+}
+
+let tokenClient, accessToken;
+const btn = document.getElementById('btnLogin');
+
+window.onload = () => {
+  if (typeof google === 'undefined' || !google.accounts) {
+    setStep('lib', 'err', 'Gagal memuat library Google. Cek koneksi internet, refresh halaman.');
+    return;
+  }
+  setStep('lib', 'ok', 'Berhasil dimuat.');
+  tokenClient = google.accounts.oauth2.initTokenClient({
+    client_id: CLIENT_ID,
+    scope: SCOPE,
+    callback: onLoginSuccess,
+    error_callback: (err) => {
+      setStep('login', 'err', 'Login gagal: ' + (err.message || JSON.stringify(err)));
+      btn.disabled = false; btn.textContent = 'Coba Lagi';
+    },
+  });
+  btn.disabled = false;
+  btn.textContent = 'Login dengan Google';
+  btn.onclick = () => {
+    btn.disabled = true; btn.textContent = 'Menunggu login...';
+    tokenClient.requestAccessToken();
+  };
+};
+
+async function onLoginSuccess(resp) {
+  accessToken = resp.access_token;
+  setStep('login', 'ok', 'Login berhasil, izin akses Drive diberikan.');
+  btn.textContent = 'Login Berhasil ✓';
+  await runDriveTest();
+}
+
+async function runDriveTest() {
+  setStep('write', 'pending', 'Menulis...');
+  try {
+    const testContent = JSON.stringify({ test: true, waktu: new Date().toISOString(), pesan: 'Tes koneksi Outmark OS berhasil.' });
+    const metadata = { name: 'outmark-os-test.json', mimeType: 'application/json' };
+    const boundary = '-------outmarkboundary';
+    const body =
+      `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(metadata)}\r\n` +
+      `--${boundary}\r\nContent-Type: application/json\r\n\r\n${testContent}\r\n--${boundary}--`;
+
+    const createRes = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer ' + accessToken, 'Content-Type': `multipart/related; boundary=${boundary}` },
+      body,
+    });
+    if (!createRes.ok) throw new Error(`HTTP ${createRes.status}: ${await createRes.text()}`);
+    const created = await createRes.json();
+    setStep('write', 'ok', `File dibuat, ID: ${created.id}`);
+
+    setStep('read', 'pending', 'Membaca...');
+    const readRes = await fetch(`https://www.googleapis.com/drive/v3/files/${created.id}?alt=media`, {
+      headers: { Authorization: 'Bearer ' + accessToken },
+    });
+    if (!readRes.ok) throw new Error(`HTTP ${readRes.status}: ${await readRes.text()}`);
+    const readBack = await readRes.json();
+    setStep('read', 'ok', 'Berhasil dibaca kembali, isinya cocok.');
+
+    const box = document.getElementById('resultBox');
+    box.className = 'result-box show success';
+    box.innerHTML = `<b>✓ SEMUA TES BERHASIL</b><br><br>Login, tulis, dan baca dari Google Drive semua jalan lancar.<br><br>Isi file tes: <code>${JSON.stringify(readBack)}</code>`;
+  } catch (e) {
+    const failedStep = document.querySelector('.step.pending');
+    if (failedStep) { failedStep.className = 'step err'; failedStep.querySelector('.step-detail').textContent = 'Gagal: ' + e.message; }
+    const box = document.getElementById('resultBox');
+    box.className = 'result-box show';
+    box.innerHTML = `<b>✕ ADA YANG GAGAL</b><br><br>${e.message}`;
+  }
+}
+</script>
 </body>
 </html>
