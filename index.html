@@ -633,20 +633,78 @@ function renderStoreList(el) {
 /* =========================================================================
    TAB: PRODUK & KONTRAK (versi awal -- lihat hasil migrasi, CRUD lengkap menyusul)
    ========================================================================= */
+let expandedProduk = null;
+
+function renderProdukDetailHtml(p) {
+  return `
+    <div style="background:#F4EFE2; border:1px solid var(--line); border-radius:3px; padding:14px; margin:4px 0;">
+      <div style="font-weight:600; margin-bottom:10px;">Kelola Harga -- ${p.nama}</div>
+      <div class="grid2">
+        ${SIZES.map(s => {
+          const cur = getCurrentHarga(p.nama, s);
+          const hist = (p.hargaKonveksi && p.hargaKonveksi[s]) || [];
+          return `
+            <div class="field" style="margin-bottom:10px;">
+              <label>${s} ${hist.length > 1 ? `<span class="pill" data-hist-toggle="${p.nama}_${s}" style="cursor:pointer;">${hist.length}x</span>` : ''}</label>
+              <input type="number" class="update-harga-size-input" data-size="${s}" value="${cur != null ? cur : ''}" placeholder="belum ada">
+              <div id="hist_${p.nama}_${s}" style="display:none; font-size:11px; color:var(--ink-soft); margin-top:4px;">
+                ${hist.slice().reverse().map(h => `${fmtRp(h.harga)} &middot; ${h.tanggal ? new Date(h.tanggal).toLocaleDateString('id-ID') : 'migrasi'} (${h.sumber})`).join('<br>')}
+              </div>
+            </div>
+          `;
+        }).join('')}
+      </div>
+      <button class="btn btn-primary" id="btnUpdateHargaProduk" data-produk="${p.nama}">Update Harga</button>
+      <button class="btn btn-ghost" id="btnTutupDetailProduk" style="margin-left:6px;">Tutup</button>
+      <div class="status-box" id="updateHargaProdukMsg" style="margin-top:10px;"></div>
+    </div>
+  `;
+}
+
+function renderColorCodeList(el) {
+  const entries = Object.entries(STATE.colorCodeMap).sort((a,b) => a[0].localeCompare(b[0]));
+  if (!entries.length) { el.innerHTML = '<div class="empty-note" style="grid-column:1/-1;">Belum ada kode warna.</div>'; return; }
+  el.innerHTML = entries.map(([kode,nama]) => `<div class="pill" style="text-align:left; padding:6px 10px;">${kode} &rarr; ${nama}</div>`).join('');
+}
+
 function renderKontrak(container) {
   const activeContracts = STATE.contracts.filter(c => c.status === 'DANA BELUM CAIR')
     .sort((a,b) => (a.produk||'').localeCompare(b.produk||'') || new Date(a.tanggalMasuk) - new Date(b.tanggalMasuk));
 
   container.innerHTML = `
     <div class="panel">
+      <h2>Tambah Produk Baru</h2>
+      <div class="desc">Wajib diisi untuk produk yang belum pernah ada di histori. Prefix SKU 3 huruf sesuai listing e-commerce.</div>
+      <form id="formProduk">
+        <div class="grid2">
+          <div class="field"><label>Nama Produk</label><input type="text" id="pr_nama" required placeholder="mis. RAVENVOL2" style="text-transform:uppercase;"></div>
+          <div class="field"><label>Brand</label>
+            <input type="text" id="pr_brand" list="brandListDatalist" required placeholder="URBAN OUTDOOR = capital partner">
+            <datalist id="brandListDatalist">${[...new Set(STATE.products.map(p=>p.brand))].map(b=>`<option value="${b}">`).join('')}</datalist>
+          </div>
+        </div>
+        <div class="field"><label>Prefix SKU (3 huruf)</label><input type="text" id="pr_prefix" required maxlength="3" placeholder="mis. RV2" style="text-transform:uppercase;"></div>
+        <div class="desc" style="margin-top:10px; margin-bottom:6px;">Harga konveksi per size (Rp) -- isi yg tersedia saja:</div>
+        <div class="grid2">${SIZES.map(s => `<div class="field"><label>${s}</label><input type="number" class="pr-harga-size" data-size="${s}" min="0" placeholder="Rp"></div>`).join('')}</div>
+        <button type="submit" class="btn btn-primary">+ Tambah Produk</button>
+        <div class="status-box" id="produkMsg"></div>
+      </form>
+    </div>
+
+    <div class="panel">
       <h2>Produk Terdaftar <span class="pill">${STATE.products.length}</span></h2>
-      ${!STATE.products.length ? '<div class="empty-note">Belum ada produk. Migrasi dari file UJUSO di tab Data Master.</div>' : `
+      <div class="desc">Klik nama produk untuk lihat &amp; update harga per size.</div>
+      ${!STATE.products.length ? '<div class="empty-note">Belum ada produk. Migrasi dari file UJUSO di tab Data Master, atau tambah manual di atas.</div>' : `
       <table class="data">
         <thead><tr><th>Nama Produk</th><th>Brand</th><th>Prefix</th><th class="num">Size dgn Harga</th></tr></thead>
         <tbody>
           ${STATE.products.map(p => {
             const nSize = SIZES.filter(s => p.hargaKonveksi && p.hargaKonveksi[s] && p.hargaKonveksi[s].length).length;
-            return `<tr><td>${p.nama}</td><td>${p.brand||'-'}</td><td>${p.prefix}</td><td class="num">${nSize}/${SIZES.length}</td></tr>`;
+            return `<tr>
+              <td><span class="produk-link" data-produk="${p.nama}" style="color:var(--accent); text-decoration:underline; cursor:pointer;">${p.nama}</span></td>
+              <td>${p.brand||'-'}</td><td>${p.prefix}</td><td class="num">${nSize}/${SIZES.length}</td>
+            </tr>
+            ${expandedProduk === p.nama ? `<tr><td colspan="4">${renderProdukDetailHtml(p)}</td></tr>` : ''}`;
           }).join('')}
         </tbody>
       </table>`}
@@ -661,7 +719,7 @@ function renderKontrak(container) {
         <thead><tr>
           <th>Produk</th><th>Kode</th><th>Capital Partner</th><th>Masuk</th>
           <th class="num">Harga/Pcs</th><th class="num">Stock Awal</th><th class="num">Modal Awal</th>
-          <th class="num">Terjual</th><th class="num">Sisa</th><th class="num">Margin</th><th class="num">Profit Berjalan</th>
+          <th class="num">Terjual</th><th class="num">Sisa</th><th class="num">Margin</th><th class="num">Profit Berjalan</th><th></th>
         </tr></thead>
         <tbody>
           ${activeContracts.map(c => {
@@ -675,6 +733,7 @@ function renderKontrak(container) {
               <td class="num">${fmtRpCompact(c.hargaModalPcs)}</td><td class="num">${c.stockAwal}</td><td class="num">${fmtRpCompact(modalAwal)}</td>
               <td class="num">${terjual}</td><td class="num">${c.stockAkhir}</td>
               <td class="num">${fmtRpCompact(c.nilaiMargin)}</td><td class="num">${fmtRpCompact(profitBerjalan)}</td>
+              <td><button class="btn btn-ghost" data-close-kontrak="${c.id}" style="padding:4px 8px; font-size:11px;">Tutup</button></td>
             </tr>`;
           }).join('')}
         </tbody>
@@ -695,9 +754,136 @@ function renderKontrak(container) {
     </div>
 
     <div class="panel">
-      <div class="desc">Form tambah/tutup kontrak manual, edit harga per size, dan kode warna menyusul di update berikutnya.</div>
+      <h2>Tambah Kontrak Baru</h2>
+      <div class="desc">Investor baru masuk, atau putaran baru untuk investor lama.</div>
+      <form id="formKontrak">
+        <div class="grid2">
+          <div class="field"><label>Produk</label>
+            <select id="k_produk" required><option value="">Pilih produk</option>${STATE.products.map(p=>`<option value="${p.nama}">${p.nama}</option>`).join('')}</select>
+          </div>
+          <div class="field"><label>Capital Partner</label>
+            <select id="k_partner" required><option value="">Pilih partner</option>${STATE.capitalPartners.map(p=>`<option value="${p.id}">${p.kode2} - ${p.nama}</option>`).join('')}</select>
+          </div>
+        </div>
+        <div class="grid2">
+          <div class="field"><label>Kode Kontrak</label><input type="text" id="k_kode" required placeholder="mis. IDO049" style="text-transform:uppercase;"></div>
+          <div class="field"><label>Tanggal Masuk</label><input type="date" id="k_tanggal" required></div>
+        </div>
+        <div class="grid2">
+          <div class="field"><label>Stock Awal (qty)</label><input type="number" id="k_stock" required min="1"></div>
+          <div class="field"><label>Harga Modal/Pcs (Rp)</label><input type="number" id="k_harga" required min="0"></div>
+        </div>
+        <div class="field"><label>Nilai Margin per Unit (Rp)</label><input type="number" id="k_margin" required min="0" value="5000"></div>
+        <button type="submit" class="btn btn-primary">+ Tambah Kontrak</button>
+        <div class="status-box" id="kontrakMsg"></div>
+      </form>
+    </div>
+
+    <div class="panel">
+      <h2>Kode Warna</h2>
+      <div class="desc">Kode 3 huruf posisi ke-4&ndash;6 pada No.SKU (mis. "OSWHTM06" &rarr; kode "HTM").</div>
+      <div class="grid2" id="colorCodeList" style="margin-bottom:10px;"></div>
+      <div class="grid2">
+        <div class="field"><label>Kode Baru (3 huruf)</label><input type="text" id="cw_kode" maxlength="3" placeholder="mis. BLU" style="text-transform:uppercase;"></div>
+        <div class="field"><label>Nama Warna</label><input type="text" id="cw_nama" placeholder="mis. BIRU"></div>
+      </div>
+      <button class="btn btn-ghost" id="btnAddColorCode">+ Tambah Kode Warna</button>
+      <div class="status-box" id="colorCodeMsg"></div>
     </div>
   `;
+
+  // ---- Handlers: Tambah Produk ----
+  document.getElementById('formProduk').addEventListener('submit', async (ev) => {
+    ev.preventDefault();
+    const msg = document.getElementById('produkMsg');
+    const nama = document.getElementById('pr_nama').value.trim().toUpperCase();
+    const brand = document.getElementById('pr_brand').value.trim().toUpperCase();
+    const prefix = document.getElementById('pr_prefix').value.trim().toUpperCase();
+    if (prefix.length !== 3) { showMsg(msg, 'err', 'Prefix harus persis 3 huruf.'); return; }
+    if (STATE.products.some(p => p.prefix === prefix)) { showMsg(msg, 'err', `Prefix "${prefix}" sudah dipakai produk lain.`); return; }
+    if (STATE.products.some(p => p.nama === nama)) { showMsg(msg, 'err', `Produk "${nama}" sudah terdaftar.`); return; }
+    const hargaKonveksi = {};
+    document.querySelectorAll('.pr-harga-size').forEach(inp => {
+      const v = Number(inp.value);
+      if (v > 0) hargaKonveksi[inp.dataset.size] = [{ harga: v, tanggal: new Date().toISOString(), sumber: 'manual' }];
+    });
+    STATE.products.push({ id: uid('pr'), nama, brand, prefix, hargaKonveksi });
+    await withSaving(msg, `Produk "${nama}" ditambahkan.`, async () => { await saveState(); });
+    setTimeout(() => renderKontrak(container), 800);
+  });
+
+  // ---- Handlers: klik nama produk -> expand editor harga ----
+  container.querySelectorAll('.produk-link').forEach(el => {
+    el.addEventListener('click', () => {
+      expandedProduk = expandedProduk === el.dataset.produk ? null : el.dataset.produk;
+      renderKontrak(container);
+    });
+  });
+  const btnTutupDetail = document.getElementById('btnTutupDetailProduk');
+  if (btnTutupDetail) btnTutupDetail.addEventListener('click', () => { expandedProduk = null; renderKontrak(container); });
+  container.querySelectorAll('[data-hist-toggle]').forEach(pill => {
+    pill.addEventListener('click', () => {
+      const el = document.getElementById('hist_' + pill.dataset.histToggle);
+      if (el) el.style.display = el.style.display === 'none' ? 'block' : 'none';
+    });
+  });
+  const btnUpdateHarga = document.getElementById('btnUpdateHargaProduk');
+  if (btnUpdateHarga) {
+    btnUpdateHarga.addEventListener('click', async () => {
+      const namaProduk = btnUpdateHarga.dataset.produk;
+      let nUpdated = 0;
+      document.querySelectorAll('.update-harga-size-input').forEach(inp => {
+        const size = inp.dataset.size;
+        const newVal = Number(inp.value);
+        const cur = getCurrentHarga(namaProduk, size);
+        if (newVal > 0 && newVal !== cur) { addHargaHistory(namaProduk, size, newVal, 'manual'); nUpdated++; }
+      });
+      await saveState();
+      const msg = document.getElementById('updateHargaProdukMsg');
+      showMsg(msg, 'ok', nUpdated > 0 ? `${nUpdated} size diupdate, berlaku hari ini.` : 'Tidak ada perubahan.');
+      setTimeout(() => renderKontrak(container), 900);
+    });
+  }
+
+  // ---- Handlers: Tambah Kontrak ----
+  document.getElementById('formKontrak').addEventListener('submit', async (ev) => {
+    ev.preventDefault();
+    const msg = document.getElementById('kontrakMsg');
+    const produk = document.getElementById('k_produk').value;
+    const capitalPartnerId = document.getElementById('k_partner').value;
+    const kodeKontrak = document.getElementById('k_kode').value.trim().toUpperCase();
+    const tanggalMasuk = new Date(document.getElementById('k_tanggal').value).toISOString();
+    const stockAwal = Number(document.getElementById('k_stock').value);
+    const hargaModalPcs = Number(document.getElementById('k_harga').value);
+    const nilaiMargin = Number(document.getElementById('k_margin').value);
+    if (STATE.contracts.some(c => c.kodeKontrak === kodeKontrak)) { showMsg(msg, 'err', `Kode kontrak "${kodeKontrak}" sudah ada.`); return; }
+    STATE.contracts.push({ id: uid('ct'), produk, capitalPartnerId, kodeKontrak, tanggalMasuk, stockAwal, stockAkhir: stockAwal, hargaModalPcs, nilaiMargin, status: 'DANA BELUM CAIR' });
+    await withSaving(msg, `Kontrak ${kodeKontrak} ditambahkan.`, async () => { await saveState(); });
+    setTimeout(() => renderKontrak(container), 800);
+  });
+
+  // ---- Handlers: Tutup Kontrak ----
+  container.querySelectorAll('[data-close-kontrak]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      if (!confirm('Tutup kontrak ini? Status jadi "DANA SUDAH CAIR", tidak lagi dapat alokasi qty baru.')) return;
+      const c = STATE.contracts.find(x => x.id === btn.dataset.closeKontrak);
+      if (c) { c.status = 'DANA SUDAH CAIR'; c.stockAkhir = 0; }
+      await saveState();
+      renderKontrak(container);
+    });
+  });
+
+  // ---- Handlers: Kode Warna ----
+  renderColorCodeList(document.getElementById('colorCodeList'));
+  document.getElementById('btnAddColorCode').addEventListener('click', async () => {
+    const kode = document.getElementById('cw_kode').value.trim().toUpperCase();
+    const nama = document.getElementById('cw_nama').value.trim().toUpperCase();
+    const msg = document.getElementById('colorCodeMsg');
+    if (kode.length !== 3 || !nama) { showMsg(msg, 'err', 'Kode harus 3 huruf, nama wajib diisi.'); return; }
+    STATE.colorCodeMap[kode] = nama;
+    await withSaving(msg, `Kode ${kode} -> ${nama} tersimpan.`, async () => { await saveState(); });
+    setTimeout(() => renderColorCodeList(document.getElementById('colorCodeList')), 700);
+  });
 
   // ---- Total per Capital Partner (dana aktif dikelola, lintas produk) ----
   const totalByPartner = {};
