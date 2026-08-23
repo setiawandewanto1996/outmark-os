@@ -267,26 +267,26 @@ function allocateLargestRemainder(qtyTotal, pctMap) {
   return floors;
 }
 
-async function processWeeklyBatch(wbSOs, wbSIs, wbTOs, wbTIs) {
-  // ---- Shopee: gabung order_all dari semua toko ----
+async function processWeeklyBatch(storeImports) {
+  // storeImports: [{ store: {id,nama,platform}, orderWb, incomeWb }]
+  const shopeeImports = storeImports.filter(si => si.store.platform === 'Shopee');
+  const tiktokImports = storeImports.filter(si => si.store.platform === 'TikTok' || si.store.platform === 'Tokopedia');
+
+  // ---- Shopee ----
   const shopeeOrderLookup = {};
-  wbSOs.forEach(wb => {
-    const objs = rowsToObjects(sheetToRows(wb.Sheets['orders']), 0, 1);
-    const perFile = {};
+  const shopeeFinance = {};
+  shopeeImports.forEach(si => {
+    const objs = rowsToObjects(sheetToRows(si.orderWb.Sheets['orders']), 0, 1);
     objs.forEach(o => {
       const id = String(o['No. Pesanan']);
-      perFile[id] = perFile[id] || [];
-      perFile[id].push({ sku: o['Nomor Referensi SKU'], qty: Number(o['Jumlah'])||0, warna: parseWarna(o['Nama Variasi']) });
+      shopeeOrderLookup[id] = shopeeOrderLookup[id] || [];
+      shopeeOrderLookup[id].push({ sku: o['Nomor Referensi SKU'], qty: Number(o['Jumlah'])||0, warna: parseWarna(o['Nama Variasi']) });
     });
-    Object.assign(shopeeOrderLookup, perFile);
-  });
-  const shopeeFinance = {};
-  wbSIs.forEach(wb => {
-    const objs = rowsToObjects(sheetToRows(wb.Sheets['Penghasilan']), 2, 3);
-    objs.filter(o => o['Lihat berdasarkan'] === 'Order').forEach(o => {
+    const objsI = rowsToObjects(sheetToRows(si.incomeWb.Sheets['Penghasilan']), 2, 3);
+    objsI.filter(o => o['Lihat berdasarkan'] === 'Order').forEach(o => {
       const id = String(o['No. Pesanan']);
       shopeeFinance[id] = {
-        platform: 'Shopee', pendapatan: Number(o['Harga Produk'])||0,
+        toko: si.store.nama, pendapatan: Number(o['Harga Produk'])||0,
         komisi_platform: sumCategory(o, SHOPEE_CATMAP.komisi_platform), biaya_layanan: sumCategory(o, SHOPEE_CATMAP.biaya_layanan),
         biaya_pembayaran: sumCategory(o, SHOPEE_CATMAP.biaya_pembayaran), komisi_afiliasi: sumCategory(o, SHOPEE_CATMAP.komisi_afiliasi),
         komisi_dinamis: sumCategory(o, SHOPEE_CATMAP.komisi_dinamis), biaya_iklan: sumCategory(o, SHOPEE_CATMAP.biaya_iklan),
@@ -296,25 +296,21 @@ async function processWeeklyBatch(wbSOs, wbSIs, wbTOs, wbTIs) {
     });
   });
 
-  // ---- TikTok/Tokopedia: gabung Semua Pesanan dari semua toko ----
+  // ---- TikTok/Tokopedia ----
   const tiktokOrderLookup = {};
-  wbTOs.forEach(wb => {
-    const objs = rowsToObjects(sheetToRows(wb.Sheets['OrderSKUList']), 0, 2);
-    const perFile = {};
+  const tiktokFinance = {};
+  tiktokImports.forEach(si => {
+    const objs = rowsToObjects(sheetToRows(si.orderWb.Sheets['OrderSKUList']), 0, 2);
     objs.forEach(o => {
       const id = String(o['Order ID']);
-      perFile[id] = perFile[id] || [];
-      perFile[id].push({ sku: o['Seller SKU'], qty: Number(o['Quantity'])||0, warna: parseWarna(o['Variation']) });
+      tiktokOrderLookup[id] = tiktokOrderLookup[id] || [];
+      tiktokOrderLookup[id].push({ sku: o['Seller SKU'], qty: Number(o['Quantity'])||0, warna: parseWarna(o['Variation']) });
     });
-    Object.assign(tiktokOrderLookup, perFile);
-  });
-  const tiktokFinance = {};
-  wbTIs.forEach(wb => {
-    const objs = rowsToObjects(sheetToRows(wb.Sheets['Detail pesanan']), 0, 2);
-    objs.filter(o => o['Jenis transaksi'] === 'Pesanan').forEach(o => {
+    const objsI = rowsToObjects(sheetToRows(si.incomeWb.Sheets['Detail pesanan']), 0, 2);
+    objsI.filter(o => o['Jenis transaksi'] === 'Pesanan').forEach(o => {
       const id = String(o['ID Pesanan/Penyesuaian']);
       tiktokFinance[id] = {
-        platform: o['Sumber pesanan'] || 'TikTok Shop', pendapatan: Number(o['Total Pendapatan'])||0,
+        toko: si.store.nama, pendapatan: Number(o['Total Pendapatan'])||0,
         komisi_platform: sumCategory(o, TIKTOK_CATMAP.komisi_platform), biaya_layanan: sumCategory(o, TIKTOK_CATMAP.biaya_layanan),
         biaya_pembayaran: sumCategory(o, TIKTOK_CATMAP.biaya_pembayaran), komisi_afiliasi: sumCategory(o, TIKTOK_CATMAP.komisi_afiliasi),
         komisi_dinamis: sumCategory(o, TIKTOK_CATMAP.komisi_dinamis), biaya_iklan: sumCategory(o, TIKTOK_CATMAP.biaya_iklan),
@@ -334,23 +330,23 @@ async function processWeeklyBatch(wbSOs, wbSIs, wbTOs, wbTIs) {
     matchStats.shopeeTotal++;
     let rows = shopeeOrderLookup[id];
     if (!rows) { rows = historicalOrderSku[id]; if (rows) matchStats.shopeeFallback++; }
-    if (rows) rows.forEach(r => cairSkuRows.push({ orderId:id, sku:r.sku, qty:r.qty, warna:r.warna, ...shopeeFinanceShare(shopeeFinance[id], r, rows) }));
+    if (rows) rows.forEach(r => cairSkuRows.push({ orderId:id, sku:r.sku, qty:r.qty, warna:r.warna, ...financeShare(shopeeFinance[id], r, rows) }));
     else matchStats.shopeeNotFound++;
   });
   Object.keys(tiktokFinance).forEach(id => {
     matchStats.tiktokTotal++;
     let rows = tiktokOrderLookup[id];
     if (!rows) { rows = historicalOrderSku[id]; if (rows) matchStats.tiktokFallback++; }
-    if (rows) rows.forEach(r => cairSkuRows.push({ orderId:id, sku:r.sku, qty:r.qty, warna:r.warna, ...shopeeFinanceShare(tiktokFinance[id], r, rows) }));
+    if (rows) rows.forEach(r => cairSkuRows.push({ orderId:id, sku:r.sku, qty:r.qty, warna:r.warna, ...financeShare(tiktokFinance[id], r, rows) }));
     else matchStats.tiktokNotFound++;
   });
 
-  function shopeeFinanceShare(fin, row, allRows) {
+  function financeShare(fin, row, allRows) {
     const totalQty = allRows.reduce((s,r) => s + r.qty, 0);
     const share = totalQty > 0 ? row.qty / totalQty : 1;
     const totalBiaya = (fin.komisi_platform+fin.biaya_layanan+fin.biaya_pembayaran+fin.komisi_afiliasi+fin.komisi_dinamis+fin.biaya_iklan+fin.pajak+fin.lainnya) * share;
     return {
-      sumber: fin.platform, pendapatan: fin.pendapatan*share, komisiPlatform: fin.komisi_platform*share, biayaLayanan: fin.biaya_layanan*share,
+      sumber: fin.toko, pendapatan: fin.pendapatan*share, komisiPlatform: fin.komisi_platform*share, biayaLayanan: fin.biaya_layanan*share,
       biayaPembayaran: fin.biaya_pembayaran*share, komisiAfiliasi: fin.komisi_afiliasi*share, komisiDinamis: fin.komisi_dinamis*share,
       biayaIklan: fin.biaya_iklan*share, pajak: fin.pajak*share, totalBiaya, netSettlement: fin.netSettlement*share, tanggalCair: fin.tanggalCair,
     };
@@ -959,66 +955,92 @@ async function applyBatchResult(result) {
 /* =========================================================================
    TAB: IMPORT MINGGUAN
    ========================================================================= */
-let importFiles = { shopeeOrders:[], shopeeIncome:[], tiktokOrders:[], tiktokIncome:[] };
+let pendingStoreImports = []; // [{store, orderFile, incomeFile}]
 let lastBatchResult = null;
 
-function dropZoneHtml(id, label) {
-  return `
-    <div>
-      <div class="drop-zone" id="${id}">
-        <div class="drop-label">${label}</div>
-        <div class="drop-filename" id="${id}_label">Belum ada file dipilih</div>
-      </div>
-      <input type="file" id="${id}_input" accept=".xlsx" multiple style="display:none">
-    </div>
-  `;
+function labelForPlatform(platform) {
+  if (platform === 'Shopee') return { order: 'Order All', income: 'Income Sudah Dilepas' };
+  return { order: 'Semua Pesanan', income: 'Income' };
 }
 
 function renderImport(container) {
+  const activeStores = STATE.stores.filter(s => s.status === 'Aktif');
   container.innerHTML = `
     <div class="panel">
-      <h2>Upload File Minggu Ini</h2>
-      <div class="desc">4 kategori, tiap kategori boleh lebih dari 1 file (toko utama + toko kedua). Nama file bebas.</div>
-      <div class="grid2">
-        ${dropZoneHtml('dz_shopeeOrders', 'Order All -- Shopee')}
-        ${dropZoneHtml('dz_shopeeIncome', 'Income Sudah Dilepas -- Shopee')}
-        ${dropZoneHtml('dz_tiktokOrders', 'Semua Pesanan -- TikTok/Tokopedia')}
-        ${dropZoneHtml('dz_tiktokIncome', 'Income -- TikTok/Tokopedia')}
+      <h2>1. Pilih Toko &amp; Upload File</h2>
+      ${!activeStores.length ? '<div class="empty-note">Belum ada toko terdaftar. Tambah di tab Data Master dulu.</div>' : `
+      <div class="field"><label>Toko</label>
+        <select id="imp_store"><option value="">Pilih toko</option>${activeStores.map(s=>`<option value="${s.id}">${s.nama} (${s.platform})</option>`).join('')}</select>
       </div>
-      <button class="btn btn-primary" id="btnRunImport" style="margin-top:14px;">Proses Minggu Ini</button>
+      <div id="imp_fileFields" style="display:none;">
+        <div class="grid2" style="margin-top:10px;">
+          <div class="field"><label id="imp_orderLabel">File Order</label><input type="file" id="imp_orderFile" accept=".xlsx"></div>
+          <div class="field"><label id="imp_incomeLabel">File Income</label><input type="file" id="imp_incomeFile" accept=".xlsx"></div>
+        </div>
+        <button class="btn btn-ghost" id="btnAddToBatch" style="margin-top:8px;">+ Tambah ke Batch</button>
+      </div>
+      <div class="status-box" id="addBatchMsg"></div>
+      `}
+    </div>
+
+    <div class="panel">
+      <h2>2. Toko dalam Batch Ini <span class="pill">${pendingStoreImports.length}</span></h2>
+      ${!pendingStoreImports.length ? '<div class="empty-note">Belum ada toko ditambahkan.</div>' : `
+      <table class="data">
+        <thead><tr><th>Toko</th><th>Platform</th><th>File Order</th><th>File Income</th><th></th></tr></thead>
+        <tbody>
+          ${pendingStoreImports.map((si,i) => `<tr>
+            <td>${si.store.nama}</td><td>${si.store.platform}</td><td style="font-size:11px;">${si.orderFile.name}</td><td style="font-size:11px;">${si.incomeFile.name}</td>
+            <td><button class="icon-del" data-remove-batch="${i}">✕</button></td>
+          </tr>`).join('')}
+        </tbody>
+      </table>`}
+      <button class="btn btn-primary" id="btnRunImport" style="margin-top:14px;" ${!pendingStoreImports.length ? 'disabled' : ''}>Proses Batch Ini</button>
       <div class="status-box" id="importStatus"></div>
     </div>
     <div id="importPreview"></div>
   `;
-  const map = { dz_shopeeOrders:'shopeeOrders', dz_shopeeIncome:'shopeeIncome', dz_tiktokOrders:'tiktokOrders', dz_tiktokIncome:'tiktokIncome' };
-  Object.entries(map).forEach(([domId, key]) => {
-    const drop = document.getElementById(domId);
-    const input = document.getElementById(domId + '_input');
-    drop.addEventListener('click', () => input.click());
-    input.addEventListener('change', () => {
-      if (input.files.length) {
-        importFiles[key] = Array.from(input.files);
-        document.getElementById(domId + '_label').innerHTML = importFiles[key].map(f=>f.name).join('<br>');
-      }
+
+  if (activeStores.length) {
+    const storeSelect = document.getElementById('imp_store');
+    storeSelect.addEventListener('change', () => {
+      const store = activeStores.find(s => s.id === storeSelect.value);
+      const fields = document.getElementById('imp_fileFields');
+      if (!store) { fields.style.display = 'none'; return; }
+      fields.style.display = 'block';
+      const lbl = labelForPlatform(store.platform);
+      document.getElementById('imp_orderLabel').textContent = 'File ' + lbl.order;
+      document.getElementById('imp_incomeLabel').textContent = 'File ' + lbl.income;
     });
+    document.getElementById('btnAddToBatch').addEventListener('click', () => {
+      const msg = document.getElementById('addBatchMsg');
+      const store = activeStores.find(s => s.id === storeSelect.value);
+      const orderFile = document.getElementById('imp_orderFile').files[0];
+      const incomeFile = document.getElementById('imp_incomeFile').files[0];
+      if (!store || !orderFile || !incomeFile) { showMsg(msg, 'err', 'Pilih toko dan kedua file dulu.'); return; }
+      pendingStoreImports.push({ store, orderFile, incomeFile });
+      renderImport(container);
+    });
+  }
+  container.querySelectorAll('[data-remove-batch]').forEach(btn => {
+    btn.addEventListener('click', () => { pendingStoreImports.splice(Number(btn.dataset.removeBatch), 1); renderImport(container); });
   });
-  document.getElementById('btnRunImport').addEventListener('click', runWeeklyImport);
+  const btnRun = document.getElementById('btnRunImport');
+  if (btnRun) btnRun.addEventListener('click', runWeeklyImport);
   if (lastBatchResult) renderImportPreview(document.getElementById('importPreview'), lastBatchResult);
 }
 
 async function runWeeklyImport() {
   const msg = document.getElementById('importStatus');
-  const missing = Object.entries(importFiles).filter(([k,v]) => !v.length);
-  if (missing.length) { showMsg(msg, 'err', 'Lengkapi semua 4 kategori file dulu.'); return; }
+  if (!pendingStoreImports.length) { showMsg(msg, 'err', 'Tambah minimal 1 toko ke batch dulu.'); return; }
   if (!STATE.contracts.length) { showMsg(msg, 'err', 'Belum ada kontrak. Tambah/migrasi kontrak di tab Produk & Kontrak dulu.'); return; }
   showMsg(msg, 'info', 'Memproses file...');
   try {
     const readWB = async (f) => XLSX.read(await f.arrayBuffer(), { type:'array', cellDates:true });
-    const readAll = (files) => Promise.all(files.map(readWB));
-    const [wbSOs, wbSIs, wbTOs, wbTIs] = await Promise.all([
-      readAll(importFiles.shopeeOrders), readAll(importFiles.shopeeIncome), readAll(importFiles.tiktokOrders), readAll(importFiles.tiktokIncome)
-    ]);
-    const result = await processWeeklyBatch(wbSOs, wbSIs, wbTOs, wbTIs);
+    const storeImports = await Promise.all(pendingStoreImports.map(async si => ({
+      store: si.store, orderWb: await readWB(si.orderFile), incomeWb: await readWB(si.incomeFile),
+    })));
+    const result = await processWeeklyBatch(storeImports);
     lastBatchResult = result;
     const ms = result.matchStats;
     const fallbackTotal = ms.shopeeFallback + ms.tiktokFallback, notFoundTotal = ms.shopeeNotFound + ms.tiktokNotFound;
