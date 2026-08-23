@@ -47,7 +47,8 @@
   .btn-ghost:hover { border-color: var(--accent); color: var(--accent); }
 
   table.data { width: 100%; border-collapse: collapse; font-size: 13px; }
-  table.data th { font-family: 'IBM Plex Mono', monospace; font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.6px; color: var(--ink-soft); text-align: left; border-bottom: 2px solid var(--ink); padding: 8px 6px; }
+  table.data th { font-family: 'IBM Plex Mono', monospace; font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.6px; color: var(--ink-soft); text-align: left; border-bottom: 2px solid var(--ink); padding: 8px 6px; white-space: nowrap; }
+  table.data.compact th, table.data.compact td { padding: 6px 8px; font-size: 12px; white-space: nowrap; }
   table.data td { padding: 9px 6px; border-bottom: 1px solid var(--line); }
   .pill { display: inline-block; font-family: 'IBM Plex Mono', monospace; font-size: 10.5px; padding: 2px 8px; border-radius: 20px; background: var(--line); color: var(--ink-soft); }
   .pill.ok { background: #E3EFE8; color: var(--ok); }
@@ -656,11 +657,11 @@ function renderKontrak(container) {
       <div class="desc">Modal, Terjual, dan Profit dihitung otomatis dari Stock Awal/Akhir &times; Harga/Nilai Margin.</div>
       ${!activeContracts.length ? '<div class="empty-note">Belum ada kontrak aktif.</div>' : `
       <div style="overflow-x:auto;">
-      <table class="data">
+      <table class="data compact">
         <thead><tr>
-          <th>Produk</th><th>Kode Kontrak</th><th>Capital Partner</th><th>Tgl Masuk</th>
-          <th class="num">Harga/Pcs</th><th class="num">Modal Awal</th><th class="num">Terjual</th>
-          <th class="num">Sisa Stock</th><th class="num">Nilai Margin</th><th class="num">Profit Berjalan</th>
+          <th>Produk</th><th>Kode</th><th>Capital Partner</th><th>Masuk</th>
+          <th class="num">Harga/Pcs</th><th class="num">Stock Awal</th><th class="num">Modal Awal</th>
+          <th class="num">Terjual</th><th class="num">Sisa</th><th class="num">Margin</th><th class="num">Profit Berjalan</th>
         </tr></thead>
         <tbody>
           ${activeContracts.map(c => {
@@ -670,10 +671,10 @@ function renderKontrak(container) {
             const profitBerjalan = terjual * (c.nilaiMargin||0);
             return `<tr>
               <td>${c.produk}</td><td>${c.kodeKontrak}</td><td>${partner ? partner.nama : '(tidak ditemukan)'}</td>
-              <td>${c.tanggalMasuk ? new Date(c.tanggalMasuk).toLocaleDateString('id-ID') : '-'}</td>
-              <td class="num">${fmtRp(c.hargaModalPcs)}</td><td class="num">${fmtRp(modalAwal)}</td>
+              <td>${c.tanggalMasuk ? new Date(c.tanggalMasuk).toLocaleDateString('id-ID',{day:'2-digit',month:'2-digit',year:'2-digit'}) : '-'}</td>
+              <td class="num">${fmtRpCompact(c.hargaModalPcs)}</td><td class="num">${c.stockAwal}</td><td class="num">${fmtRpCompact(modalAwal)}</td>
               <td class="num">${terjual}</td><td class="num">${c.stockAkhir}</td>
-              <td class="num">${fmtRp(c.nilaiMargin)}</td><td class="num">${fmtRp(profitBerjalan)}</td>
+              <td class="num">${fmtRpCompact(c.nilaiMargin)}</td><td class="num">${fmtRpCompact(profitBerjalan)}</td>
             </tr>`;
           }).join('')}
         </tbody>
@@ -682,7 +683,14 @@ function renderKontrak(container) {
     </div>
 
     <div class="panel">
-      <h2>Persentase Pembagi Qty SW (Otomatis dari Modal)</h2>
+      <h2>Total per Capital Partner</h2>
+      <div class="desc">Total dana yang sedang dikelola (dijumlah dari semua kontrak aktif, lintas produk).</div>
+      <div id="partnerTotalView"></div>
+    </div>
+
+    <div class="panel">
+      <h2>Pembagi Qty SW</h2>
+      <div class="desc">Qty = Stock Awal kontrak yang sedang aktif (DANA BELUM CAIR) per capital partner, per produk.</div>
       <div id="pctView"></div>
     </div>
 
@@ -691,18 +699,81 @@ function renderKontrak(container) {
     </div>
   `;
 
+  // ---- Total per Capital Partner (dana aktif dikelola, lintas produk) ----
+  const totalByPartner = {};
+  activeContracts.forEach(c => {
+    const partner = findPartnerById(c.capitalPartnerId);
+    if (!partner) return;
+    const modal = (c.stockAwal||0) * (c.hargaModalPcs||0);
+    totalByPartner[partner.id] = totalByPartner[partner.id] || { nama: partner.nama, kode2: partner.kode2, totalModal: 0, produkSet: new Set(), nKontrak: 0 };
+    totalByPartner[partner.id].totalModal += modal;
+    totalByPartner[partner.id].produkSet.add(c.produk);
+    totalByPartner[partner.id].nKontrak++;
+  });
+  const partnerTotalEl = document.getElementById('partnerTotalView');
+  const partnerTotalList = Object.values(totalByPartner).sort((a,b) => b.totalModal - a.totalModal);
+  if (!partnerTotalList.length) { partnerTotalEl.innerHTML = '<div class="empty-note">Belum ada kontrak aktif.</div>'; }
+  else {
+    partnerTotalEl.innerHTML = `
+      <table class="data">
+        <thead><tr><th>Kode</th><th>Nama</th><th class="num">Jml Produk</th><th class="num">Jml Kontrak</th><th class="num">Total Dana Dikelola</th></tr></thead>
+        <tbody>
+          ${partnerTotalList.map(p => `<tr>
+            <td><b>${p.kode2}</b></td><td>${p.nama}</td><td class="num">${p.produkSet.size}</td>
+            <td class="num">${p.nKontrak}</td><td class="num">${fmtRp(p.totalModal)}</td>
+          </tr>`).join('')}
+        </tbody>
+      </table>
+    `;
+  }
+
+  // ---- Pembagi Qty SW: tabel per produk, qty kumulatif semua kontrak (spt contoh) ----
   const produkList = [...new Set(STATE.contracts.map(c => c.produk))].sort();
   const pctEl = document.getElementById('pctView');
   if (!produkList.length) { pctEl.innerHTML = '<div class="empty-note">Belum ada kontrak.</div>'; }
   else {
-    pctEl.innerHTML = produkList.map(p => {
-      const pct = computePembagiPct(p);
-      if (!Object.keys(pct).length) return '';
-      return `<div style="margin-bottom:10px;"><b>${p}</b>: ${Object.entries(pct).map(([k,v]) => `${k} ${(v*100).toFixed(1)}%`).join(' &middot; ')}</div>`;
+    pctEl.innerHTML = produkList.map(produk => {
+      const activeForProduk = STATE.contracts.filter(c => c.produk === produk && c.status === 'DANA BELUM CAIR');
+      const byKode2 = {};
+      activeForProduk.forEach(c => {
+        const partner = findPartnerById(c.capitalPartnerId);
+        if (!partner) return;
+        byKode2[partner.kode2] = byKode2[partner.kode2] || { nama: partner.nama, qty: 0, harga: c.hargaModalPcs };
+        byKode2[partner.kode2].qty += c.stockAwal || 0;
+        byKode2[partner.kode2].harga = c.hargaModalPcs; // kontrak aktif biasanya 1 per investor, kalau >1 pakai yg terakhir diproses
+      });
+      const rows = Object.entries(byKode2);
+      const totalQty = rows.reduce((s,[,v]) => s + v.qty, 0);
+      const totalNilai = rows.reduce((s,[,v]) => s + v.qty * v.harga, 0);
+      if (!rows.length) return '';
+      return `
+        <div style="margin-bottom:20px;">
+          <div style="font-weight:600; font-family:'Space Grotesk',sans-serif; margin-bottom:6px;">${produk}</div>
+          <table class="data compact">
+            <thead><tr><th>Kode</th><th>Nama</th><th class="num">Qty</th><th class="num">%</th><th class="num">Harga</th><th class="num">Total</th></tr></thead>
+            <tbody>
+              ${rows.sort((a,b) => b[1].qty - a[1].qty).map(([kode2, v]) => `<tr>
+                <td><b>${kode2}</b></td><td>${v.nama}</td><td class="num">${v.qty}</td>
+                <td class="num">${totalQty > 0 ? (v.qty/totalQty*100).toFixed(2) : '0.00'}%</td>
+                <td class="num">${fmtRpCompact(v.harga)}</td><td class="num">${fmtRpCompact(v.qty * v.harga)}</td>
+              </tr>`).join('')}
+              <tr style="font-weight:600; border-top:2px solid var(--ink);">
+                <td colspan="2">TOTAL</td><td class="num">${totalQty}</td><td class="num">100.00%</td><td class="num"></td><td class="num">${fmtRpCompact(totalNilai)}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      `;
     }).join('');
   }
 }
 function fmtRp(n) { if (n==null||isNaN(n)) return '-'; return 'Rp ' + Math.round(n).toLocaleString('id-ID'); }
+function fmtRpCompact(n) {
+  if (n==null||isNaN(n)) return '-';
+  n = Math.round(n);
+  if (Math.abs(n) >= 1000000) return (n/1000000).toLocaleString('id-ID',{maximumFractionDigits:2}) + 'jt';
+  return n.toLocaleString('id-ID');
+}
 
 /* =========================================================================
    NAV
