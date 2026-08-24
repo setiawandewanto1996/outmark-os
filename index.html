@@ -419,17 +419,44 @@ async function processWeeklyBatch(storeImports) {
       const assignedUnits = units.slice(unitCursor, unitCursor + qty);
       unitCursor += qty;
       const partner = findPartnerByKode2(kode2);
-      const kontrak = partner ? activeContractFor(produk, partner.id) : null;
-      // breakdown per SKU (size) -- utk tabel detail per kontrak spt contoh Excel
-      const skuBreakdown = {};
-      assignedUnits.forEach(u => { skuBreakdown[u.sku] = (skuBreakdown[u.sku]||0) + 1; });
-      allocations.push({
-        produk, kode2, namaInvestor: partner ? partner.nama : kode2, capitalPartnerId: partner ? partner.id : null,
-        kodeKontrak: kontrak ? kontrak.kodeKontrak : null, contractId: kontrak ? kontrak.id : null,
-        qty, rate: kontrak ? kontrak.nilaiMargin : null, payout: kontrak ? qty*kontrak.nilaiMargin : null,
-        catatan: `${(pct[kode2]*100).toFixed(2)}% dari ${qtyTotal} unit ${produk}` + (kontrak ? '' : ' -- TIDAK ADA kontrak aktif, cek manual'),
-        orderUnits: assignedUnits, skuBreakdown, hargaModalPcs: kontrak ? kontrak.hargaModalPcs : null,
-      });
+      if (!partner) {
+        allocations.push({ produk, kode2, namaInvestor: kode2, capitalPartnerId: null, kodeKontrak: null, contractId: null,
+          qty, rate: null, payout: null, catatan: 'Investor tidak ditemukan', orderUnits: assignedUnits, skuBreakdown: {}, hargaModalPcs: null });
+        return;
+      }
+      // Ambil SEMUA kontrak aktif investor ini utk produk ini (urut FIFO) -- kalau kontrak pertama habis di tengah,
+      // sisa qty otomatis "meluber" ke kontrak berikutnya yg SUDAH ADA (spt kasus IWO013 -> IWO014 di histori).
+      const activeContractsForPartner = STATE.contracts
+        .filter(c => c.produk === produk && c.capitalPartnerId === partner.id && c.status === 'DANA BELUM CAIR')
+        .sort((a,b) => new Date(a.tanggalMasuk) - new Date(b.tanggalMasuk));
+      let remaining = qty, cursorInAssigned = 0, terbagi = false;
+      for (const kontrak of activeContractsForPartner) {
+        if (remaining <= 0) break;
+        const qtyForThisContract = Math.min(remaining, kontrak.stockAkhir);
+        if (qtyForThisContract <= 0) continue;
+        const subUnits = assignedUnits.slice(cursorInAssigned, cursorInAssigned + qtyForThisContract);
+        cursorInAssigned += qtyForThisContract; remaining -= qtyForThisContract;
+        if (cursorInAssigned < qty) terbagi = true;
+        const skuBreakdown = {};
+        subUnits.forEach(u => { skuBreakdown[u.sku] = (skuBreakdown[u.sku]||0) + 1; });
+        allocations.push({
+          produk, kode2, namaInvestor: partner.nama, capitalPartnerId: partner.id,
+          kodeKontrak: kontrak.kodeKontrak, contractId: kontrak.id,
+          qty: qtyForThisContract, rate: kontrak.nilaiMargin, payout: qtyForThisContract*kontrak.nilaiMargin,
+          catatan: `${(pct[kode2]*100).toFixed(2)}% dari ${qtyTotal} unit ${produk}` + (terbagi||activeContractsForPartner.indexOf(kontrak)>0 ? ' (lanjutan dari kontrak sebelumnya yg sudah habis)' : ''),
+          orderUnits: subUnits, skuBreakdown, hargaModalPcs: kontrak.hargaModalPcs,
+        });
+      }
+      if (remaining > 0) {
+        // TIDAK ADA kontrak aktif yg cukup utk sisa ini -- investor perlu kontrak baru (rollover) atau kontrak dihentikan.
+        // BELUM otomatis dibuatkan -- perlu keputusan manual (lihat notifikasi "Perlu Kontrak Baru" di preview batch).
+        allocations.push({
+          produk, kode2, namaInvestor: partner.nama, capitalPartnerId: partner.id, kodeKontrak: null, contractId: null,
+          qty: remaining, rate: null, payout: null,
+          catatan: `⚠ ${remaining} unit TIDAK ADA kontrak aktif yg cukup -- kontrak ${partner.nama} utk ${produk} sudah habis, perlu kontrak baru (rollover) atau dihentikan.`,
+          orderUnits: assignedUnits.slice(cursorInAssigned), skuBreakdown: {}, hargaModalPcs: null, perluKontrakBaru: true,
+        });
+      }
     });
   });
 
@@ -1235,9 +1262,11 @@ async function runWeeklyImport() {
 function renderImportPreview(el, result) {
   const totalPayout = result.allocations.reduce((s,a) => s + (a.payout||0), 0);
   const totalVendor = Object.values(result.vendorPayments).reduce((s,v) => s + v.total, 0);
+  const perluKontrakBaru = result.allocations.filter(a => a.perluKontrakBaru);
   el.innerHTML = `
     <div class="panel">
       <div class="status-box show info">Angka mencakup semua order cair di file yg diupload -- kalau rentangnya lebih dari 1 periode penarikan biasamu, hasilnya otomatis gabungan.</div>
+      ${perluKontrakBaru.length ? `<div class="status-box show err" style="margin-top:10px;"><b>⚠ PERLU PERHATIAN -- Kontrak Habis di Tengah:</b><br>${perluKontrakBaru.map(a => `${a.namaInvestor} (${a.produk}): ${a.qty} unit belum ada kontrak aktif. Perlu putuskan: putar modal+profit, putar modal saja, atau hentikan kontrak -- lalu tambah kontrak baru manual di tab Produk &amp; Kontrak sebelum Simpan.`).join('<br>')}</div>` : ''}
       <div class="kpi-row" style="margin-top:14px;">
         <div class="kpi"><div class="kpi-label">Total Payout Investor</div><div class="kpi-value">${fmtRp(totalPayout)}</div></div>
         <div class="kpi"><div class="kpi-label">Total Bayar Konveksi</div><div class="kpi-value">${fmtRp(totalVendor)}</div></div>
@@ -2005,12 +2034,14 @@ function renderLaporan(container) {
   const totalBelumDibayarInvestor = partnerSummary.reduce((s,p) => s + p.total, 0);
   const totalKonveksiSemua = vendorPayouts.reduce((s,v) => s + v.total, 0);
 
+  const nBackfilledBelumBayar = payouts.filter(p => p.sumberData === 'backfill_estimasi' && !p.tanggalDibayar).length;
   container.innerHTML = `
     <div class="panel">
       <h2>Perkiraan dari Histori <span class="pill ${nBackfilled?'ok':''}">${nBackfilled} entri perkiraan</span></h2>
       <div class="desc">Hitung ulang PERKIRAAN payout dari histori PENJUALAN yg sudah dimigrasi, pakai kode kontrak ASLI (kolom B di PENJUALAN) supaya akurat kalau kontrak sudah berganti sejak saat itu.
       Sepenuhnya aman -- <b>tidak menyentuh stok kontrak sama sekali</b>.</div>
       <button class="btn btn-ghost" id="btnBackfill">${nBackfilled ? 'Hitung Ulang Perkiraan' : 'Buat Perkiraan dari Histori'}</button>
+      ${nBackfilledBelumBayar ? `<button class="btn btn-ghost" id="btnMarkAllHistoriPaid" style="margin-left:8px;">Tandai Semua Histori (${nBackfilledBelumBayar}) Sebagai Dibayar</button>` : ''}
       <div class="status-box" id="backfillMsg"></div>
     </div>
     <div class="kpi-row">
@@ -2066,6 +2097,25 @@ function renderLaporan(container) {
       showMsg(msg, 'err', 'Gagal: ' + e.message);
     }
   });
+  const btnMarkAllHistoriPaid = document.getElementById('btnMarkAllHistoriPaid');
+  if (btnMarkAllHistoriPaid) {
+    btnMarkAllHistoriPaid.addEventListener('click', async () => {
+      const msg = document.getElementById('backfillMsg');
+      const nTarget = STATE.payouts.filter(p => p.sumberData === 'backfill_estimasi' && !p.tanggalDibayar).length;
+      if (!confirm(`Tandai ${nTarget} entri histori (perkiraan) sebagai sudah dibayar? Cuma yg bersumber dari backfill histori -- payout dari batch mingguan yg sungguhan TIDAK ikut tertandai.`)) return;
+      showMsg(msg, 'info', 'Menandai...');
+      try {
+        const now = new Date().toISOString();
+        let n = 0;
+        STATE.payouts.forEach(p => { if (p.sumberData === 'backfill_estimasi' && !p.tanggalDibayar) { p.tanggalDibayar = now; n++; } });
+        await saveState();
+        showMsg(msg, 'ok', `${n} entri histori ditandai sudah dibayar.`);
+        renderLaporan(container);
+      } catch (e) {
+        showMsg(msg, 'err', 'Gagal: ' + e.message);
+      }
+    });
+  }
   if (laporanFilter.tab === 'detail') { renderLaporanDetailPanel(document.getElementById('laporanDetailArea')); return; }
   const statusFilterEl = document.getElementById('laporanStatusFilter');
   if (statusFilterEl) statusFilterEl.addEventListener('change', (e) => { laporanFilter.status = e.target.value; renderLaporan(container); });
