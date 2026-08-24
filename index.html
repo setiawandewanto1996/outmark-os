@@ -77,6 +77,8 @@
   .kpi { background: var(--surface); border: 1px solid var(--line); border-radius: 3px; padding: 14px 16px; }
   .kpi-label { font-family: 'IBM Plex Mono', monospace; font-size: 10px; text-transform: uppercase; letter-spacing: 1px; color: var(--ink-soft); margin-bottom: 5px; }
   .kpi-value { font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 20px; }
+  .btn-subtab { font-family: 'IBM Plex Mono', monospace; font-size: 12px; background: none; border: none; padding: 8px 14px; cursor: pointer; color: var(--ink-soft); border-bottom: 2px solid transparent; margin-bottom: -1px; }
+  .btn-subtab.active { color: var(--ink); border-bottom-color: var(--accent); font-weight: 600; }
 </style>
 </head>
 <body>
@@ -90,6 +92,7 @@
     <button data-tab="kontrak">Produk &amp; Kontrak</button>
     <button data-tab="import">Import Mingguan</button>
     <button data-tab="database">Database Penjualan</button>
+    <button data-tab="laporan">Laporan Penarikan</button>
   </nav>
   <div id="app"></div>
 </div>
@@ -1759,7 +1762,127 @@ function fmtRpCompact(n) {
 /* =========================================================================
    NAV
    ========================================================================= */
-const renderers = { master: renderMaster, kontrak: renderKontrak, import: renderImport, database: renderDatabase };
+/* =========================================================================
+   TAB: LAPORAN PENARIKAN
+   ========================================================================= */
+let laporanFilter = { status: 'belum', investorId: '', tab: 'investor' };
+
+function renderLaporan(container) {
+  const payouts = STATE.payouts;
+  const vendorPayouts = STATE.vendorPayouts;
+
+  // Ringkasan belum dibayar per investor
+  const totalByPartner = {};
+  payouts.filter(p => !p.tanggalDibayar).forEach(p => {
+    const key = p.capitalPartnerId || p.kode2;
+    totalByPartner[key] = totalByPartner[key] || { nama: p.namaInvestor, kode2: p.kode2, total: 0, nItem: 0 };
+    totalByPartner[key].total += p.payout || 0;
+    totalByPartner[key].nItem++;
+  });
+  const partnerSummary = Object.values(totalByPartner).sort((a,b) => b.total - a.total);
+  const totalBelumDibayarInvestor = partnerSummary.reduce((s,p) => s + p.total, 0);
+  const totalBelumDibayarVendor = vendorPayouts.filter(v => !v.tanggalDibayar).reduce((s,v) => s + v.total, 0);
+
+  container.innerHTML = `
+    <div class="kpi-row">
+      <div class="kpi"><div class="kpi-label">Belum Dibayar ke Investor</div><div class="kpi-value">${fmtRp(totalBelumDibayarInvestor)}</div></div>
+      <div class="kpi"><div class="kpi-label">Belum Dibayar ke Konveksi</div><div class="kpi-value">${fmtRp(totalBelumDibayarVendor)}</div></div>
+      <div class="kpi"><div class="kpi-label">Total Belum Dibayar</div><div class="kpi-value">${fmtRp(totalBelumDibayarInvestor+totalBelumDibayarVendor)}</div></div>
+    </div>
+
+    <div class="panel">
+      <h2>Ringkasan per Capital Partner (Belum Dibayar)</h2>
+      ${!partnerSummary.length ? '<div class="empty-note">Tidak ada yang belum dibayar. Semua lunas.</div>' : `
+      <table class="data">
+        <thead><tr><th>Kode</th><th>Nama</th><th class="num">Jml Item</th><th class="num">Total Belum Dibayar</th></tr></thead>
+        <tbody>
+          ${partnerSummary.map(p => `<tr><td><b>${p.kode2}</b></td><td>${p.nama}</td><td class="num">${p.nItem}</td><td class="num">${fmtRp(p.total)}</td></tr>`).join('')}
+        </tbody>
+      </table>`}
+    </div>
+
+    <div class="panel">
+      <div style="display:flex; gap:2px; margin-bottom:14px; border-bottom:1px solid var(--line);">
+        <button class="btn-subtab ${laporanFilter.tab==='investor'?'active':''}" data-subtab="investor">Payout Capital Partner</button>
+        <button class="btn-subtab ${laporanFilter.tab==='vendor'?'active':''}" data-subtab="vendor">Pembayaran Konveksi/Supplier</button>
+      </div>
+      <div class="field" style="max-width:220px;"><label>Status</label>
+        <select id="laporanStatusFilter">
+          <option value="belum" ${laporanFilter.status==='belum'?'selected':''}>Belum Dibayar</option>
+          <option value="sudah" ${laporanFilter.status==='sudah'?'selected':''}>Sudah Dibayar</option>
+          <option value="semua" ${laporanFilter.status==='semua'?'selected':''}>Semua</option>
+        </select>
+      </div>
+      <div id="laporanTableArea" style="margin-top:10px;"></div>
+    </div>
+  `;
+
+  container.querySelectorAll('[data-subtab]').forEach(btn => {
+    btn.addEventListener('click', () => { laporanFilter.tab = btn.dataset.subtab; renderLaporan(container); });
+  });
+  document.getElementById('laporanStatusFilter').addEventListener('change', (e) => { laporanFilter.status = e.target.value; renderLaporan(container); });
+
+  renderLaporanTable(document.getElementById('laporanTableArea'), container);
+}
+
+function renderLaporanTable(el, container) {
+  const isVendor = laporanFilter.tab === 'vendor';
+  const list = isVendor ? STATE.vendorPayouts : STATE.payouts;
+  let filtered = list;
+  if (laporanFilter.status === 'belum') filtered = filtered.filter(x => !x.tanggalDibayar);
+  else if (laporanFilter.status === 'sudah') filtered = filtered.filter(x => x.tanggalDibayar);
+  filtered = filtered.slice().sort((a,b) => new Date(b.tanggalDihitung||0) - new Date(a.tanggalDihitung||0));
+
+  if (!filtered.length) { el.innerHTML = '<div class="empty-note">Tidak ada data.</div>'; return; }
+
+  if (isVendor) {
+    el.innerHTML = `
+      <table class="data compact">
+        <thead><tr><th>Tgl Dihitung</th><th>Brand</th><th>Produk</th><th class="num">Qty</th><th class="num">Total</th><th>Status</th><th></th></tr></thead>
+        <tbody>
+          ${filtered.map(v => `<tr>
+            <td>${fmtTanggal(v.tanggalDihitung)}</td><td>${v.brand}</td><td style="font-size:11px;">${v.produk}</td>
+            <td class="num">${v.qty}</td><td class="num">${fmtRp(v.total)}</td>
+            <td>${v.tanggalDibayar ? `<span class="pill ok">Lunas ${fmtTanggal(v.tanggalDibayar,{short:true})}</span>` : `<span class="pill off">Belum</span>`}</td>
+            <td>${!v.tanggalDibayar ? `<button class="btn btn-ghost" data-mark-vendor="${v.id}" style="padding:4px 8px; font-size:11px;">Tandai Dibayar</button>` : ''}</td>
+          </tr>`).join('')}
+        </tbody>
+      </table>
+    `;
+    el.querySelectorAll('[data-mark-vendor]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const v = STATE.vendorPayouts.find(x => x.id === btn.dataset.markVendor);
+        if (v) v.tanggalDibayar = new Date().toISOString();
+        await saveState();
+        renderLaporan(container);
+      });
+    });
+  } else {
+    el.innerHTML = `
+      <table class="data compact">
+        <thead><tr><th>Tgl Dihitung</th><th>Investor</th><th>Produk</th><th>Kontrak</th><th class="num">Qty</th><th class="num">Rate</th><th class="num">Payout</th><th>Status</th><th></th></tr></thead>
+        <tbody>
+          ${filtered.map(p => `<tr>
+            <td>${fmtTanggal(p.tanggalDihitung)}</td><td>${p.namaInvestor||'-'}</td><td>${p.produk}</td><td style="font-size:11px;">${p.kodeKontrak||'-'}</td>
+            <td class="num">${p.qty}</td><td class="num">${p.rate?fmtRpCompact(p.rate):'-'}</td><td class="num">${p.payout?fmtRp(p.payout):'-'}</td>
+            <td>${p.tanggalDibayar ? `<span class="pill ok">Lunas ${fmtTanggal(p.tanggalDibayar,{short:true})}</span>` : `<span class="pill off">Belum</span>`}</td>
+            <td>${!p.tanggalDibayar ? `<button class="btn btn-ghost" data-mark-payout="${p.id}" style="padding:4px 8px; font-size:11px;">Tandai Dibayar</button>` : ''}</td>
+          </tr>`).join('')}
+        </tbody>
+      </table>
+    `;
+    el.querySelectorAll('[data-mark-payout]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const p = STATE.payouts.find(x => x.id === btn.dataset.markPayout);
+        if (p) p.tanggalDibayar = new Date().toISOString();
+        await saveState();
+        renderLaporan(container);
+      });
+    });
+  }
+}
+
+const renderers = { master: renderMaster, kontrak: renderKontrak, import: renderImport, database: renderDatabase, laporan: renderLaporan };
 function switchTab(tab) {
   document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
   renderers[tab](document.getElementById('app'));
