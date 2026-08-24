@@ -324,21 +324,26 @@ async function processWeeklyBatch(storeImports) {
 
   // ---- Simpan SEMUA order dari file Order All/Semua Pesanan (cair ATAU belum) ke registry permanen ----
   // supaya SKU-nya tetap "diingat" kapan pun order itu akhirnya cair, bukan cuma kalau kebetulan cair minggu ini
+  // (timpa per order, bukan tambah terus -- supaya tidak dobel kalau order yg sama diupload ulang beberapa minggu)
   shopeeImports.forEach(si => {
     const objs = rowsToObjects(sheetToRows(si.orderWb.Sheets['orders']), 0, 1);
+    const byOrder = {};
     objs.forEach(o => {
       const id = String(o['No. Pesanan']);
-      STATE.pendingOrderSku[id] = STATE.pendingOrderSku[id] || [];
-      STATE.pendingOrderSku[id].push({ sku: o['Nomor Referensi SKU'], qty: Number(o['Jumlah'])||0, warna: parseWarna(o['Nama Variasi']), storeName: si.store.nama });
+      byOrder[id] = byOrder[id] || [];
+      byOrder[id].push({ sku: o['Nomor Referensi SKU'], qty: Number(o['Jumlah'])||0, warna: parseWarna(o['Nama Variasi']), storeName: si.store.nama });
     });
+    Object.entries(byOrder).forEach(([id, rows]) => { STATE.pendingOrderSku[id] = rows; });
   });
   tiktokImports.forEach(si => {
     const objs = rowsToObjects(sheetToRows(si.orderWb.Sheets['OrderSKUList']), 0, 2);
+    const byOrder = {};
     objs.forEach(o => {
       const id = String(o['Order ID']);
-      STATE.pendingOrderSku[id] = STATE.pendingOrderSku[id] || [];
-      STATE.pendingOrderSku[id].push({ sku: o['Seller SKU'], qty: Number(o['Quantity'])||0, warna: parseWarna(o['Variation']), storeName: si.store.nama });
+      byOrder[id] = byOrder[id] || [];
+      byOrder[id].push({ sku: o['Seller SKU'], qty: Number(o['Quantity'])||0, warna: parseWarna(o['Variation']), storeName: si.store.nama });
     });
+    Object.entries(byOrder).forEach(([id, rows]) => { STATE.pendingOrderSku[id] = rows; });
   });
 
   // ---- Gabungkan baris SKU cair (fallback: file minggu ini -> pendingOrderSku registry -> histori orderDb) ----
@@ -1048,11 +1053,53 @@ function labelForPlatform(platform) {
   return { order: 'Semua Pesanan', income: 'Income' };
 }
 
+async function uploadOrderListOnly(store, orderFile) {
+  const wb = XLSX.read(await orderFile.arrayBuffer(), { type:'array', cellDates:true });
+  let count = 0;
+  if (store.platform === 'Shopee') {
+    const objs = rowsToObjects(sheetToRows(wb.Sheets['orders']), 0, 1);
+    const byOrder = {};
+    objs.forEach(o => {
+      const id = String(o['No. Pesanan']);
+      byOrder[id] = byOrder[id] || [];
+      byOrder[id].push({ sku: o['Nomor Referensi SKU'], qty: Number(o['Jumlah'])||0, warna: parseWarna(o['Nama Variasi']), storeName: store.nama });
+    });
+    Object.entries(byOrder).forEach(([id, rows]) => { STATE.pendingOrderSku[id] = rows; count++; }); // timpa (bukan tambah) -- data terbaru dari upload ini
+  } else {
+    const objs = rowsToObjects(sheetToRows(wb.Sheets['OrderSKUList']), 0, 2);
+    const byOrder = {};
+    objs.forEach(o => {
+      const id = String(o['Order ID']);
+      byOrder[id] = byOrder[id] || [];
+      byOrder[id].push({ sku: o['Seller SKU'], qty: Number(o['Quantity'])||0, warna: parseWarna(o['Variation']), storeName: store.nama });
+    });
+    Object.entries(byOrder).forEach(([id, rows]) => { STATE.pendingOrderSku[id] = rows; count++; });
+  }
+  await saveState();
+  return count;
+}
+
 function renderImport(container) {
   const activeStores = STATE.stores.filter(s => s.status === 'Aktif');
+  const nPending = Object.keys(STATE.pendingOrderSku).length;
   container.innerHTML = `
     <div class="panel">
-      <h2>1. Pilih Toko &amp; Upload File</h2>
+      <h2>Update Daftar Pesanan Saja <span class="pill">${nPending} pesanan diingat</span></h2>
+      <div class="desc">Upload file Order All/Semua Pesanan SAJA (tanpa Income) -- untuk "refresh" daftar pesanan supaya SKU-nya diingat sistem, walau belum cair. Bisa diulang tiap saat, tidak perlu tunggu Income.</div>
+      ${!activeStores.length ? '<div class="empty-note">Belum ada toko terdaftar.</div>' : `
+      <div class="grid2">
+        <div class="field"><label>Toko</label>
+          <select id="ol_store"><option value="">Pilih toko</option>${activeStores.map(s=>`<option value="${s.id}">${s.nama} (${s.platform})</option>`).join('')}</select>
+        </div>
+        <div class="field"><label id="ol_fileLabel">File Order</label><input type="file" id="ol_file" accept=".xlsx"></div>
+      </div>
+      <button class="btn btn-ghost" id="btnUploadOrderList" style="margin-top:8px;">Update Daftar Pesanan</button>
+      <div class="status-box" id="orderListMsg"></div>
+      `}
+    </div>
+
+    <div class="panel">
+      <h2>1. Pilih Toko &amp; Upload File (untuk Proses Cair Mingguan)</h2>
       ${!activeStores.length ? '<div class="empty-note">Belum ada toko terdaftar. Tambah di tab Data Master dulu.</div>' : `
       <div class="field"><label>Toko</label>
         <select id="imp_store"><option value="">Pilih toko</option>${activeStores.map(s=>`<option value="${s.id}">${s.nama} (${s.platform})</option>`).join('')}</select>
@@ -1087,6 +1134,27 @@ function renderImport(container) {
   `;
 
   if (activeStores.length) {
+    const olStoreSelect = document.getElementById('ol_store');
+    olStoreSelect.addEventListener('change', () => {
+      const store = activeStores.find(s => s.id === olStoreSelect.value);
+      if (!store) return;
+      document.getElementById('ol_fileLabel').textContent = 'File ' + labelForPlatform(store.platform).order;
+    });
+    document.getElementById('btnUploadOrderList').addEventListener('click', async () => {
+      const msg = document.getElementById('orderListMsg');
+      const store = activeStores.find(s => s.id === olStoreSelect.value);
+      const orderFile = document.getElementById('ol_file').files[0];
+      if (!store || !orderFile) { showMsg(msg, 'err', 'Pilih toko dan file dulu.'); return; }
+      showMsg(msg, 'info', 'Memproses...');
+      try {
+        const count = await uploadOrderListOnly(store, orderFile);
+        showMsg(msg, 'ok', `${count} pesanan dari ${store.nama} diperbarui/diingat sistem.`);
+        renderImport(container);
+      } catch (e) {
+        showMsg(msg, 'err', 'Gagal: ' + e.message);
+      }
+    });
+
     const storeSelect = document.getElementById('imp_store');
     storeSelect.addEventListener('change', () => {
       const store = activeStores.find(s => s.id === storeSelect.value);
@@ -1229,11 +1297,50 @@ function renderColorCodeList(el) {
    ========================================================================= */
 let dbFilters = { produk: '', brand: '', sumber: '', search: '', page: 1 };
 const DB_PAGE_SIZE = 50;
+let showPendingOrders = false;
+let pendingPage = 1;
 
 function renderDatabase(container) {
   const db = STATE.orderDb;
-  if (!db.length) {
+  const nPending = Object.keys(STATE.pendingOrderSku).length;
+  if (!db.length && !nPending) {
     container.innerHTML = `<div class="panel"><div class="empty-note">Database masih kosong. Migrasi dari file UJUSO di tab Data Master, atau proses Import Mingguan dulu.</div></div>`;
+    return;
+  }
+  const pendingIds = Object.keys(STATE.pendingOrderSku);
+  const pendingTotalPages = Math.max(1, Math.ceil(pendingIds.length / DB_PAGE_SIZE));
+  pendingPage = Math.min(pendingPage, pendingTotalPages);
+  const pendingPageIds = pendingIds.slice((pendingPage-1)*DB_PAGE_SIZE, pendingPage*DB_PAGE_SIZE);
+
+  const pendingPanel = `
+    <div class="panel">
+      <h2>Pesanan Menunggu Cair <span class="pill">${nPending}</span></h2>
+      <div class="desc">Order dari file "Semua Pesanan"/"Order All" yang belum ketemu pasangan cair-nya di Income. SKU-nya tetap diingat sistem sampai kapan pun akhirnya cair.</div>
+      <button class="btn btn-ghost" id="btnTogglePending">${showPendingOrders ? 'Sembunyikan' : 'Lihat Daftar'}</button>
+      ${showPendingOrders ? `
+      <div style="overflow-x:auto; margin-top:10px;">
+      <table class="data compact">
+        <thead><tr><th>Order ID</th><th>Toko</th><th>SKU</th><th class="num">Qty</th></tr></thead>
+        <tbody>
+          ${pendingPageIds.map(id => STATE.pendingOrderSku[id].map(r => `<tr>
+            <td style="font-family:'IBM Plex Mono',monospace;font-size:10.5px;">${id}</td><td>${r.storeName||'-'}</td>
+            <td style="font-size:10.5px;">${r.sku||'-'}</td><td class="num">${r.qty}</td>
+          </tr>`).join('')).join('')}
+        </tbody>
+      </table>
+      </div>
+      <div style="display:flex; justify-content:space-between; margin-top:12px;">
+        <button class="btn btn-ghost" id="pendingPrevPage" ${pendingPage<=1?'disabled':''}>&larr; Sebelumnya</button>
+        <span class="desc">Halaman ${pendingPage} dari ${pendingTotalPages}</span>
+        <button class="btn btn-ghost" id="pendingNextPage" ${pendingPage>=pendingTotalPages?'disabled':''}>Selanjutnya &rarr;</button>
+      </div>
+      ` : ''}
+    </div>
+  `;
+
+  if (!db.length) {
+    container.innerHTML = pendingPanel + `<div class="panel"><div class="empty-note">Belum ada transaksi cair tercatat.</div></div>`;
+    wirePendingHandlers(container);
     return;
   }
   const produkList = [...new Set(db.map(r => r.produk))].filter(Boolean).sort();
@@ -1256,7 +1363,7 @@ function renderDatabase(container) {
   const fromImport = db.filter(r => r.sumberData === 'import_mingguan').length;
   const sumFiltered = (f) => filtered.reduce((s,r) => s + (r[f]||0), 0);
 
-  container.innerHTML = `
+  container.innerHTML = pendingPanel + `
     <div class="kpi-row">
       <div class="kpi"><div class="kpi-label">Total Baris</div><div class="kpi-value">${db.length.toLocaleString('id-ID')}</div></div>
       <div class="kpi"><div class="kpi-label">Dari Migrasi PENJUALAN</div><div class="kpi-value">${(db.length-fromImport).toLocaleString('id-ID')}</div></div>
@@ -1311,6 +1418,16 @@ function renderDatabase(container) {
   document.getElementById('dbFilterSearch').addEventListener('input', (e) => { dbFilters.search = e.target.value; dbFilters.page = 1; renderDatabase(container); });
   document.getElementById('dbPrevPage').addEventListener('click', () => { dbFilters.page--; renderDatabase(container); });
   document.getElementById('dbNextPage').addEventListener('click', () => { dbFilters.page++; renderDatabase(container); });
+  wirePendingHandlers(container);
+}
+
+function wirePendingHandlers(container) {
+  const btn = document.getElementById('btnTogglePending');
+  if (btn) btn.addEventListener('click', () => { showPendingOrders = !showPendingOrders; renderDatabase(container); });
+  const prev = document.getElementById('pendingPrevPage');
+  if (prev) prev.addEventListener('click', () => { pendingPage--; renderDatabase(container); });
+  const next = document.getElementById('pendingNextPage');
+  if (next) next.addEventListener('click', () => { pendingPage++; renderDatabase(container); });
 }
 
 function renderKontrak(container) {
