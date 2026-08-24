@@ -94,6 +94,7 @@
     <button data-tab="import">Import Mingguan</button>
     <button data-tab="database">Database Penjualan</button>
     <button data-tab="laporan">Laporan Penarikan</button>
+    <button data-tab="ads">Ads Mingguan</button>
   </nav>
   <div id="app"></div>
 </div>
@@ -118,6 +119,8 @@ let STATE = {
                                   // cair maupun belum, supaya SKU-nya "diingat" sampai kapan pun akhirnya cair
   payouts: [],                  // kewajiban bayar ke capital partner per batch: {id, produk, kode2, capitalPartnerId, kodeKontrak, qty, rate, payout, tanggalDihitung, tanggalDibayar}
   vendorPayouts: [],              // kewajiban bayar ke konveksi/supplier: {id, brand, produk, qty, total, tanggalDihitung, tanggalDibayar}
+  adsMingguan: [],                 // biaya iklan periodik: {id, tanggal, storeId, storeNama, jumlah, catatan}
+  adsMingguan: [],                 // biaya iklan per periode per toko: {id, tanggalDari, tanggalSampai, storeId, storeName, platform, biaya, catatan}
 };
 let stateFileId = null;
 let accessToken = null;
@@ -534,7 +537,7 @@ async function loadState() {
   const loaded = text ? JSON.parse(text) : {};
   // DEFAULT_STATE mencakup SEMUA field yg pernah ada -- supaya file lama (dari sebelum field baru ditambahkan)
   // tidak jadi undefined pas dimuat. Tiap kali nambah field baru ke STATE, tambahkan juga di sini.
-  const DEFAULT_STATE = { capitalPartners: [], stores: [], products: [], contracts: [], colorCodeMap: {}, pembagiPctManual: {}, orderDb: [], pendingOrderSku: {}, payouts: [], vendorPayouts: [] };
+  const DEFAULT_STATE = { capitalPartners: [], stores: [], products: [], contracts: [], colorCodeMap: {}, pembagiPctManual: {}, orderDb: [], pendingOrderSku: {}, payouts: [], vendorPayouts: [], adsMingguan: [] };
   STATE = Object.assign({}, DEFAULT_STATE, loaded);
 }
 
@@ -2218,7 +2221,121 @@ function renderLaporanTable(el, container) {
   }
 }
 
-const renderers = { master: renderMaster, kontrak: renderKontrak, import: renderImport, database: renderDatabase, laporan: renderLaporan };
+/* =========================================================================
+   TAB: ADS MINGGUAN
+   ========================================================================= */
+let adsFilter = { storeId: '', tglDari: '', tglSampai: '' };
+
+function renderAds(container) {
+  const activeStores = STATE.stores.filter(s => s.status === 'Aktif');
+  let filtered = STATE.adsMingguan;
+  if (adsFilter.storeId) filtered = filtered.filter(a => a.storeId === adsFilter.storeId);
+  if (adsFilter.tglDari) filtered = filtered.filter(a => a.tanggalSampai && a.tanggalSampai.slice(0,10) >= adsFilter.tglDari);
+  if (adsFilter.tglSampai) filtered = filtered.filter(a => a.tanggalDari && a.tanggalDari.slice(0,10) <= adsFilter.tglSampai);
+  filtered = filtered.slice().sort((a,b) => new Date(b.tanggalDari||0) - new Date(a.tanggalDari||0));
+
+  const totalFiltered = filtered.reduce((s,a) => s + (a.biaya||0), 0);
+  const byStore = {};
+  filtered.forEach(a => { byStore[a.storeName] = (byStore[a.storeName]||0) + (a.biaya||0); });
+
+  container.innerHTML = `
+    <div class="panel">
+      <h2>Tambah Biaya Iklan</h2>
+      <div class="desc">Catat biaya iklan per toko untuk 1 periode (biasanya 1 minggu, sesuai siklus penarikan).</div>
+      ${!activeStores.length ? '<div class="empty-note">Belum ada toko terdaftar. Tambah di tab Data Master dulu.</div>' : `
+      <form id="formAds">
+        <div class="grid2">
+          <div class="field"><label>Tanggal Dari</label><input type="date" id="ads_tglDari" required></div>
+          <div class="field"><label>Tanggal Sampai</label><input type="date" id="ads_tglSampai" required></div>
+        </div>
+        <div class="grid2">
+          <div class="field"><label>Toko</label>
+            <select id="ads_store" required><option value="">Pilih toko</option>${activeStores.map(s=>`<option value="${s.id}">${s.nama} (${s.platform})</option>`).join('')}</select>
+          </div>
+          <div class="field"><label>Biaya Iklan (Rp)</label><input type="number" id="ads_biaya" required min="0"></div>
+        </div>
+        <div class="field"><label>Catatan (opsional)</label><input type="text" id="ads_catatan" placeholder="mis. kampanye flash sale"></div>
+        <button type="submit" class="btn btn-primary">+ Tambah Biaya Iklan</button>
+        <div class="status-box" id="adsMsg"></div>
+      </form>
+      `}
+    </div>
+
+    <div class="kpi-row">
+      <div class="kpi"><div class="kpi-label">Total (sesuai filter)</div><div class="kpi-value">${fmtRp(totalFiltered)}</div></div>
+      <div class="kpi"><div class="kpi-label">Jumlah Entri</div><div class="kpi-value">${filtered.length}</div></div>
+    </div>
+
+    <div class="panel">
+      <h2>Filter</h2>
+      <div class="grid2">
+        <div class="field"><label>Toko</label>
+          <select id="adsFilterStore"><option value="">Semua Toko</option>${activeStores.map(s=>`<option value="${s.id}" ${adsFilter.storeId===s.id?'selected':''}>${s.nama}</option>`).join('')}</select>
+        </div>
+        <div class="field"><label>Urutkan</label><div class="desc" style="margin:0;">Terbaru dulu</div></div>
+      </div>
+      <div class="grid2">
+        <div class="field"><label>Dari Tanggal</label><input type="date" id="adsFilterTglDari" value="${adsFilter.tglDari}"></div>
+        <div class="field"><label>Sampai Tanggal</label><input type="date" id="adsFilterTglSampai" value="${adsFilter.tglSampai}"></div>
+      </div>
+      ${Object.keys(byStore).length ? `
+      <div class="desc" style="margin-top:10px;"><b>Rincian per toko:</b> ${Object.entries(byStore).map(([s,t])=>`${s}: ${fmtRp(t)}`).join(' &middot; ')}</div>
+      ` : ''}
+      <div style="overflow-x:auto; margin-top:10px;">
+      ${!filtered.length ? '<div class="empty-note">Belum ada data.</div>' : `
+      <table class="data compact">
+        <thead><tr><th>Tanggal</th><th>Toko</th><th>Platform</th><th class="num">Biaya</th><th>Catatan</th><th></th></tr></thead>
+        <tbody>
+          ${filtered.map(a => `<tr>
+            <td>${fmtTanggal(a.tanggalDari,{short:true})} - ${fmtTanggal(a.tanggalSampai,{short:true})}</td>
+            <td>${a.storeName}</td><td>${a.platform}</td><td class="num">${fmtRp(a.biaya)}</td>
+            <td style="font-size:11px; color:var(--ink-soft);">${a.catatan||'-'}</td>
+            <td><button class="icon-del" data-del-ads="${a.id}">✕</button></td>
+          </tr>`).join('')}
+        </tbody>
+      </table>`}
+      </div>
+    </div>
+  `;
+
+  const formAds = document.getElementById('formAds');
+  if (formAds) {
+    formAds.addEventListener('submit', async (ev) => {
+      ev.preventDefault();
+      const msg = document.getElementById('adsMsg');
+      const storeId = document.getElementById('ads_store').value;
+      const store = activeStores.find(s => s.id === storeId);
+      const tglDari = document.getElementById('ads_tglDari').value;
+      const tglSampai = document.getElementById('ads_tglSampai').value;
+      const biaya = Number(document.getElementById('ads_biaya').value);
+      const catatan = document.getElementById('ads_catatan').value.trim();
+      if (!store) { showMsg(msg, 'err', 'Pilih toko dulu.'); return; }
+      if (new Date(tglSampai) < new Date(tglDari)) { showMsg(msg, 'err', 'Tanggal Sampai tidak boleh sebelum Tanggal Dari.'); return; }
+      STATE.adsMingguan.push({
+        id: uid('ads'), tanggalDari: new Date(tglDari).toISOString(), tanggalSampai: new Date(tglSampai).toISOString(),
+        storeId: store.id, storeName: store.nama, platform: store.platform, biaya, catatan: catatan||null,
+      });
+      await withSaving(msg, 'Biaya iklan ditambahkan.', async () => {
+        await saveState();
+        formAds.reset();
+      });
+      setTimeout(() => renderAds(container), 800);
+    });
+  }
+  document.getElementById('adsFilterStore').addEventListener('change', (e) => { adsFilter.storeId = e.target.value; renderAds(container); });
+  document.getElementById('adsFilterTglDari').addEventListener('change', (e) => { adsFilter.tglDari = e.target.value; renderAds(container); });
+  document.getElementById('adsFilterTglSampai').addEventListener('change', (e) => { adsFilter.tglSampai = e.target.value; renderAds(container); });
+  container.querySelectorAll('[data-del-ads]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      if (!confirm('Hapus entri biaya iklan ini?')) return;
+      STATE.adsMingguan = STATE.adsMingguan.filter(a => a.id !== btn.dataset.delAds);
+      await saveState();
+      renderAds(container);
+    });
+  });
+}
+
+const renderers = { master: renderMaster, kontrak: renderKontrak, import: renderImport, database: renderDatabase, laporan: renderLaporan, ads: renderAds };
 function switchTab(tab) {
   document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
   renderers[tab](document.getElementById('app'));
