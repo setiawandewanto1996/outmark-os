@@ -124,6 +124,7 @@ let STATE = {
   vendorPayouts: [],              // kewajiban bayar ke konveksi/supplier: {id, brand, produk, qty, total, tanggalDihitung, tanggalDibayar}
   adsMingguan: [],                 // biaya iklan per periode per toko: {id, tanggalDari, tanggalSampai, storeId, storeName, platform, biaya, catatan}
   biayaOperasional: [],            // biaya operasional periodik: {id, tanggalDari, tanggalSampai, kategori, jumlah, catatan}
+  saldoDiluarKontrak: {},          // {capitalPartnerId: jumlahRp} -- sisa pembulatan dari rollover kontrak, lintas produk per investor
 };
 let stateFileId = null;
 let accessToken = null;
@@ -193,6 +194,92 @@ function activeContractFor(produkAsli, capitalPartnerId) {
     .filter(c => c.produk === produkAsli && c.capitalPartnerId === capitalPartnerId && c.status === 'DANA BELUM CAIR')
     .sort((a,b) => new Date(a.tanggalMasuk) - new Date(b.tanggalMasuk));
   return list[0] || null;
+}
+
+// Generate kode kontrak berikutnya, meniru pola kode kontrak LAMA yg sedang di-rollover (mis. "IMO021" -> "IMO022"),
+// tapi dicari nomor TERTINGGI yg sudah dipakai utk kombinasi [investor][huruf produk] itu (bukan cuma +1 dari kode lama),
+// supaya tidak tabrakan kalau ada gap/kontrak lain sudah dibuat duluan.
+function generateNextKodeKontrak(kodeKontrakLama) {
+  const m = String(kodeKontrakLama).match(/^([A-Z]{2})([A-Z])(\d+)$/i);
+  if (!m) return kodeKontrakLama + '-2'; // fallback kalau polanya tidak dikenali
+  const [, kode2, huruf, numStr] = m;
+  const prefix = (kode2 + huruf).toUpperCase();
+  const width = numStr.length;
+  let maxNum = 0;
+  STATE.contracts.forEach(c => {
+    const mm = String(c.kodeKontrak).match(/^([A-Z]{2})([A-Z])(\d+)$/i);
+    if (mm && (mm[1]+mm[2]).toUpperCase() === prefix) maxNum = Math.max(maxNum, parseInt(mm[3], 10));
+  });
+  const next = maxNum + 1;
+  return prefix + String(next).padStart(width, '0');
+}
+
+// Eksekusi keputusan rollover (dari panel di preview batch) -- MENGUBAH result.allocations di tempat
+// supaya applyBatchResult() yg jalan setelah ini bisa memproses semuanya spt alokasi normal (bikin kontrak
+// baru beneran ke STATE.contracts kalau perlu, atau redistribusi ke investor lain kalau di-stop).
+function resolveRolloverIntoAllocations(result, resolutions) {
+  const perluList = result.allocations.filter(a => a.perluKontrakBaru);
+
+  // Tahap 1: proses PUTAR PENUH / PUTAR MODAL SAJA dulu -- bikin kontrak baru, supaya kontrak2 baru ini
+  // ikut kehitung sbg kandidat kalau ada kasus STOP yg perlu redistribusi di tahap 2.
+  perluList.forEach(a => {
+    const key = a.kode2 + '|' + a.produk;
+    const res = resolutions[key];
+    if (!res || res.tipe === 'stop') return;
+    const modalLama = a.qtyKontrakLama * a.hargaModalPcsLama;
+    const profitLama = a.qtyKontrakLama * a.nilaiMarginLama;
+    const modalBaru = res.tipe === 'putar_penuh' ? (modalLama + profitLama) : modalLama;
+    const stockAwalBaru = Math.floor(modalBaru / res.hargaBaru);
+    const sisa = modalBaru - (stockAwalBaru * res.hargaBaru);
+    STATE.saldoDiluarKontrak[a.capitalPartnerId] = (STATE.saldoDiluarKontrak[a.capitalPartnerId] || 0) + sisa;
+    const kodeBaru = generateNextKodeKontrak(a.kodeKontrakLama);
+    const kontrakBaru = {
+      id: uid('ct'), produk: a.produk, capitalPartnerId: a.capitalPartnerId, kodeKontrak: kodeBaru,
+      tanggalMasuk: new Date().toISOString(), stockAwal: stockAwalBaru, stockAkhir: stockAwalBaru,
+      hargaModalPcs: res.hargaBaru, nilaiMargin: a.nilaiMarginLama, status: 'DANA BELUM CAIR',
+      rolledFromKodeKontrak: a.kodeKontrakLama, rolledTipe: res.tipe,
+    };
+    STATE.contracts.push(kontrakBaru);
+    const qtyAlokasi = Math.min(a.qty, stockAwalBaru);
+    a.kodeKontrak = kodeBaru; a.contractId = kontrakBaru.id; a.qty = qtyAlokasi;
+    a.rate = a.nilaiMarginLama; a.payout = qtyAlokasi * a.nilaiMarginLama;
+    a.catatan = `Rollover (${res.tipe==='putar_penuh'?'putar penuh':'putar modal saja'}) dari ${a.kodeKontrakLama} -> ${kodeBaru}` +
+      (qtyAlokasi < a.qty ? ` -- ⚠ kontrak baru cuma cukup utk ${stockAwalBaru} dari ${a.qty} unit, sisanya perlu ditangani manual` : '');
+    delete a.perluKontrakBaru;
+  });
+
+  // Tahap 2: proses STOP -- hapus entri ini, redistribusi qty-nya ke investor aktif lain (kontrak baru dari tahap 1 ikut terhitung)
+  const toRemove = [];
+  perluList.forEach(a => {
+    const key = a.kode2 + '|' + a.produk;
+    const res = resolutions[key];
+    if (!res || res.tipe !== 'stop') return;
+    toRemove.push(a);
+    // Kontrak lama BELUM ditutup di titik ini (penutupan normal baru terjadi nanti di applyBatchResult).
+    // Karena investor pilih STOP, tutup SEKARANG supaya tidak ikut kehitung di persentase redistribusi di bawah.
+    const kontrakLama = STATE.contracts.find(c => c.kodeKontrak === a.kodeKontrakLama);
+    if (kontrakLama) { kontrakLama.stockAkhir = 0; kontrakLama.status = 'DANA SUDAH CAIR'; }
+    const pct = computePembagiPct(a.produk); // sekarang benar2 exclude kontrak yg baru ditutup ini
+    if (!Object.keys(pct).length) {
+      result.allocations.push({ produk: a.produk, kode2: null, namaInvestor: null, kodeKontrak: null, qty: a.qty, rate: null, payout: null,
+        catatan: `${a.qty} unit dari ${a.namaInvestor} (STOP) tidak bisa diredistribusi -- tidak ada kontrak aktif lain utk ${a.produk}.` });
+      return;
+    }
+    const floors = allocateLargestRemainder(a.qty, pct);
+    Object.entries(floors).forEach(([kode2b, qtyb]) => {
+      if (qtyb <= 0) return;
+      const partnerB = findPartnerByKode2(kode2b);
+      const kontrakB = partnerB ? activeContractFor(a.produk, partnerB.id) : null;
+      result.allocations.push({
+        produk: a.produk, kode2: kode2b, namaInvestor: partnerB ? partnerB.nama : kode2b, capitalPartnerId: partnerB ? partnerB.id : null,
+        kodeKontrak: kontrakB ? kontrakB.kodeKontrak : null, contractId: kontrakB ? kontrakB.id : null,
+        qty: qtyb, rate: kontrakB ? kontrakB.nilaiMargin : null, payout: kontrakB ? qtyb*kontrakB.nilaiMargin : null,
+        catatan: `Redistribusi dari ${a.namaInvestor} (kontrak di-STOP)` + (kontrakB ? '' : ' -- TIDAK ADA kontrak aktif, cek manual'),
+        orderUnits: a.orderUnits ? a.orderUnits.slice(0, qtyb) : [], skuBreakdown: {}, hargaModalPcs: kontrakB ? kontrakB.hargaModalPcs : null,
+      });
+    });
+  });
+  toRemove.forEach(a => { const idx = result.allocations.indexOf(a); if (idx >= 0) result.allocations.splice(idx, 1); });
 }
 
 function parseWarna(variasiText) {
@@ -456,11 +543,18 @@ async function processWeeklyBatch(storeImports) {
       if (remaining > 0) {
         // TIDAK ADA kontrak aktif yg cukup utk sisa ini -- investor perlu kontrak baru (rollover) atau kontrak dihentikan.
         // BELUM otomatis dibuatkan -- perlu keputusan manual (lihat notifikasi "Perlu Kontrak Baru" di preview batch).
+        const lastContract = activeContractsForPartner[activeContractsForPartner.length - 1]
+          || STATE.contracts.filter(c => c.produk === produk && c.capitalPartnerId === partner.id)
+               .sort((a,b) => new Date(b.tanggalMasuk) - new Date(a.tanggalMasuk))[0] || null;
         allocations.push({
           produk, kode2, namaInvestor: partner.nama, capitalPartnerId: partner.id, kodeKontrak: null, contractId: null,
           qty: remaining, rate: null, payout: null,
           catatan: `⚠ ${remaining} unit TIDAK ADA kontrak aktif yg cukup -- kontrak ${partner.nama} utk ${produk} sudah habis, perlu kontrak baru (rollover) atau dihentikan.`,
           orderUnits: assignedUnits.slice(cursorInAssigned), skuBreakdown: {}, hargaModalPcs: null, perluKontrakBaru: true,
+          kodeKontrakLama: lastContract ? lastContract.kodeKontrak : null,
+          qtyKontrakLama: lastContract ? lastContract.stockAwal : 0,
+          hargaModalPcsLama: lastContract ? lastContract.hargaModalPcs : 0,
+          nilaiMarginLama: lastContract ? lastContract.nilaiMargin : 0,
         });
       }
     });
@@ -540,7 +634,7 @@ async function loadState() {
   const loaded = text ? JSON.parse(text) : {};
   // DEFAULT_STATE mencakup SEMUA field yg pernah ada -- supaya file lama (dari sebelum field baru ditambahkan)
   // tidak jadi undefined pas dimuat. Tiap kali nambah field baru ke STATE, tambahkan juga di sini.
-  const DEFAULT_STATE = { capitalPartners: [], stores: [], products: [], contracts: [], colorCodeMap: {}, pembagiPctManual: {}, orderDb: [], pendingOrderSku: {}, payouts: [], vendorPayouts: [], adsMingguan: [], biayaOperasional: [] };
+  const DEFAULT_STATE = { capitalPartners: [], stores: [], products: [], contracts: [], colorCodeMap: {}, pembagiPctManual: {}, orderDb: [], pendingOrderSku: {}, payouts: [], vendorPayouts: [], adsMingguan: [], biayaOperasional: [], saldoDiluarKontrak: {} };
   STATE = Object.assign({}, DEFAULT_STATE, loaded);
 }
 
@@ -1265,14 +1359,71 @@ async function runWeeklyImport() {
   }
 }
 
+let rolloverResolutions = {}; // key (kode2|produk) -> { tipe: 'putar_penuh'|'putar_modal'|'stop', hargaBaru }
+
+function renderRolloverCase(a, key) {
+  const res = rolloverResolutions[key];
+  const modalLama = a.qtyKontrakLama * a.hargaModalPcsLama;
+  const profitLama = a.qtyKontrakLama * a.nilaiMarginLama;
+  return `
+    <div style="border:1px solid #E8C2B8; border-radius:3px; padding:12px; margin-top:8px; background:#fff;" data-rollover-case="${key}">
+      <div style="font-weight:600; font-size:13px;">${a.namaInvestor} &middot; ${a.produk} &middot; ${a.qty} unit perlu keputusan</div>
+      <div class="desc" style="margin:4px 0;">Kontrak ${a.kodeKontrakLama} habis. Modal awal: ${fmtRp(modalLama)} &middot; Profit terkumpul: ${fmtRp(profitLama)}</div>
+      ${res ? `
+        <div class="status-box show ok" style="margin-top:6px;">
+          ${res.tipe === 'stop' ? 'Dipilih: STOP -- sisa unit dialihkan ke investor aktif lain.' : `Dipilih: ${res.tipe === 'putar_penuh' ? 'Putar Penuh' : 'Putar Modal Saja'} -- Harga baru ${fmtRp(res.hargaBaru)}, kontrak baru: ${generateNextKodeKontrak(a.kodeKontrakLama)}`}
+          <button class="btn btn-ghost" data-rollover-ubah="${key}" style="margin-left:8px; padding:2px 8px; font-size:10px;">Ubah</button>
+        </div>
+      ` : `
+        <div style="display:flex; gap:6px; flex-wrap:wrap; margin-top:8px;">
+          <button class="btn btn-ghost" data-rollover-pilih="putar_penuh" data-case-key="${key}">Putar Penuh</button>
+          <button class="btn btn-ghost" data-rollover-pilih="putar_modal" data-case-key="${key}">Putar Modal Saja</button>
+          <button class="btn btn-ghost" data-rollover-pilih="stop" data-case-key="${key}">Stop</button>
+        </div>
+        <div id="rolloverInputArea_${key}"></div>
+      `}
+    </div>
+  `;
+}
+
+function wireRolloverHandlers(el, container, result, rerender) {
+  el.querySelectorAll('[data-rollover-pilih]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const key = btn.dataset.caseKey, tipe = btn.dataset.rolloverPilih;
+      if (tipe === 'stop') { rolloverResolutions[key] = { tipe: 'stop' }; rerender(); return; }
+      const area = document.getElementById('rolloverInputArea_' + key);
+      area.innerHTML = `
+        <div class="grid2" style="margin-top:8px; max-width:400px;">
+          <div class="field"><label>Harga Modal Baru (Rp)</label><input type="number" id="rolloverHarga_${key}" min="1"></div>
+        </div>
+        <button class="btn btn-primary" data-confirm-rollover="${key}" data-tipe="${tipe}" style="padding:6px 12px; font-size:12px;">Konfirmasi</button>
+      `;
+      document.getElementById('rolloverInputArea_' + key).querySelector('[data-confirm-rollover]').addEventListener('click', () => {
+        const harga = Number(document.getElementById('rolloverHarga_' + key).value);
+        if (!harga || harga <= 0) { alert('Isi harga modal baru dulu.'); return; }
+        rolloverResolutions[key] = { tipe, hargaBaru: harga };
+        rerender();
+      });
+    });
+  });
+  el.querySelectorAll('[data-rollover-ubah]').forEach(btn => {
+    btn.addEventListener('click', () => { delete rolloverResolutions[btn.dataset.rolloverUbah]; rerender(); });
+  });
+}
+
 function renderImportPreview(el, result) {
   const totalPayout = result.allocations.reduce((s,a) => s + (a.payout||0), 0);
   const totalVendor = Object.values(result.vendorPayments).reduce((s,v) => s + v.total, 0);
   const perluKontrakBaru = result.allocations.filter(a => a.perluKontrakBaru);
+  const semuaTerselesaikan = perluKontrakBaru.every(a => rolloverResolutions[a.kode2 + '|' + a.produk]);
+  const rerender = () => renderImportPreview(el, result);
   el.innerHTML = `
     <div class="panel">
       <div class="status-box show info">Angka mencakup semua order cair di file yg diupload -- kalau rentangnya lebih dari 1 periode penarikan biasamu, hasilnya otomatis gabungan.</div>
-      ${perluKontrakBaru.length ? `<div class="status-box show err" style="margin-top:10px;"><b>⚠ PERLU PERHATIAN -- Kontrak Habis di Tengah:</b><br>${perluKontrakBaru.map(a => `${a.namaInvestor} (${a.produk}): ${a.qty} unit belum ada kontrak aktif. Perlu putuskan: putar modal+profit, putar modal saja, atau hentikan kontrak -- lalu tambah kontrak baru manual di tab Produk &amp; Kontrak sebelum Simpan.`).join('<br>')}</div>` : ''}
+      ${perluKontrakBaru.length ? `<div class="status-box show err" style="margin-top:10px;">
+        <b>⚠ PERLU KEPUTUSAN -- Kontrak Habis di Tengah (wajib diputuskan sebelum Simpan):</b>
+        ${perluKontrakBaru.map(a => renderRolloverCase(a, a.kode2 + '|' + a.produk)).join('')}
+      </div>` : ''}
       <div class="kpi-row" style="margin-top:14px;">
         <div class="kpi"><div class="kpi-label">Total Payout Investor</div><div class="kpi-value">${fmtRp(totalPayout)}</div></div>
         <div class="kpi"><div class="kpi-label">Total Bayar Konveksi</div><div class="kpi-value">${fmtRp(totalVendor)}</div></div>
@@ -1301,17 +1452,21 @@ function renderImportPreview(el, result) {
           <td class="num">${r.totalSurplus!=null?fmtRp(r.totalSurplus):'-'}</td></tr>`).join('')}</tbody>
       </table>
       <div class="field" style="margin-top:16px; max-width:260px;"><label>Tanggal Penarikan</label><input type="date" id="applyTanggalPenarikan" value="${new Date().toISOString().slice(0,10)}"></div>
-      <button class="btn btn-primary" id="btnApplyBatch" style="margin-top:8px;">Simpan ke Database &amp; Kurangi Stok Kontrak</button>
+      ${!semuaTerselesaikan ? `<div class="status-box show err">Selesaikan dulu semua keputusan kontrak di atas sebelum bisa Simpan.</div>` : ''}
+      <button class="btn btn-primary" id="btnApplyBatch" style="margin-top:8px;" ${!semuaTerselesaikan?'disabled':''}>Simpan ke Database &amp; Kurangi Stok Kontrak</button>
       <div class="status-box" id="applyMsg"></div>
     </div>
   `;
+  wireRolloverHandlers(el, null, result, rerender);
   document.getElementById('btnApplyBatch').addEventListener('click', async (ev) => {
     const btn = ev.target; btn.disabled = true; btn.textContent = 'Menyimpan...';
     const msg = document.getElementById('applyMsg');
     try {
+      resolveRolloverIntoAllocations(result, rolloverResolutions);
       const tglInput = document.getElementById('applyTanggalPenarikan').value;
       const tglIso = tglInput ? new Date(tglInput).toISOString() : new Date().toISOString();
       const { added, updated } = await applyBatchResult(result, tglIso);
+      rolloverResolutions = {}; // reset supaya batch berikutnya bersih
       showMsg(msg, 'ok', `${added} baris baru tersimpan${updated ? `, ${updated} baris lama diperbarui (mis. order "Gagal" yg ternyata koreksi jadi cair)` : ''} ke database. Stok kontrak diperbarui.`);
       btn.textContent = 'Tersimpan ✓';
     } catch (e) {
