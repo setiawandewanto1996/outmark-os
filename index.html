@@ -2587,6 +2587,41 @@ function renderDashboard(container) {
   const produkList = Object.entries(byProduk).sort((a,b) => b[1].omzet - a[1].omzet).slice(0,10);
   const maxOmzetProduk = Math.max(1, ...produkList.map(([,v]) => v.omzet));
 
+  function renderProdukBreakdown(nama) {
+    const produkRows = rows.filter(r => r.produk === nama);
+    const byWarna = {}, bySize = {};
+    produkRows.forEach(r => {
+      const w = r.warna || 'Tidak diketahui';
+      byWarna[w] = (byWarna[w]||0) + (r.qty||1);
+      let sizeLabel = 'Tidak diketahui';
+      if (r.sku) { const sizeCode = String(r.sku).toUpperCase().slice(-2); sizeLabel = SIZE_CODE_MAP[sizeCode] || 'Tidak diketahui'; }
+      bySize[sizeLabel] = (bySize[sizeLabel]||0) + (r.qty||1);
+    });
+    const warnaList = Object.entries(byWarna).sort((a,b) => b[1]-a[1]);
+    const sizeList = Object.entries(bySize).sort((a,b) => (SIZES.indexOf(a[0]) - SIZES.indexOf(b[0])) || 0);
+    const maxWarna = Math.max(1, ...warnaList.map(([,v])=>v));
+    const maxSize = Math.max(1, ...sizeList.map(([,v])=>v));
+    const bar = (label, qty, max, color) => `
+      <div style="margin-bottom:8px;">
+        <div style="display:flex; justify-content:space-between; font-size:11.5px; margin-bottom:2px;"><span>${label}</span><span>${qty} unit</span></div>
+        <div style="background:var(--line); border-radius:2px; height:8px;"><div style="background:${color}; height:100%; border-radius:2px; width:${(qty/max*100).toFixed(1)}%;"></div></div>
+      </div>`;
+    return `
+      <div style="background:#F4EFE2; border:1px solid var(--line); border-radius:3px; padding:14px; margin:6px 0 14px;">
+        <div class="grid2">
+          <div>
+            <div style="font-weight:600; font-size:12px; margin-bottom:8px;">Warna Terlaris</div>
+            ${warnaList.length ? warnaList.map(([w,q]) => bar(w,q,maxWarna,'var(--accent)')).join('') : '<div class="desc">Tidak ada data warna.</div>'}
+          </div>
+          <div>
+            <div style="font-weight:600; font-size:12px; margin-bottom:8px;">Size Terlaris</div>
+            ${sizeList.length ? sizeList.map(([s,q]) => bar(s,q,maxSize,'var(--ok)')).join('') : '<div class="desc">Tidak ada data size.</div>'}
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
   container.innerHTML = `
     <div class="panel">
       <h2>Periode</h2>
@@ -2624,12 +2659,16 @@ function renderDashboard(container) {
 
     <div class="panel">
       <h2>Top 10 Produk (by Omzet)</h2>
+      <div class="desc">Klik nama produk untuk lihat rincian warna &amp; size terlaris.</div>
       ${!produkList.length ? '<div class="empty-note">Tidak ada data di periode ini.</div>' : produkList.map(([nama,v]) => `
-        <div style="margin-bottom:10px;">
-          <div style="display:flex; justify-content:space-between; font-size:12px; margin-bottom:3px;">
-            <span>${nama}</span><span>${fmtRp(v.omzet)} &middot; ${v.qty} unit</span>
+        <div>
+          <div class="produk-dash-toggle" data-produk-dash="${nama}" style="margin-bottom:10px; cursor:pointer;">
+            <div style="display:flex; justify-content:space-between; font-size:12px; margin-bottom:3px;">
+              <span style="text-decoration:underline; color:var(--accent);">${nama}</span><span>${fmtRp(v.omzet)} &middot; ${v.qty} unit</span>
+            </div>
+            <div style="background:var(--line); border-radius:2px; height:10px;"><div style="background:var(--ok); height:100%; border-radius:2px; width:${(v.omzet/maxOmzetProduk*100).toFixed(1)}%;"></div></div>
           </div>
-          <div style="background:var(--line); border-radius:2px; height:10px;"><div style="background:var(--ok); height:100%; border-radius:2px; width:${(v.omzet/maxOmzetProduk*100).toFixed(1)}%;"></div></div>
+          <div id="produkDash_${nama}" style="display:none;">${renderProdukBreakdown(nama)}</div>
         </div>
       `).join('')}
     </div>
@@ -2641,6 +2680,12 @@ function renderDashboard(container) {
   });
   document.getElementById('dashDari').addEventListener('change', (e) => { dashFilter.preset='custom'; dashFilter.dari = e.target.value; renderDashboard(container); });
   document.getElementById('dashSampai').addEventListener('change', (e) => { dashFilter.preset='custom'; dashFilter.sampai = e.target.value; renderDashboard(container); });
+  container.querySelectorAll('[data-produk-dash]').forEach(el => {
+    el.addEventListener('click', () => {
+      const target = document.getElementById('produkDash_' + el.dataset.produkDash);
+      if (target) target.style.display = target.style.display === 'none' ? 'block' : 'none';
+    });
+  });
 }
 
 const renderers = { master: renderMaster, kontrak: renderKontrak, import: renderImport, database: renderDatabase, laporan: renderLaporan, ads: renderAds, opex: renderOpex, pnl: renderPnl, dashboard: renderDashboard };
