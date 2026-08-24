@@ -49,9 +49,6 @@
   table.data { width: 100%; border-collapse: collapse; font-size: 13px; }
   table.data th { font-family: 'IBM Plex Mono', monospace; font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.6px; color: var(--ink-soft); text-align: left; border-bottom: 2px solid var(--ink); padding: 8px 6px; white-space: nowrap; }
   table.data.compact th, table.data.compact td { padding: 6px 8px; font-size: 12px; white-space: nowrap; }
-  .filter-row th { padding: 4px 6px; border-bottom: 2px solid var(--ink); text-transform: none; }
-  .filter-row select, .filter-row input { width: 100%; font-size: 11px; padding: 3px 4px; border: 1px solid var(--line); border-radius: 2px; font-family: 'Inter', sans-serif; box-sizing: border-box; }
-  .filter-row input[type="date"] { font-size: 10px; padding: 2px; }
   table.data td { padding: 9px 6px; border-bottom: 1px solid var(--line); }
   .pill { display: inline-block; font-family: 'IBM Plex Mono', monospace; font-size: 10.5px; padding: 2px 8px; border-radius: 20px; background: var(--line); color: var(--ink-soft); }
   .pill.ok { background: #E3EFE8; color: var(--ok); }
@@ -1362,37 +1359,39 @@ function renderDatabase(container) {
       <div class="kpi"><div class="kpi-label">Ditambahkan via App</div><div class="kpi-value">${fromImport.toLocaleString('id-ID')}</div></div>
     </div>
     <div class="panel">
-      <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
-        <div class="desc" style="margin:0;">${filtered.length.toLocaleString('id-ID')} baris cocok filter &middot; halaman ${dbFilters.page} dari ${totalPages}</div>
+      <div style="display:flex; justify-content:space-between; align-items:center;">
+        <h2 style="margin:0;">Filter</h2>
         ${anyFilterActive ? `<button class="btn btn-ghost" id="btnClearFilters" style="padding:5px 10px; font-size:11px;">Bersihkan Semua Filter</button>` : ''}
       </div>
+      <div class="grid2" style="margin-top:10px;">
+        <div class="field"><label>Filter Produk</label>
+          <select id="dbFilterProduk"><option value="">Semua Produk</option>${produkList.map(p=>`<option value="${p}" ${dbFilters.produk===p?'selected':''}>${p}</option>`).join('')}</select>
+        </div>
+        <div class="field"><label>Filter Brand</label>
+          <select id="dbFilterBrand"><option value="">Semua Brand</option>${brandList.map(b=>`<option value="${b}" ${dbFilters.brand===b?'selected':''}>${b}</option>`).join('')}</select>
+        </div>
+      </div>
+      <div class="field"><label>Filter Sumber/Platform</label>
+        <select id="dbFilterSumber"><option value="">Semua Sumber</option>${sumberList.map(s=>`<option value="${s}" ${dbFilters.sumber===s?'selected':''}>${s}</option>`).join('')}</select>
+      </div>
+      <div class="field"><label>Cari Order ID / SKU</label><input type="text" id="dbFilterSearch" value="${dbFilters.search}" placeholder="ketik order ID atau SKU..."></div>
+      <div class="grid2">
+        <div class="field"><label>Tgl Pesanan Dari</label><input type="date" id="dbFilterTglPesanDari" value="${dbFilters.tglPesanDari}"></div>
+        <div class="field"><label>Tgl Pesanan Sampai</label><input type="date" id="dbFilterTglPesanSampai" value="${dbFilters.tglPesanSampai}"></div>
+      </div>
+      <div class="grid2">
+        <div class="field"><label>Tgl Penarikan Dari</label><input type="date" id="dbFilterTglPenarikanDari" value="${dbFilters.tglPenarikanDari}"></div>
+        <div class="field"><label>Tgl Penarikan Sampai</label><input type="date" id="dbFilterTglPenarikanSampai" value="${dbFilters.tglPenarikanSampai}"></div>
+      </div>
+      <div class="desc" style="margin-top:10px;">${filtered.length.toLocaleString('id-ID')} baris cocok filter &middot; halaman ${dbFilters.page} dari ${totalPages}</div>
       <div class="desc">Total (sesuai filter): Pendapatan <b>${fmtRp(sumFiltered('pendapatan'))}</b> &middot; Profit <b>${fmtRp(sumFiltered('profit'))}</b></div>
       <div style="overflow-x:auto; margin-top:8px;">
-      <table class="data compact filter-table">
-        <thead>
-          <tr>
-            <th>Order ID</th><th>Produk</th><th>SKU</th><th>Warna</th><th>Brand</th><th>Sumber</th>
-            <th class="num">Qty</th><th class="num">Pendapatan</th><th class="num">Komisi Platform</th>
-            <th class="num">Afiliasi</th><th class="num">Profit</th><th>Tgl Pesanan</th><th>Tgl Penarikan</th>
-          </tr>
-          <tr class="filter-row">
-            <th><input type="text" id="dbFilterSearch" value="${dbFilters.search}" placeholder="cari ID/SKU..."></th>
-            <th><select id="dbFilterProduk"><option value="">Semua</option>${produkList.map(p=>`<option value="${p}" ${dbFilters.produk===p?'selected':''}>${p}</option>`).join('')}</select></th>
-            <th></th>
-            <th></th>
-            <th><select id="dbFilterBrand"><option value="">Semua</option>${brandList.map(b=>`<option value="${b}" ${dbFilters.brand===b?'selected':''}>${b}</option>`).join('')}</select></th>
-            <th><select id="dbFilterSumber"><option value="">Semua</option>${sumberList.map(s=>`<option value="${s}" ${dbFilters.sumber===s?'selected':''}>${s}</option>`).join('')}</select></th>
-            <th></th><th></th><th></th><th></th><th></th>
-            <th>
-              <input type="date" id="dbFilterTglPesanDari" value="${dbFilters.tglPesanDari}" title="Dari tanggal" style="margin-bottom:3px;">
-              <input type="date" id="dbFilterTglPesanSampai" value="${dbFilters.tglPesanSampai}" title="Sampai tanggal">
-            </th>
-            <th>
-              <input type="date" id="dbFilterTglPenarikanDari" value="${dbFilters.tglPenarikanDari}" title="Dari tanggal" style="margin-bottom:3px;">
-              <input type="date" id="dbFilterTglPenarikanSampai" value="${dbFilters.tglPenarikanSampai}" title="Sampai tanggal">
-            </th>
-          </tr>
-        </thead>
+      <table class="data compact">
+        <thead><tr>
+          <th>Order ID</th><th>Produk</th><th>SKU</th><th>Warna</th><th>Brand</th><th>Sumber</th>
+          <th class="num">Qty</th><th class="num">Pendapatan</th><th class="num">Komisi Platform</th>
+          <th class="num">Afiliasi</th><th class="num">Profit</th><th>Tgl Pesanan</th><th>Tgl Penarikan</th>
+        </tr></thead>
         <tbody>
           ${pageRows.map(r => `<tr>
             <td style="font-family:'IBM Plex Mono',monospace;font-size:10.5px;">${r.orderId}</td>
