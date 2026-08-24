@@ -357,7 +357,8 @@ async function processWeeklyBatch(storeImports) {
 
   // ---- Map SKU -> produk + brand, hargaKonveksi, warna fallback ----
   const qtyPerProduk = {}; // hanya produk URBAN OUTDOOR (jalur capital partner)
-  const vendorSkuRows = [];
+  const vendorSkuRows = []; // SEMUA produk (termasuk Urban Outdoor) -- konveksi/pembuat barang tetap harus dibayar
+                             // terlepas dari investor dapat margin, jadi 2 arus uang ini paralel, bukan saling meniadakan.
   newCairSkuRows.forEach(r => {
     if (!r.sku) return;
     const prefix = String(r.sku).slice(0,3).toUpperCase();
@@ -370,18 +371,18 @@ async function processWeeklyBatch(storeImports) {
     if (p.brand === 'URBAN OUTDOOR') {
       const cp = capitalPartnerProduk(p.nama);
       qtyPerProduk[cp] = (qtyPerProduk[cp]||0) + r.qty;
-    } else {
-      vendorSkuRows.push(r);
     }
+    vendorSkuRows.push(r);
   });
 
-  // ---- Pembayaran ke Konveksi/Supplier ----
+  // ---- Pembayaran ke Konveksi/Supplier (SEMUA brand, termasuk Urban Outdoor) ----
   const vendorPayments = {};
   vendorSkuRows.forEach(r => {
     if (!r.hargaKonveksi) return;
     const b = r.brand || 'TIDAK DIKETAHUI';
-    vendorPayments[b] = vendorPayments[b] || { qty:0, total:0, produk:new Set() };
+    vendorPayments[b] = vendorPayments[b] || { qty:0, total:0, produk:new Set(), skuBreakdown:{} };
     vendorPayments[b].qty += r.qty; vendorPayments[b].total += r.qty*r.hargaKonveksi; vendorPayments[b].produk.add(r.produk);
+    vendorPayments[b].skuBreakdown[r.sku] = (vendorPayments[b].skuBreakdown[r.sku]||0) + r.qty;
   });
 
   // ---- Alokasi FIFO (per investor) + largest remainder (antar investor) ----
@@ -846,6 +847,7 @@ function renderMaster(container) {
         const iPajak2 = hh.indexOf('Pajak'), iPendapatan2 = hh.indexOf('Pendapatan'), iProfit2 = hh.indexOf('Profit');
         const iModalInv2 = hh.indexOf('Modal Investor'), iProfitSetelah2 = hh.indexOf('Profit Setelah Investor');
         const iTglPenarikan2 = hh.indexOf('Tanggal Penarikan'), iTglPesan2 = hh.indexOf('Tanggal Pesan'), iStatus2 = hh.indexOf('Status');
+        const iKodeKontrakHist2 = hh.indexOf('INVESTOR'); // kolom B -- kode kontrak ASLI yg dipakai investor pd sale ini (sumber kebenaran historis)
         // Dedup berdasarkan JUMLAH KEMUNCULAN (bukan sekadar ada/tidak), supaya order+SKU yg sama tapi
         // muncul berkali-kali di PENJUALAN (krn qty>1 dipecah jadi beberapa baris terpisah) TETAP semua kehitung,
         // tapi tetap idempotent kalau migrasi dijalankan ulang (tidak nambah dobel).
@@ -869,6 +871,7 @@ function renderMaster(container) {
           const freshData = {
             orderId: String(noRef), sumber: row[iSumber2]||null, produk: nama, sku: sku||null, brand: row[iBrand2]||null, warna: row[iWarna2]||null,
             qty: 1, hargaKonveksi: null, tanggalPenarikan: tglPenarikan, tanggalCair: null, tanggalPesan: tglPesan, status: row[iStatus2]||null,
+            kodeKontrakHistoris: row[iKodeKontrakHist2]||null,
             pendapatan: toNumOrNull(row[iPendapatan2]), komisiPlatform: toNumOrNull(row[iAdmin2]),
             biayaLayanan: (iBiayaLayanan2>=0||iOngkir2>=0||iBiayaPesanan2>=0) ? biayaLayananGabungan : null,
             biayaPembayaran: null, komisiAfiliasi: toNumOrNull(row[iAfiliasi2]), komisiDinamis: toNumOrNull(row[iKomisiDinamis2]),
@@ -1049,7 +1052,7 @@ async function applyBatchResult(result, tanggalPenarikanIso) {
       hargaModalPcs: a.hargaModalPcs||null, skuBreakdown: a.skuBreakdown||{}, orderIds: [...new Set((a.orderUnits||[]).map(u=>u.orderId))] });
   });
   Object.entries(result.vendorPayments).forEach(([brand, d]) => {
-    STATE.vendorPayouts.push({ id: uid('vpo'), tanggalDihitung: tglPenarikan, brand, produk: [...d.produk].join(', '), qty: d.qty, total: d.total, tanggalDibayar: null });
+    STATE.vendorPayouts.push({ id: uid('vpo'), tanggalDihitung: tglPenarikan, brand, produk: [...d.produk].join(', '), qty: d.qty, total: d.total, tanggalDibayar: null, skuBreakdown: d.skuBreakdown||{} });
   });
 
   await saveState();
@@ -1832,6 +1835,8 @@ function renderKontrakDetailTable(payout) {
 // Rekonstruksi PERKIRAAN payouts dari histori PENJUALAN yg sudah dimigrasi -- SEPENUHNYA TERPISAH dari alur
 // Import Mingguan asli. TIDAK PERNAH menyentuh STATE.contracts atau STATE.orderDb -- cuma BACA dari orderDb,
 // TULIS ke STATE.payouts/vendorPayouts saja. Aman dijalankan berkali-kali (hapus hasil lama dulu tiap kali).
+// PAKAI kodeKontrakHistoris (kolom B di PENJUALAN) LANGSUNG sbg sumber kebenaran -- BUKAN hitung ulang alokasi
+// pakai kontrak yg aktif SEKARANG, supaya akurat kalau kontrak sudah berganti sejak saat itu (mis. IWO013->IWO014).
 function backfillPayoutsFromHistory() {
   STATE.payouts = STATE.payouts.filter(p => p.sumberData !== 'backfill_estimasi');
   STATE.vendorPayouts = STATE.vendorPayouts.filter(p => p.sumberData !== 'backfill_estimasi');
@@ -1840,62 +1845,56 @@ function backfillPayoutsFromHistory() {
   const byDate = {};
   histRows.forEach(r => { const d = r.tanggalPenarikan.slice(0,10); byDate[d] = byDate[d] || []; byDate[d].push(r); });
 
-  let nBackfilled = 0;
+  let nBackfilled = 0, nTanpaKodeKontrak = 0;
   Object.entries(byDate).forEach(([date, rows]) => {
-    const qtyPerProduk = {};
-    const vendorRows = [];
+    // ---- INVESTOR: kelompokkan LANGSUNG per kodeKontrakHistoris (dari kolom B) -- bukan re-alokasi ----
+    const byKontrak = {};
     rows.forEach(r => {
       const p = findProduct(r.produk);
-      if (!p) return;
-      if (p.brand === 'URBAN OUTDOOR') { const cp = capitalPartnerProduk(r.produk); qtyPerProduk[cp] = (qtyPerProduk[cp]||0) + (r.qty||1); }
-      else vendorRows.push(r);
+      if (!p || p.brand !== 'URBAN OUTDOOR') return;
+      if (!r.kodeKontrakHistoris) { nTanpaKodeKontrak++; return; }
+      const key = r.kodeKontrakHistoris + '|' + capitalPartnerProduk(r.produk);
+      byKontrak[key] = byKontrak[key] || { kodeKontrak: r.kodeKontrakHistoris, produk: capitalPartnerProduk(r.produk), rows: [] };
+      byKontrak[key].rows.push(r);
     });
-
-    Object.entries(qtyPerProduk).forEach(([produk, qtyTotalF]) => {
-      const qtyTotal = Math.round(qtyTotalF);
-      const pct = computePembagiPct(produk);
-      if (!Object.keys(pct).length) return;
-      const productRows = rows.filter(r => capitalPartnerProduk(r.produk) === produk);
-      const units = [];
-      productRows.forEach(r => { for (let i=0;i<(r.qty||1);i++) units.push({ orderId: r.orderId, sku: r.sku }); });
-      const floors = allocateLargestRemainder(qtyTotal, pct);
-      let unitCursor = 0;
-      Object.entries(floors).forEach(([kode2, qty]) => {
-        if (qty <= 0) return;
-        const assignedUnits = units.slice(unitCursor, unitCursor + qty);
-        unitCursor += qty;
-        const partner = findPartnerByKode2(kode2);
-        const kontrak = partner ? activeContractFor(produk, partner.id) : null;
-        const skuBreakdown = {};
-        assignedUnits.forEach(u => { skuBreakdown[u.sku] = (skuBreakdown[u.sku]||0) + 1; });
-        STATE.payouts.push({
-          id: uid('po'), tanggalDihitung: new Date(date).toISOString(), produk, kode2,
-          namaInvestor: partner ? partner.nama : kode2, capitalPartnerId: partner ? partner.id : null,
-          kodeKontrak: kontrak ? kontrak.kodeKontrak : null, qty, rate: kontrak ? kontrak.nilaiMargin : null,
-          payout: kontrak ? qty*kontrak.nilaiMargin : null, tanggalDibayar: null,
-          hargaModalPcs: kontrak ? kontrak.hargaModalPcs : null, skuBreakdown,
-          orderIds: [...new Set(assignedUnits.map(u=>u.orderId))], sumberData: 'backfill_estimasi',
-        });
-        nBackfilled++;
+    Object.values(byKontrak).forEach(group => {
+      const kode2 = group.kodeKontrak.slice(0,2).toUpperCase();
+      const partner = findPartnerByKode2(kode2);
+      const kontrakRef = STATE.contracts.find(c => c.kodeKontrak === group.kodeKontrak); // cari kontraknya (aktif atau sudah tutup)
+      const qty = group.rows.reduce((s,r) => s + (r.qty||1), 0);
+      const skuBreakdown = {};
+      group.rows.forEach(r => { if (r.sku) skuBreakdown[r.sku] = (skuBreakdown[r.sku]||0) + (r.qty||1); });
+      STATE.payouts.push({
+        id: uid('po'), tanggalDihitung: new Date(date).toISOString(), produk: group.produk, kode2,
+        namaInvestor: partner ? partner.nama : kode2, capitalPartnerId: partner ? partner.id : null,
+        kodeKontrak: group.kodeKontrak, qty, rate: kontrakRef ? kontrakRef.nilaiMargin : null,
+        payout: kontrakRef ? qty*kontrakRef.nilaiMargin : null, tanggalDibayar: null,
+        hargaModalPcs: kontrakRef ? kontrakRef.hargaModalPcs : null, skuBreakdown,
+        orderIds: [...new Set(group.rows.map(r=>r.orderId))], sumberData: 'backfill_estimasi',
       });
+      nBackfilled++;
     });
 
+    // ---- VENDOR/KONVEKSI: SEMUA brand TERMASUK Urban Outdoor (arus uang beda: investor dapat margin,
+    // konveksi/pembuat barang dapat harga produksi -- 2 hal terpisah utk produk yg sama) ----
     const vendorByBrand = {};
-    vendorRows.forEach(r => {
+    rows.forEach(r => {
       if (!r.sku) return;
       const harga = lookupHargaKonveksiBySku(r.sku);
       if (!harga) return;
       const b = r.brand || 'TIDAK DIKETAHUI';
-      vendorByBrand[b] = vendorByBrand[b] || { qty:0, total:0, produk:new Set() };
+      vendorByBrand[b] = vendorByBrand[b] || { qty:0, total:0, produk:new Set(), skuBreakdown:{} };
       vendorByBrand[b].qty += (r.qty||1); vendorByBrand[b].total += (r.qty||1)*harga; vendorByBrand[b].produk.add(r.produk);
+      vendorByBrand[b].skuBreakdown[r.sku] = (vendorByBrand[b].skuBreakdown[r.sku]||0) + (r.qty||1);
     });
     Object.entries(vendorByBrand).forEach(([brand,d]) => {
       STATE.vendorPayouts.push({ id: uid('vpo'), tanggalDihitung: new Date(date).toISOString(), brand,
-        produk: [...d.produk].join(', '), qty: d.qty, total: d.total, tanggalDibayar: null, sumberData: 'backfill_estimasi' });
+        produk: [...d.produk].join(', '), qty: d.qty, total: d.total, tanggalDibayar: null,
+        skuBreakdown: d.skuBreakdown, sumberData: 'backfill_estimasi' });
     });
   });
 
-  return nBackfilled;
+  return { nBackfilled, nTanpaKodeKontrak };
 }
 
 function wireDrilldownHandlers(container) {
@@ -1993,20 +1992,19 @@ function renderLaporan(container) {
   });
   const partnerSummary = Object.values(totalByPartner).sort((a,b) => b.total - a.total);
   const totalBelumDibayarInvestor = partnerSummary.reduce((s,p) => s + p.total, 0);
-  const totalBelumDibayarVendor = vendorPayouts.filter(v => !v.tanggalDibayar).reduce((s,v) => s + v.total, 0);
+  const totalKonveksiSemua = vendorPayouts.reduce((s,v) => s + v.total, 0);
 
   container.innerHTML = `
     <div class="panel">
       <h2>Perkiraan dari Histori <span class="pill ${nBackfilled?'ok':''}">${nBackfilled} entri perkiraan</span></h2>
-      <div class="desc">Hitung ulang PERKIRAAN payout dari histori PENJUALAN yg sudah dimigrasi, supaya bisa dicoba lihat laporan tanpa menunggu periode baru.
-      Sepenuhnya aman -- <b>tidak menyentuh stok kontrak sama sekali</b>. Tapi persentase pembagian pakai kondisi kontrak SEKARANG, jadi angkanya perkiraan, bukan pasti akurat historis.</div>
+      <div class="desc">Hitung ulang PERKIRAAN payout dari histori PENJUALAN yg sudah dimigrasi, pakai kode kontrak ASLI (kolom B di PENJUALAN) supaya akurat kalau kontrak sudah berganti sejak saat itu.
+      Sepenuhnya aman -- <b>tidak menyentuh stok kontrak sama sekali</b>.</div>
       <button class="btn btn-ghost" id="btnBackfill">${nBackfilled ? 'Hitung Ulang Perkiraan' : 'Buat Perkiraan dari Histori'}</button>
       <div class="status-box" id="backfillMsg"></div>
     </div>
     <div class="kpi-row">
       <div class="kpi"><div class="kpi-label">Belum Dibayar ke Investor</div><div class="kpi-value">${fmtRp(totalBelumDibayarInvestor)}</div></div>
-      <div class="kpi"><div class="kpi-label">Belum Dibayar ke Konveksi</div><div class="kpi-value">${fmtRp(totalBelumDibayarVendor)}</div></div>
-      <div class="kpi"><div class="kpi-label">Total Belum Dibayar</div><div class="kpi-value">${fmtRp(totalBelumDibayarInvestor+totalBelumDibayarVendor)}</div></div>
+      <div class="kpi"><div class="kpi-label">Total Rekap Konveksi/Supplier</div><div class="kpi-value">${fmtRp(totalKonveksiSemua)}</div></div>
     </div>
 
     <div class="panel">
@@ -2029,13 +2027,14 @@ function renderLaporan(container) {
     </div>
     ${laporanFilter.tab === 'detail' ? '<div id="laporanDetailArea"></div>' : `
     <div class="panel">
+      ${laporanFilter.tab === 'investor' ? `
       <div class="field" style="max-width:220px;"><label>Status</label>
         <select id="laporanStatusFilter">
           <option value="belum" ${laporanFilter.status==='belum'?'selected':''}>Belum Dibayar</option>
           <option value="sudah" ${laporanFilter.status==='sudah'?'selected':''}>Sudah Dibayar</option>
           <option value="semua" ${laporanFilter.status==='semua'?'selected':''}>Semua</option>
         </select>
-      </div>
+      </div>` : '<div class="desc">Klik baris untuk lihat rincian per produk &amp; ukuran.</div>'}
       <div id="laporanTableArea" style="margin-top:10px;"></div>
     </div>`}
   `;
@@ -2048,26 +2047,68 @@ function renderLaporan(container) {
     if (!confirm('Hitung ulang perkiraan payout dari histori? Ini AMAN (tidak menyentuh stok kontrak), tapi hasil sebelumnya (kalau ada) akan diganti dengan hitungan baru.')) return;
     showMsg(msg, 'info', 'Menghitung...');
     try {
-      const n = backfillPayoutsFromHistory();
+      const { nBackfilled, nTanpaKodeKontrak } = backfillPayoutsFromHistory();
       await saveState();
-      showMsg(msg, 'ok', `${n} entri perkiraan payout dibuat. Stok kontrak TIDAK berubah.`);
+      showMsg(msg, 'ok', `${nBackfilled} entri payout dibuat dari kode kontrak asli (kolom B).` + (nTanpaKodeKontrak ? ` ${nTanpaKodeKontrak} baris dilewati krn kolom B kosong di data sumbernya.` : '') + ` Stok kontrak TIDAK berubah.`);
       renderLaporan(container);
     } catch (e) {
       showMsg(msg, 'err', 'Gagal: ' + e.message);
     }
   });
   if (laporanFilter.tab === 'detail') { renderLaporanDetailPanel(document.getElementById('laporanDetailArea')); return; }
-  document.getElementById('laporanStatusFilter').addEventListener('change', (e) => { laporanFilter.status = e.target.value; renderLaporan(container); });
+  const statusFilterEl = document.getElementById('laporanStatusFilter');
+  if (statusFilterEl) statusFilterEl.addEventListener('change', (e) => { laporanFilter.status = e.target.value; renderLaporan(container); });
 
   renderLaporanTable(document.getElementById('laporanTableArea'), container);
+}
+
+function renderVendorDetailTable(vendorPayout) {
+  const bySizeLabel = {}; // "PRODUKSIZE" -> {qty, harga, produkNama}
+  Object.entries(vendorPayout.skuBreakdown || {}).forEach(([sku, qty]) => {
+    const prefix = String(sku).toUpperCase().slice(0,3);
+    const p = STATE.products.find(pr => pr.prefix === prefix);
+    if (!p) return;
+    const sizeCode = String(sku).toUpperCase().slice(-2);
+    const size = SIZE_CODE_MAP[sizeCode];
+    if (!size) return;
+    const label = p.nama + size;
+    const harga = lookupHargaKonveksiBySku(sku) || 0;
+    bySizeLabel[label] = bySizeLabel[label] || { qty: 0, harga, produkNama: p.nama };
+    bySizeLabel[label].qty += qty;
+  });
+  const produkOrder = [...new Set(Object.values(bySizeLabel).map(v=>v.produkNama))].sort();
+  let totalQty = 0, totalRp = 0;
+  const rows = [];
+  produkOrder.forEach(produkNama => {
+    SIZES.forEach(s => {
+      const label = produkNama + s;
+      const g = bySizeLabel[label];
+      const qty = g ? g.qty : 0;
+      const harga = g ? g.harga : (getCurrentHarga(produkNama, s) || 0);
+      const total = qty * harga;
+      totalQty += qty; totalRp += total;
+      rows.push({ label, harga, qty, total });
+    });
+  });
+  return `
+    <table class="data compact">
+      <thead><tr><th>Kode Produk</th><th class="num">Harga</th><th class="num">Qty</th><th class="num">Total</th></tr></thead>
+      <tbody>
+        ${rows.map(r => `<tr><td>${r.label}</td><td class="num">${r.harga?fmtRpCompact(r.harga):'-'}</td><td class="num">${r.qty||'-'}</td><td class="num">${r.total?fmtRp(r.total):'-'}</td></tr>`).join('')}
+        <tr style="font-weight:600; border-top:2px solid var(--ink);"><td colspan="2">TOTAL</td><td class="num">${totalQty}</td><td class="num">${fmtRp(totalRp)}</td></tr>
+      </tbody>
+    </table>
+  `;
 }
 
 function renderLaporanTable(el, container) {
   const isVendor = laporanFilter.tab === 'vendor';
   const list = isVendor ? STATE.vendorPayouts : STATE.payouts;
   let filtered = list;
-  if (laporanFilter.status === 'belum') filtered = filtered.filter(x => !x.tanggalDibayar);
-  else if (laporanFilter.status === 'sudah') filtered = filtered.filter(x => x.tanggalDibayar);
+  if (!isVendor) {
+    if (laporanFilter.status === 'belum') filtered = filtered.filter(x => !x.tanggalDibayar);
+    else if (laporanFilter.status === 'sudah') filtered = filtered.filter(x => x.tanggalDibayar);
+  }
   filtered = filtered.slice().sort((a,b) => new Date(b.tanggalDihitung||0) - new Date(a.tanggalDihitung||0));
 
   if (!filtered.length) { el.innerHTML = '<div class="empty-note">Tidak ada data.</div>'; return; }
@@ -2075,23 +2116,20 @@ function renderLaporanTable(el, container) {
   if (isVendor) {
     el.innerHTML = `
       <table class="data compact">
-        <thead><tr><th>Tgl Dihitung</th><th>Brand</th><th>Produk</th><th class="num">Qty</th><th class="num">Total</th><th>Status</th><th></th></tr></thead>
+        <thead><tr><th>Tgl Dihitung</th><th>Brand</th><th>Produk</th><th class="num">Qty</th><th class="num">Total</th></tr></thead>
         <tbody>
-          ${filtered.map(v => `<tr>
+          ${filtered.map(v => `<tr class="row-drilldown" style="cursor:pointer;" data-vendor-toggle="${v.id}">
             <td>${fmtTanggal(v.tanggalDihitung)}</td><td>${v.brand}</td><td style="font-size:11px;">${v.produk}</td>
             <td class="num">${v.qty}</td><td class="num">${fmtRp(v.total)}</td>
-            <td>${v.tanggalDibayar ? `<span class="pill ok">Lunas ${fmtTanggal(v.tanggalDibayar,{short:true})}</span>` : `<span class="pill off">Belum</span>`}</td>
-            <td>${!v.tanggalDibayar ? `<button class="btn btn-ghost" data-mark-vendor="${v.id}" style="padding:4px 8px; font-size:11px;">Tandai Dibayar</button>` : ''}</td>
-          </tr>`).join('')}
+          </tr>
+          <tr id="vendorDetailRow_${v.id}" style="display:none;"><td colspan="5">${renderVendorDetailTable(v)}</td></tr>`).join('')}
         </tbody>
       </table>
     `;
-    el.querySelectorAll('[data-mark-vendor]').forEach(btn => {
-      btn.addEventListener('click', async () => {
-        const v = STATE.vendorPayouts.find(x => x.id === btn.dataset.markVendor);
-        if (v) v.tanggalDibayar = new Date().toISOString();
-        await saveState();
-        renderLaporan(container);
+    el.querySelectorAll('[data-vendor-toggle]').forEach(tr => {
+      tr.addEventListener('click', () => {
+        const row = document.getElementById('vendorDetailRow_' + tr.dataset.vendorToggle);
+        if (row) row.style.display = row.style.display === 'none' ? 'table-row' : 'none';
       });
     });
   } else {
