@@ -270,20 +270,14 @@ function allocateLargestRemainder(qtyTotal, pctMap) {
 }
 
 async function processWeeklyBatch(storeImports) {
-  // storeImports: [{ store: {id,nama,platform}, orderWb, incomeWb }]
+  // storeImports: [{ store: {id,nama,platform}, incomeWb }] -- TIDAK perlu file Order lagi,
+  // SKU dicari dari pendingOrderSku (hasil "Update Daftar Pesanan") + histori orderDb.
   const shopeeImports = storeImports.filter(si => si.store.platform === 'Shopee');
   const tiktokImports = storeImports.filter(si => si.store.platform === 'TikTok' || si.store.platform === 'Tokopedia');
 
   // ---- Shopee ----
-  const shopeeOrderLookup = {};
   const shopeeFinance = {};
   shopeeImports.forEach(si => {
-    const objs = rowsToObjects(sheetToRows(si.orderWb.Sheets['orders']), 0, 1);
-    objs.forEach(o => {
-      const id = String(o['No. Pesanan']);
-      shopeeOrderLookup[id] = shopeeOrderLookup[id] || [];
-      shopeeOrderLookup[id].push({ sku: o['Nomor Referensi SKU'], qty: Number(o['Jumlah'])||0, warna: parseWarna(o['Nama Variasi']) });
-    });
     const objsI = rowsToObjects(sheetToRows(si.incomeWb.Sheets['Penghasilan']), 2, 3);
     objsI.filter(o => o['Lihat berdasarkan'] === 'Order').forEach(o => {
       const id = String(o['No. Pesanan']);
@@ -299,15 +293,8 @@ async function processWeeklyBatch(storeImports) {
   });
 
   // ---- TikTok/Tokopedia ----
-  const tiktokOrderLookup = {};
   const tiktokFinance = {};
   tiktokImports.forEach(si => {
-    const objs = rowsToObjects(sheetToRows(si.orderWb.Sheets['OrderSKUList']), 0, 2);
-    objs.forEach(o => {
-      const id = String(o['Order ID']);
-      tiktokOrderLookup[id] = tiktokOrderLookup[id] || [];
-      tiktokOrderLookup[id].push({ sku: o['Seller SKU'], qty: Number(o['Quantity'])||0, warna: parseWarna(o['Variation']) });
-    });
     const objsI = rowsToObjects(sheetToRows(si.incomeWb.Sheets['Detail pesanan']), 0, 2);
     objsI.filter(o => o['Jenis transaksi'] === 'Pesanan').forEach(o => {
       const id = String(o['ID Pesanan/Penyesuaian']);
@@ -322,48 +309,22 @@ async function processWeeklyBatch(storeImports) {
     });
   });
 
-  // ---- Simpan SEMUA order dari file Order All/Semua Pesanan (cair ATAU belum) ke registry permanen ----
-  // supaya SKU-nya tetap "diingat" kapan pun order itu akhirnya cair, bukan cuma kalau kebetulan cair minggu ini
-  // (timpa per order, bukan tambah terus -- supaya tidak dobel kalau order yg sama diupload ulang beberapa minggu)
-  shopeeImports.forEach(si => {
-    const objs = rowsToObjects(sheetToRows(si.orderWb.Sheets['orders']), 0, 1);
-    const byOrder = {};
-    objs.forEach(o => {
-      const id = String(o['No. Pesanan']);
-      byOrder[id] = byOrder[id] || [];
-      byOrder[id].push({ sku: o['Nomor Referensi SKU'], qty: Number(o['Jumlah'])||0, warna: parseWarna(o['Nama Variasi']), storeName: si.store.nama });
-    });
-    Object.entries(byOrder).forEach(([id, rows]) => { STATE.pendingOrderSku[id] = rows; });
-  });
-  tiktokImports.forEach(si => {
-    const objs = rowsToObjects(sheetToRows(si.orderWb.Sheets['OrderSKUList']), 0, 2);
-    const byOrder = {};
-    objs.forEach(o => {
-      const id = String(o['Order ID']);
-      byOrder[id] = byOrder[id] || [];
-      byOrder[id].push({ sku: o['Seller SKU'], qty: Number(o['Quantity'])||0, warna: parseWarna(o['Variation']), storeName: si.store.nama });
-    });
-    Object.entries(byOrder).forEach(([id, rows]) => { STATE.pendingOrderSku[id] = rows; });
-  });
-
   // ---- Gabungkan baris SKU cair (fallback: file minggu ini -> pendingOrderSku registry -> histori orderDb) ----
   const historicalOrderSku = {};
   STATE.orderDb.forEach(r => { if (r.orderId && r.sku) { historicalOrderSku[r.orderId] = historicalOrderSku[r.orderId] || []; historicalOrderSku[r.orderId].push({ sku: r.sku, qty: r.qty, warna: r.warna }); } });
 
   const cairSkuRows = [];
-  const matchStats = { shopeeTotal:0, shopeeFallback:0, shopeeNotFound:0, tiktokTotal:0, tiktokFallback:0, tiktokNotFound:0 };
+  const matchStats = { shopeeTotal:0, shopeeFound:0, shopeeNotFound:0, tiktokTotal:0, tiktokFound:0, tiktokNotFound:0 };
   Object.keys(shopeeFinance).forEach(id => {
     matchStats.shopeeTotal++;
-    let rows = shopeeOrderLookup[id] || STATE.pendingOrderSku[id] || historicalOrderSku[id];
-    if (rows && !shopeeOrderLookup[id]) matchStats.shopeeFallback++;
-    if (rows) rows.forEach(r => cairSkuRows.push({ orderId:id, sku:r.sku, qty:r.qty, warna:r.warna, ...financeShare(shopeeFinance[id], r, rows) }));
+    let rows = STATE.pendingOrderSku[id] || historicalOrderSku[id];
+    if (rows) { matchStats.shopeeFound++; rows.forEach(r => cairSkuRows.push({ orderId:id, sku:r.sku, qty:r.qty, warna:r.warna, ...financeShare(shopeeFinance[id], r, rows) })); }
     else matchStats.shopeeNotFound++;
   });
   Object.keys(tiktokFinance).forEach(id => {
     matchStats.tiktokTotal++;
-    let rows = tiktokOrderLookup[id] || STATE.pendingOrderSku[id] || historicalOrderSku[id];
-    if (rows && !tiktokOrderLookup[id]) matchStats.tiktokFallback++;
-    if (rows) rows.forEach(r => cairSkuRows.push({ orderId:id, sku:r.sku, qty:r.qty, warna:r.warna, ...financeShare(tiktokFinance[id], r, rows) }));
+    let rows = STATE.pendingOrderSku[id] || historicalOrderSku[id];
+    if (rows) { matchStats.tiktokFound++; rows.forEach(r => cairSkuRows.push({ orderId:id, sku:r.sku, qty:r.qty, warna:r.warna, ...financeShare(tiktokFinance[id], r, rows) })); }
     else matchStats.tiktokNotFound++;
   });
 
@@ -1099,16 +1060,14 @@ function renderImport(container) {
     </div>
 
     <div class="panel">
-      <h2>1. Pilih Toko &amp; Upload File (untuk Proses Cair Mingguan)</h2>
+      <h2>1. Pilih Toko &amp; Upload File Income (untuk Proses Cair Mingguan)</h2>
+      <div class="desc">SKU dicari otomatis dari daftar pesanan yang sudah diupload di panel atas (atau histori sebelumnya). Tidak perlu upload file Order lagi di sini.</div>
       ${!activeStores.length ? '<div class="empty-note">Belum ada toko terdaftar. Tambah di tab Data Master dulu.</div>' : `
       <div class="field"><label>Toko</label>
         <select id="imp_store"><option value="">Pilih toko</option>${activeStores.map(s=>`<option value="${s.id}">${s.nama} (${s.platform})</option>`).join('')}</select>
       </div>
       <div id="imp_fileFields" style="display:none;">
-        <div class="grid2" style="margin-top:10px;">
-          <div class="field"><label id="imp_orderLabel">File Order</label><input type="file" id="imp_orderFile" accept=".xlsx"></div>
-          <div class="field"><label id="imp_incomeLabel">File Income</label><input type="file" id="imp_incomeFile" accept=".xlsx"></div>
-        </div>
+        <div class="field" style="margin-top:10px;"><label id="imp_incomeLabel">File Income</label><input type="file" id="imp_incomeFile" accept=".xlsx"></div>
         <button class="btn btn-ghost" id="btnAddToBatch" style="margin-top:8px;">+ Tambah ke Batch</button>
       </div>
       <div class="status-box" id="addBatchMsg"></div>
@@ -1119,10 +1078,10 @@ function renderImport(container) {
       <h2>2. Toko dalam Batch Ini <span class="pill">${pendingStoreImports.length}</span></h2>
       ${!pendingStoreImports.length ? '<div class="empty-note">Belum ada toko ditambahkan.</div>' : `
       <table class="data">
-        <thead><tr><th>Toko</th><th>Platform</th><th>File Order</th><th>File Income</th><th></th></tr></thead>
+        <thead><tr><th>Toko</th><th>Platform</th><th>File Income</th><th></th></tr></thead>
         <tbody>
           ${pendingStoreImports.map((si,i) => `<tr>
-            <td>${si.store.nama}</td><td>${si.store.platform}</td><td style="font-size:11px;">${si.orderFile.name}</td><td style="font-size:11px;">${si.incomeFile.name}</td>
+            <td>${si.store.nama}</td><td>${si.store.platform}</td><td style="font-size:11px;">${si.incomeFile.name}</td>
             <td><button class="icon-del" data-remove-batch="${i}">✕</button></td>
           </tr>`).join('')}
         </tbody>
@@ -1162,16 +1121,14 @@ function renderImport(container) {
       if (!store) { fields.style.display = 'none'; return; }
       fields.style.display = 'block';
       const lbl = labelForPlatform(store.platform);
-      document.getElementById('imp_orderLabel').textContent = 'File ' + lbl.order;
       document.getElementById('imp_incomeLabel').textContent = 'File ' + lbl.income;
     });
     document.getElementById('btnAddToBatch').addEventListener('click', () => {
       const msg = document.getElementById('addBatchMsg');
       const store = activeStores.find(s => s.id === storeSelect.value);
-      const orderFile = document.getElementById('imp_orderFile').files[0];
       const incomeFile = document.getElementById('imp_incomeFile').files[0];
-      if (!store || !orderFile || !incomeFile) { showMsg(msg, 'err', 'Pilih toko dan kedua file dulu.'); return; }
-      pendingStoreImports.push({ store, orderFile, incomeFile });
+      if (!store || !incomeFile) { showMsg(msg, 'err', 'Pilih toko dan file Income dulu.'); return; }
+      pendingStoreImports.push({ store, incomeFile });
       renderImport(container);
     });
   }
@@ -1191,16 +1148,15 @@ async function runWeeklyImport() {
   try {
     const readWB = async (f) => XLSX.read(await f.arrayBuffer(), { type:'array', cellDates:true });
     const storeImports = await Promise.all(pendingStoreImports.map(async si => ({
-      store: si.store, orderWb: await readWB(si.orderFile), incomeWb: await readWB(si.incomeFile),
+      store: si.store, incomeWb: await readWB(si.incomeFile),
     })));
     const result = await processWeeklyBatch(storeImports);
     lastBatchResult = result;
     const ms = result.matchStats;
-    const fallbackTotal = ms.shopeeFallback + ms.tiktokFallback, notFoundTotal = ms.shopeeNotFound + ms.tiktokNotFound;
-    let text = `Berhasil: ${result.cairSkuRows.length} baris SKU cair, ${Object.keys(result.qtyPerProduk).length} produk Urban Outdoor terdampak.`;
-    if (fallbackTotal) text += ` (${fallbackTotal} order pakai fallback histori)`;
+    const foundTotal = ms.shopeeFound + ms.tiktokFound, notFoundTotal = ms.shopeeNotFound + ms.tiktokNotFound;
+    let text = `Berhasil: ${result.cairSkuRows.length} baris SKU cair (dari ${foundTotal} order ketemu), ${Object.keys(result.qtyPerProduk).length} produk Urban Outdoor terdampak.`;
     if (result.nSkippedAlreadyRecorded) text += ` (${result.nSkippedAlreadyRecorded} order sudah pernah tercatat, tidak dihitung ulang)`;
-    showMsg(msg, notFoundTotal ? 'err' : 'ok', text + (notFoundTotal ? ` ⚠ ${notFoundTotal} order tidak ketemu sama sekali.` : ''));
+    showMsg(msg, notFoundTotal ? 'err' : 'ok', text + (notFoundTotal ? ` ⚠ ${notFoundTotal} order tidak ketemu SKU-nya -- coba "Update Daftar Pesanan" dulu di panel atas.` : ''));
     renderImportPreview(document.getElementById('importPreview'), result);
   } catch (e) {
     console.error(e);
