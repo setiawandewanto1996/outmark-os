@@ -2342,7 +2342,9 @@ function renderAds(container) {
    TAB: BIAYA OPERASIONAL
    ========================================================================= */
 let opexFilter = { kategori: '', tglDari: '', tglSampai: '' };
-const OPEX_KATEGORI = ['Gaji Karyawan', 'Sewa Gudang/Kantor', 'Listrik & Internet', 'Perlengkapan Kantor', 'Transportasi', 'Lain-lain'];
+const OPEX_KATEGORI = ['Gaji Karyawan', 'Bonus Karyawan', 'Sewa Tempat', 'Listrik', 'Internet', 'Cloud/Subscription',
+  'ATK (Alat Tulis Kantor)', 'Transportasi', 'Kesehatan', 'CSR', 'Entertainment', 'Logistik Umum',
+  'Biaya Bank', 'Biaya Packing', 'Marketing (non-Ads)', 'Lain-lain'];
 
 function renderOpex(container) {
   let filtered = STATE.biayaOperasional;
