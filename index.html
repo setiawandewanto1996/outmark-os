@@ -823,7 +823,12 @@ function renderMaster(container) {
         const iPajak2 = hh.indexOf('Pajak'), iPendapatan2 = hh.indexOf('Pendapatan'), iProfit2 = hh.indexOf('Profit');
         const iModalInv2 = hh.indexOf('Modal Investor'), iProfitSetelah2 = hh.indexOf('Profit Setelah Investor');
         const iTglPenarikan2 = hh.indexOf('Tanggal Penarikan'), iTglPesan2 = hh.indexOf('Tanggal Pesan'), iStatus2 = hh.indexOf('Status');
-        const existingOrderKeys = new Set(STATE.orderDb.map(r => r.orderId + '|' + r.sku));
+        // Dedup berdasarkan JUMLAH KEMUNCULAN (bukan sekadar ada/tidak), supaya order+SKU yg sama tapi
+        // muncul berkali-kali di PENJUALAN (krn qty>1 dipecah jadi beberapa baris terpisah) TETAP semua kehitung,
+        // tapi tetap idempotent kalau migrasi dijalankan ulang (tidak nambah dobel).
+        const existingKeyCounts = {};
+        STATE.orderDb.forEach(r => { const k = r.orderId + '|' + (r.sku||''); existingKeyCounts[k] = (existingKeyCounts[k]||0) + 1; });
+        const seenThisPass = {};
         for (let r = 1; r < histRows.length; r++) {
           const row = histRows[r];
           if (!row) continue;
@@ -832,7 +837,8 @@ function renderMaster(container) {
           if (!noRef || !nama) continue;
           const sku = row[iSKU2];
           const key = String(noRef) + '|' + (sku||'');
-          if (existingOrderKeys.has(key)) continue;
+          seenThisPass[key] = (seenThisPass[key]||0) + 1;
+          if (seenThisPass[key] <= (existingKeyCounts[key]||0)) continue; // kemunculan ke-N ini sudah pernah ditambahkan sebelumnya
           let tglPenarikan = null; if (row[iTglPenarikan2]) { try { const d = new Date(row[iTglPenarikan2]); if (!isNaN(d)) tglPenarikan = d.toISOString(); } catch(e){} }
           let tglPesan = null; if (row[iTglPesan2]) { try { const d = new Date(row[iTglPesan2]); if (!isNaN(d)) tglPesan = d.toISOString(); } catch(e){} }
           const biayaLayananGabungan = (toNumOrNull(row[iBiayaLayanan2])||0) + (toNumOrNull(row[iOngkir2])||0) + (toNumOrNull(row[iBiayaPesanan2])||0);
@@ -846,7 +852,6 @@ function renderMaster(container) {
             profit: toNumOrNull(row[iProfit2]), modalInvestor: toNumOrNull(row[iModalInv2]), profitSetelahInvestor: toNumOrNull(row[iProfitSetelah2]),
             capitalPartnerProduk: null, sumberData: 'migrasi_penjualan',
           });
-          existingOrderKeys.add(key);
           nHistAdded++;
         }
       }
