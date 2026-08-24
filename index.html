@@ -843,7 +843,6 @@ function renderMaster(container) {
         }
       }
 
-      await saveState();
       // ---- Histori PENJUALAN -> orderDb (level order/SKU, 1 baris = 1 unit, utk fallback pencarian SKU order lama) ----
       let nHistAdded = 0;
       if (wsPJ) {
@@ -886,6 +885,8 @@ function renderMaster(container) {
         }
       }
 
+      showMsg(msg, 'info', 'Menyimpan ke Google Drive (bisa beberapa detik untuk data sebesar ini)...');
+      await saveState();
       showMsg(msg, 'ok', `Selesai: ${nPartnerAdded} Capital Partner, ${nStoreAdded} toko, ${nProductAdded} produk, ${nColorAdded} kode warna, ${nContractAdded} kontrak baru, ${nContractUpdated} kontrak diperbarui, ${nHistAdded} baris histori penjualan.`);
       renderPartnerList(document.getElementById('partnerList'));
       renderStoreList(document.getElementById('storeList'));
