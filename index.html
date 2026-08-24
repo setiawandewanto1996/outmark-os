@@ -1829,6 +1829,75 @@ function renderKontrakDetailTable(payout) {
   `;
 }
 
+// Rekonstruksi PERKIRAAN payouts dari histori PENJUALAN yg sudah dimigrasi -- SEPENUHNYA TERPISAH dari alur
+// Import Mingguan asli. TIDAK PERNAH menyentuh STATE.contracts atau STATE.orderDb -- cuma BACA dari orderDb,
+// TULIS ke STATE.payouts/vendorPayouts saja. Aman dijalankan berkali-kali (hapus hasil lama dulu tiap kali).
+function backfillPayoutsFromHistory() {
+  STATE.payouts = STATE.payouts.filter(p => p.sumberData !== 'backfill_estimasi');
+  STATE.vendorPayouts = STATE.vendorPayouts.filter(p => p.sumberData !== 'backfill_estimasi');
+
+  const histRows = STATE.orderDb.filter(r => r.sumberData === 'migrasi_penjualan' && r.tanggalPenarikan && r.produk);
+  const byDate = {};
+  histRows.forEach(r => { const d = r.tanggalPenarikan.slice(0,10); byDate[d] = byDate[d] || []; byDate[d].push(r); });
+
+  let nBackfilled = 0;
+  Object.entries(byDate).forEach(([date, rows]) => {
+    const qtyPerProduk = {};
+    const vendorRows = [];
+    rows.forEach(r => {
+      const p = findProduct(r.produk);
+      if (!p) return;
+      if (p.brand === 'URBAN OUTDOOR') { const cp = capitalPartnerProduk(r.produk); qtyPerProduk[cp] = (qtyPerProduk[cp]||0) + (r.qty||1); }
+      else vendorRows.push(r);
+    });
+
+    Object.entries(qtyPerProduk).forEach(([produk, qtyTotalF]) => {
+      const qtyTotal = Math.round(qtyTotalF);
+      const pct = computePembagiPct(produk);
+      if (!Object.keys(pct).length) return;
+      const productRows = rows.filter(r => capitalPartnerProduk(r.produk) === produk);
+      const units = [];
+      productRows.forEach(r => { for (let i=0;i<(r.qty||1);i++) units.push({ orderId: r.orderId, sku: r.sku }); });
+      const floors = allocateLargestRemainder(qtyTotal, pct);
+      let unitCursor = 0;
+      Object.entries(floors).forEach(([kode2, qty]) => {
+        if (qty <= 0) return;
+        const assignedUnits = units.slice(unitCursor, unitCursor + qty);
+        unitCursor += qty;
+        const partner = findPartnerByKode2(kode2);
+        const kontrak = partner ? activeContractFor(produk, partner.id) : null;
+        const skuBreakdown = {};
+        assignedUnits.forEach(u => { skuBreakdown[u.sku] = (skuBreakdown[u.sku]||0) + 1; });
+        STATE.payouts.push({
+          id: uid('po'), tanggalDihitung: new Date(date).toISOString(), produk, kode2,
+          namaInvestor: partner ? partner.nama : kode2, capitalPartnerId: partner ? partner.id : null,
+          kodeKontrak: kontrak ? kontrak.kodeKontrak : null, qty, rate: kontrak ? kontrak.nilaiMargin : null,
+          payout: kontrak ? qty*kontrak.nilaiMargin : null, tanggalDibayar: null,
+          hargaModalPcs: kontrak ? kontrak.hargaModalPcs : null, skuBreakdown,
+          orderIds: [...new Set(assignedUnits.map(u=>u.orderId))], sumberData: 'backfill_estimasi',
+        });
+        nBackfilled++;
+      });
+    });
+
+    const vendorByBrand = {};
+    vendorRows.forEach(r => {
+      if (!r.sku) return;
+      const harga = lookupHargaKonveksiBySku(r.sku);
+      if (!harga) return;
+      const b = r.brand || 'TIDAK DIKETAHUI';
+      vendorByBrand[b] = vendorByBrand[b] || { qty:0, total:0, produk:new Set() };
+      vendorByBrand[b].qty += (r.qty||1); vendorByBrand[b].total += (r.qty||1)*harga; vendorByBrand[b].produk.add(r.produk);
+    });
+    Object.entries(vendorByBrand).forEach(([brand,d]) => {
+      STATE.vendorPayouts.push({ id: uid('vpo'), tanggalDihitung: new Date(date).toISOString(), brand,
+        produk: [...d.produk].join(', '), qty: d.qty, total: d.total, tanggalDibayar: null, sumberData: 'backfill_estimasi' });
+    });
+  });
+
+  return nBackfilled;
+}
+
 function wireDrilldownHandlers(container) {
   container.querySelectorAll('.row-drilldown').forEach(tr => {
     tr.addEventListener('click', () => {
@@ -1912,6 +1981,7 @@ function renderLaporanDetailPanel(container) {
 function renderLaporan(container) {
   const payouts = STATE.payouts;
   const vendorPayouts = STATE.vendorPayouts;
+  const nBackfilled = payouts.filter(p => p.sumberData === 'backfill_estimasi').length;
 
   // Ringkasan belum dibayar per investor
   const totalByPartner = {};
@@ -1926,6 +1996,13 @@ function renderLaporan(container) {
   const totalBelumDibayarVendor = vendorPayouts.filter(v => !v.tanggalDibayar).reduce((s,v) => s + v.total, 0);
 
   container.innerHTML = `
+    <div class="panel">
+      <h2>Perkiraan dari Histori <span class="pill ${nBackfilled?'ok':''}">${nBackfilled} entri perkiraan</span></h2>
+      <div class="desc">Hitung ulang PERKIRAAN payout dari histori PENJUALAN yg sudah dimigrasi, supaya bisa dicoba lihat laporan tanpa menunggu periode baru.
+      Sepenuhnya aman -- <b>tidak menyentuh stok kontrak sama sekali</b>. Tapi persentase pembagian pakai kondisi kontrak SEKARANG, jadi angkanya perkiraan, bukan pasti akurat historis.</div>
+      <button class="btn btn-ghost" id="btnBackfill">${nBackfilled ? 'Hitung Ulang Perkiraan' : 'Buat Perkiraan dari Histori'}</button>
+      <div class="status-box" id="backfillMsg"></div>
+    </div>
     <div class="kpi-row">
       <div class="kpi"><div class="kpi-label">Belum Dibayar ke Investor</div><div class="kpi-value">${fmtRp(totalBelumDibayarInvestor)}</div></div>
       <div class="kpi"><div class="kpi-label">Belum Dibayar ke Konveksi</div><div class="kpi-value">${fmtRp(totalBelumDibayarVendor)}</div></div>
@@ -1965,6 +2042,19 @@ function renderLaporan(container) {
 
   container.querySelectorAll('[data-subtab]').forEach(btn => {
     btn.addEventListener('click', () => { laporanFilter.tab = btn.dataset.subtab; renderLaporan(container); });
+  });
+  document.getElementById('btnBackfill').addEventListener('click', async () => {
+    const msg = document.getElementById('backfillMsg');
+    if (!confirm('Hitung ulang perkiraan payout dari histori? Ini AMAN (tidak menyentuh stok kontrak), tapi hasil sebelumnya (kalau ada) akan diganti dengan hitungan baru.')) return;
+    showMsg(msg, 'info', 'Menghitung...');
+    try {
+      const n = backfillPayoutsFromHistory();
+      await saveState();
+      showMsg(msg, 'ok', `${n} entri perkiraan payout dibuat. Stok kontrak TIDAK berubah.`);
+      renderLaporan(container);
+    } catch (e) {
+      showMsg(msg, 'err', 'Gagal: ' + e.message);
+    }
   });
   if (laporanFilter.tab === 'detail') { renderLaporanDetailPanel(document.getElementById('laporanDetailArea')); return; }
   document.getElementById('laporanStatusFilter').addEventListener('change', (e) => { laporanFilter.status = e.target.value; renderLaporan(container); });
@@ -2010,7 +2100,7 @@ function renderLaporanTable(el, container) {
         <thead><tr><th>Tgl Dihitung</th><th>Investor</th><th>Produk</th><th>Kontrak</th><th class="num">Qty</th><th class="num">Rate</th><th class="num">Payout</th><th>Status</th><th></th></tr></thead>
         <tbody>
           ${filtered.map(p => `<tr>
-            <td>${fmtTanggal(p.tanggalDihitung)}</td><td>${p.namaInvestor||'-'}</td><td>${p.produk}</td><td style="font-size:11px;">${p.kodeKontrak||'-'}</td>
+            <td>${fmtTanggal(p.tanggalDihitung)}${p.sumberData==='backfill_estimasi'?' <span class="pill" style="font-size:9px;">perkiraan</span>':''}</td><td>${p.namaInvestor||'-'}</td><td>${p.produk}</td><td style="font-size:11px;">${p.kodeKontrak||'-'}</td>
             <td class="num">${p.qty}</td><td class="num">${p.rate?fmtRpCompact(p.rate):'-'}</td><td class="num">${p.payout?fmtRp(p.payout):'-'}</td>
             <td>${p.tanggalDibayar ? `<span class="pill ok">Lunas ${fmtTanggal(p.tanggalDibayar,{short:true})}</span>` : `<span class="pill off">Belum</span>`}</td>
             <td>${!p.tanggalDibayar ? `<button class="btn btn-ghost" data-mark-payout="${p.id}" style="padding:4px 8px; font-size:11px;">Tandai Dibayar</button>` : ''}</td>
