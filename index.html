@@ -965,9 +965,9 @@ function renderStoreList(el) {
   });
 }
 
-async function applyBatchResult(result) {
+async function applyBatchResult(result, tanggalPenarikanIso) {
   const existingKeys = new Set(STATE.orderDb.map(r => r.orderId + '|' + r.sku));
-  const nowIso = new Date().toISOString();
+  const tglPenarikan = tanggalPenarikanIso || new Date().toISOString();
   let added = 0;
 
   result.cairSkuRows.forEach(r => {
@@ -975,9 +975,11 @@ async function applyBatchResult(result) {
     if (existingKeys.has(key)) return;
     existingKeys.add(key); added++;
     const cpProduk = r.brand === 'URBAN OUTDOOR' ? capitalPartnerProduk(r.produk) : null;
+    const pending = STATE.pendingOrderSku[r.orderId];
+    const tanggalPesan = pending ? (pending.find(p => p.sku === r.sku) || pending[0] || {}).tanggalPesan || null : null;
     STATE.orderDb.push({
       orderId: r.orderId, sumber: r.sumber||null, produk: r.produk, sku: r.sku, brand: r.brand, warna: r.warna||null,
-      qty: r.qty, hargaKonveksi: r.hargaKonveksi||null, tanggalPenarikan: nowIso, tanggalCair: r.tanggalCair||null,
+      qty: r.qty, hargaKonveksi: r.hargaKonveksi||null, tanggalPenarikan: tglPenarikan, tanggalCair: r.tanggalCair||null, tanggalPesan,
       pendapatan: r.pendapatan??null, komisiPlatform: r.komisiPlatform??null, biayaLayanan: r.biayaLayanan??null,
       biayaPembayaran: r.biayaPembayaran??null, komisiAfiliasi: r.komisiAfiliasi??null, komisiDinamis: r.komisiDinamis??null,
       biayaIklan: r.biayaIklan??null, pajak: r.pajak??null, totalBiaya: r.totalBiaya??null, netSettlement: r.netSettlement??null,
@@ -997,11 +999,11 @@ async function applyBatchResult(result) {
   // catat kewajiban payout
   result.allocations.forEach(a => {
     if (!a.capitalPartnerId) return;
-    STATE.payouts.push({ id: uid('po'), tanggalDihitung: nowIso, produk: a.produk, kode2: a.kode2, namaInvestor: a.namaInvestor,
+    STATE.payouts.push({ id: uid('po'), tanggalDihitung: tglPenarikan, produk: a.produk, kode2: a.kode2, namaInvestor: a.namaInvestor,
       capitalPartnerId: a.capitalPartnerId, kodeKontrak: a.kodeKontrak, qty: a.qty, rate: a.rate, payout: a.payout, tanggalDibayar: null });
   });
   Object.entries(result.vendorPayments).forEach(([brand, d]) => {
-    STATE.vendorPayouts.push({ id: uid('vpo'), tanggalDihitung: nowIso, brand, produk: [...d.produk].join(', '), qty: d.qty, total: d.total, tanggalDibayar: null });
+    STATE.vendorPayouts.push({ id: uid('vpo'), tanggalDihitung: tglPenarikan, brand, produk: [...d.produk].join(', '), qty: d.qty, total: d.total, tanggalDibayar: null });
   });
 
   await saveState();
@@ -1022,13 +1024,14 @@ function labelForPlatform(platform) {
 async function uploadOrderListOnly(store, orderFile) {
   const wb = XLSX.read(await orderFile.arrayBuffer(), { type:'array', cellDates:true });
   let count = 0;
+  function toIso(v) { if (!v) return null; try { const d = new Date(v); return isNaN(d) ? null : d.toISOString(); } catch(e) { return null; } }
   if (store.platform === 'Shopee') {
     const objs = rowsToObjects(sheetToRows(wb.Sheets['orders']), 0, 1);
     const byOrder = {};
     objs.forEach(o => {
       const id = String(o['No. Pesanan']);
       byOrder[id] = byOrder[id] || [];
-      byOrder[id].push({ sku: o['Nomor Referensi SKU'], qty: Number(o['Jumlah'])||0, warna: parseWarna(o['Nama Variasi']), storeName: store.nama });
+      byOrder[id].push({ sku: o['Nomor Referensi SKU'], qty: Number(o['Jumlah'])||0, warna: parseWarna(o['Nama Variasi']), storeName: store.nama, tanggalPesan: toIso(o['Waktu Pesanan Dibuat']) });
     });
     Object.entries(byOrder).forEach(([id, rows]) => { STATE.pendingOrderSku[id] = rows; count++; }); // timpa (bukan tambah) -- data terbaru dari upload ini
   } else {
@@ -1037,7 +1040,7 @@ async function uploadOrderListOnly(store, orderFile) {
     objs.forEach(o => {
       const id = String(o['Order ID']);
       byOrder[id] = byOrder[id] || [];
-      byOrder[id].push({ sku: o['Seller SKU'], qty: Number(o['Quantity'])||0, warna: parseWarna(o['Variation']), storeName: store.nama });
+      byOrder[id].push({ sku: o['Seller SKU'], qty: Number(o['Quantity'])||0, warna: parseWarna(o['Variation']), storeName: store.nama, tanggalPesan: toIso(o['Created Time']) });
     });
     Object.entries(byOrder).forEach(([id, rows]) => { STATE.pendingOrderSku[id] = rows; count++; });
   }
@@ -1202,7 +1205,8 @@ function renderImportPreview(el, result) {
           <td class="num">${r.hargaInvestor?fmtRp(r.hargaInvestor):'-'}</td><td class="num">${r.totalKonveksi?fmtRp(r.totalKonveksi):'-'}</td>
           <td class="num">${r.totalSurplus!=null?fmtRp(r.totalSurplus):'-'}</td></tr>`).join('')}</tbody>
       </table>
-      <button class="btn btn-primary" id="btnApplyBatch" style="margin-top:16px;">Simpan ke Database &amp; Kurangi Stok Kontrak</button>
+      <div class="field" style="margin-top:16px; max-width:260px;"><label>Tanggal Penarikan</label><input type="date" id="applyTanggalPenarikan" value="${new Date().toISOString().slice(0,10)}"></div>
+      <button class="btn btn-primary" id="btnApplyBatch" style="margin-top:8px;">Simpan ke Database &amp; Kurangi Stok Kontrak</button>
       <div class="status-box" id="applyMsg"></div>
     </div>
   `;
@@ -1210,7 +1214,9 @@ function renderImportPreview(el, result) {
     const btn = ev.target; btn.disabled = true; btn.textContent = 'Menyimpan...';
     const msg = document.getElementById('applyMsg');
     try {
-      const added = await applyBatchResult(result);
+      const tglInput = document.getElementById('applyTanggalPenarikan').value;
+      const tglIso = tglInput ? new Date(tglInput).toISOString() : new Date().toISOString();
+      const added = await applyBatchResult(result, tglIso);
       showMsg(msg, 'ok', `${added} baris baru tersimpan ke database. Stok kontrak diperbarui.`);
       btn.textContent = 'Tersimpan ✓';
     } catch (e) {
@@ -1350,7 +1356,7 @@ function renderDatabase(container) {
         <thead><tr>
           <th>Order ID</th><th>Produk</th><th>SKU</th><th>Warna</th><th>Brand</th><th>Sumber</th>
           <th class="num">Qty</th><th class="num">Pendapatan</th><th class="num">Komisi Platform</th>
-          <th class="num">Afiliasi</th><th class="num">Profit</th><th>Tgl Penarikan</th>
+          <th class="num">Afiliasi</th><th class="num">Profit</th><th>Tgl Pesanan</th><th>Tgl Penarikan</th>
         </tr></thead>
         <tbody>
           ${pageRows.map(r => `<tr>
@@ -1362,6 +1368,7 @@ function renderDatabase(container) {
             <td class="num">${r.komisiPlatform!=null?fmtRpCompact(r.komisiPlatform):'-'}</td>
             <td class="num">${r.komisiAfiliasi!=null?fmtRpCompact(r.komisiAfiliasi):'-'}</td>
             <td class="num">${r.profit!=null?fmtRpCompact(r.profit):(r.netSettlement!=null?fmtRpCompact(r.netSettlement)+'*':'-')}</td>
+            <td style="font-size:10.5px;">${r.tanggalPesan ? new Date(r.tanggalPesan).toLocaleDateString('id-ID') : '-'}</td>
             <td style="font-size:10.5px;">${r.tanggalPenarikan ? new Date(r.tanggalPenarikan).toLocaleDateString('id-ID') : '-'}</td>
           </tr>`).join('')}
         </tbody>
