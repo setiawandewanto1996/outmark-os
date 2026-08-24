@@ -342,7 +342,12 @@ async function processWeeklyBatch(storeImports) {
   // ---- Saring order yg SUDAH tercatat sebelumnya (migrasi ATAU batch mingguan lalu) -- cegah dihitung dobel ----
   // kalau order yg sama entah bagaimana muncul lagi sbg "cair" di file minggu ini (rentang tanggal tumpang tindih dsb),
   // jangan dihitung lagi ke alokasi/payout, karena sudah pernah diproses & dibayarkan sebelumnya.
-  const alreadyRecorded = new Set(STATE.orderDb.map(r => r.orderId + '|' + r.sku));
+  // Cuma anggap "sudah tercatat" (blokir hitung ulang) kalau baris itu BENERAN sudah settle (ada pendapatan asli).
+  // Order berstatus "Gagal"/dibatalkan (pendapatan kosong) TIDAK dianggap final -- kalau platform koreksi & order itu
+  // ternyata cair beneran nanti, tetap harus bisa diproses (bukan di-skip diam-diam).
+  const alreadyRecorded = new Set(
+    STATE.orderDb.filter(r => r.pendapatan != null && r.status !== 'Gagal').map(r => r.orderId + '|' + r.sku)
+  );
   const skippedAlreadyRecorded = cairSkuRows.filter(r => alreadyRecorded.has(r.orderId + '|' + r.sku));
   const newCairSkuRows = cairSkuRows.filter(r => !alreadyRecorded.has(r.orderId + '|' + r.sku));
 
@@ -966,25 +971,36 @@ function renderStoreList(el) {
 }
 
 async function applyBatchResult(result, tanggalPenarikanIso) {
-  const existingKeys = new Set(STATE.orderDb.map(r => r.orderId + '|' + r.sku));
+  // Baris "Gagal" (blm pernah beneran settle) TIDAK dianggap final -- kalau sekarang platform koreksi jadi cair,
+  // baris lama itu di-UPDATE jadi data settle yg sebenarnya (bukan diblokir, bukan juga dobel jadi 2 baris).
+  const genuinelySettledKeys = new Set(STATE.orderDb.filter(r => r.pendapatan != null && r.status !== 'Gagal').map(r => r.orderId + '|' + r.sku));
+  const rowByKey = {}; STATE.orderDb.forEach(r => { rowByKey[r.orderId + '|' + r.sku] = r; });
   const tglPenarikan = tanggalPenarikanIso || new Date().toISOString();
-  let added = 0;
+  let added = 0, updated = 0;
 
   result.cairSkuRows.forEach(r => {
     const key = r.orderId + '|' + r.sku;
-    if (existingKeys.has(key)) return;
-    existingKeys.add(key); added++;
+    if (genuinelySettledKeys.has(key)) return; // sudah beneran settle sebelumnya, jangan diproses lagi
     const cpProduk = r.brand === 'URBAN OUTDOOR' ? capitalPartnerProduk(r.produk) : null;
     const pending = STATE.pendingOrderSku[r.orderId];
     const tanggalPesan = pending ? (pending.find(p => p.sku === r.sku) || pending[0] || {}).tanggalPesan || null : null;
-    STATE.orderDb.push({
+    const fresh = {
       orderId: r.orderId, sumber: r.sumber||null, produk: r.produk, sku: r.sku, brand: r.brand, warna: r.warna||null,
       qty: r.qty, hargaKonveksi: r.hargaKonveksi||null, tanggalPenarikan: tglPenarikan, tanggalCair: r.tanggalCair||null, tanggalPesan,
       pendapatan: r.pendapatan??null, komisiPlatform: r.komisiPlatform??null, biayaLayanan: r.biayaLayanan??null,
       biayaPembayaran: r.biayaPembayaran??null, komisiAfiliasi: r.komisiAfiliasi??null, komisiDinamis: r.komisiDinamis??null,
       biayaIklan: r.biayaIklan??null, pajak: r.pajak??null, totalBiaya: r.totalBiaya??null, netSettlement: r.netSettlement??null,
-      capitalPartnerProduk: cpProduk, sumberData: 'import_mingguan',
-    });
+      capitalPartnerProduk: cpProduk, status: 'Selesai (koreksi via UJUSO Auto)', sumberData: 'import_mingguan',
+    };
+    if (rowByKey[key]) {
+      Object.assign(rowByKey[key], fresh); // update baris lama (mis. yg tadinya "Gagal") jadi data settle yg benar
+      updated++;
+    } else {
+      const row = { ...fresh };
+      STATE.orderDb.push(row); rowByKey[key] = row;
+      added++;
+    }
+    genuinelySettledKeys.add(key);
   });
 
   // kurangi stock kontrak sesuai alokasi, auto-tutup kalau habis
@@ -1007,7 +1023,7 @@ async function applyBatchResult(result, tanggalPenarikanIso) {
   });
 
   await saveState();
-  return added;
+  return { added, updated };
 }
 
 /* =========================================================================
@@ -1216,8 +1232,8 @@ function renderImportPreview(el, result) {
     try {
       const tglInput = document.getElementById('applyTanggalPenarikan').value;
       const tglIso = tglInput ? new Date(tglInput).toISOString() : new Date().toISOString();
-      const added = await applyBatchResult(result, tglIso);
-      showMsg(msg, 'ok', `${added} baris baru tersimpan ke database. Stok kontrak diperbarui.`);
+      const { added, updated } = await applyBatchResult(result, tglIso);
+      showMsg(msg, 'ok', `${added} baris baru tersimpan${updated ? `, ${updated} baris lama diperbarui (mis. order "Gagal" yg ternyata koreksi jadi cair)` : ''} ke database. Stok kontrak diperbarui.`);
       btn.textContent = 'Tersimpan ✓';
     } catch (e) {
       showMsg(msg, 'err', 'Gagal simpan: ' + e.message);
