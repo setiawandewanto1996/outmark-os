@@ -79,6 +79,7 @@
   .kpi-value { font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 20px; }
   .btn-subtab { font-family: 'IBM Plex Mono', monospace; font-size: 12px; background: none; border: none; padding: 8px 14px; cursor: pointer; color: var(--ink-soft); border-bottom: 2px solid transparent; margin-bottom: -1px; }
   .btn-subtab.active { color: var(--ink); border-bottom-color: var(--accent); font-weight: 600; }
+  .row-drilldown:hover td { background: #F4EFE2; }
 </style>
 </head>
 <body>
@@ -384,24 +385,38 @@ async function processWeeklyBatch(storeImports) {
   });
 
   // ---- Alokasi FIFO (per investor) + largest remainder (antar investor) ----
+  // Sekaligus lacak UNIT (order+SKU) spesifik mana yg masuk ke investor mana -- perlu utk laporan detail per kontrak.
   const allocations = [];
   Object.entries(qtyPerProduk).forEach(([produk, qtyTotalF]) => {
     const qtyTotal = Math.round(qtyTotalF);
     const pct = computePembagiPct(produk);
+
+    // kumpulkan semua UNIT individual (bukan baris -- krn 1 baris bisa qty>1) utk produk ini
+    const productRows = newCairSkuRows.filter(r => capitalPartnerProduk(r.produk) === produk);
+    const units = [];
+    productRows.forEach(r => { for (let i = 0; i < r.qty; i++) units.push({ orderId: r.orderId, sku: r.sku }); });
+
     if (!Object.keys(pct).length) {
-      allocations.push({ produk, kode2:null, namaInvestor:null, kodeKontrak:null, qty:qtyTotal, rate:null, payout:null, catatan:'Tidak ada kontrak aktif utk produk ini' });
+      allocations.push({ produk, kode2:null, namaInvestor:null, kodeKontrak:null, qty:qtyTotal, rate:null, payout:null, catatan:'Tidak ada kontrak aktif utk produk ini', orderUnits: units });
       return;
     }
     const floors = allocateLargestRemainder(qtyTotal, pct);
+    let unitCursor = 0;
     Object.entries(floors).forEach(([kode2, qty]) => {
       if (qty <= 0) return;
+      const assignedUnits = units.slice(unitCursor, unitCursor + qty);
+      unitCursor += qty;
       const partner = findPartnerByKode2(kode2);
       const kontrak = partner ? activeContractFor(produk, partner.id) : null;
+      // breakdown per SKU (size) -- utk tabel detail per kontrak spt contoh Excel
+      const skuBreakdown = {};
+      assignedUnits.forEach(u => { skuBreakdown[u.sku] = (skuBreakdown[u.sku]||0) + 1; });
       allocations.push({
         produk, kode2, namaInvestor: partner ? partner.nama : kode2, capitalPartnerId: partner ? partner.id : null,
         kodeKontrak: kontrak ? kontrak.kodeKontrak : null, contractId: kontrak ? kontrak.id : null,
         qty, rate: kontrak ? kontrak.nilaiMargin : null, payout: kontrak ? qty*kontrak.nilaiMargin : null,
         catatan: `${(pct[kode2]*100).toFixed(2)}% dari ${qtyTotal} unit ${produk}` + (kontrak ? '' : ' -- TIDAK ADA kontrak aktif, cek manual'),
+        orderUnits: assignedUnits, skuBreakdown, hargaModalPcs: kontrak ? kontrak.hargaModalPcs : null,
       });
     });
   });
@@ -1030,7 +1045,8 @@ async function applyBatchResult(result, tanggalPenarikanIso) {
   result.allocations.forEach(a => {
     if (!a.capitalPartnerId) return;
     STATE.payouts.push({ id: uid('po'), tanggalDihitung: tglPenarikan, produk: a.produk, kode2: a.kode2, namaInvestor: a.namaInvestor,
-      capitalPartnerId: a.capitalPartnerId, kodeKontrak: a.kodeKontrak, qty: a.qty, rate: a.rate, payout: a.payout, tanggalDibayar: null });
+      capitalPartnerId: a.capitalPartnerId, kodeKontrak: a.kodeKontrak, qty: a.qty, rate: a.rate, payout: a.payout, tanggalDibayar: null,
+      hargaModalPcs: a.hargaModalPcs||null, skuBreakdown: a.skuBreakdown||{}, orderIds: [...new Set((a.orderUnits||[]).map(u=>u.orderId))] });
   });
   Object.entries(result.vendorPayments).forEach(([brand, d]) => {
     STATE.vendorPayouts.push({ id: uid('vpo'), tanggalDihitung: tglPenarikan, brand, produk: [...d.produk].join(', '), qty: d.qty, total: d.total, tanggalDibayar: null });
@@ -1766,6 +1782,132 @@ function fmtRpCompact(n) {
    TAB: LAPORAN PENARIKAN
    ========================================================================= */
 let laporanFilter = { status: 'belum', investorId: '', tab: 'investor' };
+let laporanDetail = { tanggal: '', kodeKontrak: '', brand: '' };
+
+// Ubah SKU (mis. "OSWHTM04") -> label ukuran spt di laporan Excel (mis. "OSWALD" + "4XL" -> "OSWALD4XL"), digabung lintas warna.
+function skuToSizeLabel(produkNama, sku) {
+  if (!sku) return null;
+  const sizeCode = String(sku).toUpperCase().slice(-2);
+  const size = SIZE_CODE_MAP[sizeCode];
+  return size ? produkNama + size : null;
+}
+
+// Bangun tabel breakdown per-size utk 1 payout record (1 kontrak, 1 produk, 1 tanggal penarikan)
+function renderKontrakDetailTable(payout) {
+  const produk = findProduct(payout.produk);
+  const harga = payout.hargaModalPcs;
+  const bySize = {};
+  Object.entries(payout.skuBreakdown || {}).forEach(([sku, qty]) => {
+    const label = skuToSizeLabel(payout.produk, sku);
+    if (label) bySize[label] = (bySize[label]||0) + qty;
+  });
+  let totalQty = 0, totalRp = 0;
+  const rows = SIZES.map(s => {
+    const label = payout.produk + s;
+    const qty = bySize[label] || 0;
+    const total = qty * (harga||0);
+    totalQty += qty; totalRp += total;
+    return { label, qty, total };
+  });
+  return `
+    <div style="border:1px solid var(--line); border-radius:3px; padding:12px; margin-bottom:14px; background:#fff;">
+      <div style="font-family:'IBM Plex Mono',monospace; font-size:11px; color:var(--ink-soft); margin-bottom:6px;">INVESTOR &middot; ${payout.kodeKontrak || '-'} &middot; ${payout.namaInvestor||''}</div>
+      <table class="data compact">
+        <thead><tr><th>Konveksi</th><th>Kode Produk</th><th class="num">Harga</th><th class="num">Qty</th><th class="num">Total</th></tr></thead>
+        <tbody>
+          ${rows.map(r => `<tr ${r.qty>0?'style="cursor:pointer;" class="row-drilldown" data-drill-label="'+r.label+'" data-drill-payout="'+payout.id+'"':''}>
+            <td>${produk?produk.brand:'-'}</td><td>${r.label}</td><td class="num">${harga?fmtRpCompact(harga):'-'}</td>
+            <td class="num">${r.qty||'-'}</td><td class="num">${r.total?fmtRp(r.total):'-'}</td>
+          </tr>`).join('')}
+          <tr style="font-weight:600; border-top:2px solid var(--ink);">
+            <td colspan="3">TOTAL MILIK INVESTOR</td><td class="num">${totalQty}</td><td class="num">${fmtRp(totalRp)}</td>
+          </tr>
+        </tbody>
+      </table>
+      <div id="drilldown_${payout.id}" style="display:none; margin-top:8px; font-size:11px; font-family:'IBM Plex Mono',monospace; color:var(--ink-soft); background:#F4EFE2; padding:8px; border-radius:3px;"></div>
+    </div>
+  `;
+}
+
+function wireDrilldownHandlers(container) {
+  container.querySelectorAll('.row-drilldown').forEach(tr => {
+    tr.addEventListener('click', () => {
+      const payoutId = tr.dataset.drillPayout, label = tr.dataset.drillLabel;
+      const payout = STATE.payouts.find(p => p.id === payoutId);
+      const el = document.getElementById('drilldown_' + payoutId);
+      if (!payout || !el) return;
+      if (el.style.display === 'block') { el.style.display = 'none'; return; }
+      const skusForLabel = Object.keys(payout.skuBreakdown||{}).filter(sku => skuToSizeLabel(payout.produk, sku) === label);
+      const orderRows = STATE.orderDb.filter(r => (payout.orderIds||[]).includes(r.orderId) && skusForLabel.includes(r.sku) && capitalPartnerProduk(r.produk) === payout.produk);
+      el.innerHTML = `<b>${label}</b> -- Order ID: ${orderRows.length ? orderRows.map(r=>r.orderId).join(', ') : '(tidak ditemukan di database)'}`;
+      el.style.display = 'block';
+    });
+  });
+}
+
+function renderLaporanDetailPanel(container) {
+  const allDates = [...new Set(STATE.payouts.map(p => p.tanggalDihitung ? p.tanggalDihitung.slice(0,10) : null).filter(Boolean))].sort().reverse();
+  const kontrakForDate = laporanDetail.tanggal ? STATE.payouts.filter(p => p.tanggalDihitung && p.tanggalDihitung.slice(0,10) === laporanDetail.tanggal) : [];
+  const kontrakList = [...new Set(kontrakForDate.map(p => p.kodeKontrak))].filter(Boolean).sort();
+  const brandList = [...new Set(kontrakForDate.map(p => { const pr = findProduct(p.produk); return pr ? pr.brand : null; }).filter(Boolean))].sort();
+
+  let detailHtml = '';
+  let matchingPayouts = [];
+  if (laporanDetail.tanggal && laporanDetail.kodeKontrak) {
+    matchingPayouts = kontrakForDate.filter(p => p.kodeKontrak === laporanDetail.kodeKontrak);
+  } else if (laporanDetail.tanggal && laporanDetail.brand) {
+    matchingPayouts = kontrakForDate.filter(p => { const pr = findProduct(p.produk); return pr && pr.brand === laporanDetail.brand; });
+  }
+  if (matchingPayouts.length) {
+    detailHtml = matchingPayouts.map(p => renderKontrakDetailTable(p)).join('');
+    // Grand summary: total keseluruhan + profit per investor (kode2)
+    const grandTotalQty = matchingPayouts.reduce((s,p) => s + p.qty, 0);
+    const grandTotalRp = matchingPayouts.reduce((s,p) => s + (p.qty * (p.hargaModalPcs||0)), 0);
+    const profitByKode2 = {};
+    matchingPayouts.forEach(p => { profitByKode2[p.kode2] = profitByKode2[p.kode2] || { qty:0, total:0 }; profitByKode2[p.kode2].qty += p.qty; profitByKode2[p.kode2].total += p.payout||0; });
+    const totalProfitQty = Object.values(profitByKode2).reduce((s,v)=>s+v.qty,0);
+    const totalProfitRp = Object.values(profitByKode2).reduce((s,v)=>s+v.total,0);
+    detailHtml += `
+      <div style="border:2px solid var(--ink); border-radius:3px; padding:12px; margin-top:6px;">
+        <table class="data compact">
+          <tbody>
+            <tr style="font-weight:600;"><td colspan="3">TOTAL MILIK INVESTOR</td><td class="num">${grandTotalQty}</td><td class="num">${fmtRp(grandTotalRp)}</td></tr>
+          </tbody>
+        </table>
+        <table class="data compact" style="margin-top:10px;">
+          <thead><tr><th>Kode</th><th class="num">Qty</th><th class="num">Profit</th></tr></thead>
+          <tbody>
+            ${Object.entries(profitByKode2).sort((a,b)=>b[1].total-a[1].total).map(([kode2,v]) => `<tr><td>PROFIT ${kode2}</td><td class="num">${v.qty}</td><td class="num">${fmtRp(v.total)}</td></tr>`).join('')}
+            <tr style="font-weight:600; border-top:2px solid var(--ink);"><td>TOTAL PROFIT</td><td class="num">${totalProfitQty}</td><td class="num">${fmtRp(totalProfitRp)}</td></tr>
+          </tbody>
+        </table>
+      </div>
+    `;
+  }
+
+  container.innerHTML = `
+    <div class="panel">
+      <h2>Rekap per Kontrak / Brand</h2>
+      <div class="desc">Pilih tanggal penarikan, lalu lihat berdasarkan kode kontrak (1 investor) atau brand (semua kontrak sekaligus).</div>
+      <div class="grid2">
+        <div class="field"><label>Tanggal Penarikan</label>
+          <select id="ld_tanggal"><option value="">Pilih tanggal</option>${allDates.map(d=>`<option value="${d}" ${laporanDetail.tanggal===d?'selected':''}>${fmtTanggal(d)}</option>`).join('')}</select>
+        </div>
+        <div class="field"><label>Kode Kontrak (opsional)</label>
+          <select id="ld_kontrak" ${!kontrakList.length?'disabled':''}><option value="">-- atau pilih Brand di bawah --</option>${kontrakList.map(k=>`<option value="${k}" ${laporanDetail.kodeKontrak===k?'selected':''}>${k}</option>`).join('')}</select>
+        </div>
+      </div>
+      <div class="field"><label>Brand (opsional, gabungan semua kontrak)</label>
+        <select id="ld_brand" ${!brandList.length?'disabled':''}><option value="">-- atau pilih Kode Kontrak di atas --</option>${brandList.map(b=>`<option value="${b}" ${laporanDetail.brand===b?'selected':''}>${b}</option>`).join('')}</select>
+      </div>
+    </div>
+    ${detailHtml ? `<div class="panel">${detailHtml}</div>` : (laporanDetail.tanggal ? '<div class="panel"><div class="empty-note">Pilih kode kontrak atau brand utk lihat detail.</div></div>' : '')}
+  `;
+  document.getElementById('ld_tanggal').addEventListener('change', (e) => { laporanDetail = { tanggal: e.target.value, kodeKontrak:'', brand:'' }; renderLaporanDetailPanel(container); });
+  document.getElementById('ld_kontrak').addEventListener('change', (e) => { laporanDetail.kodeKontrak = e.target.value; laporanDetail.brand=''; renderLaporanDetailPanel(container); });
+  document.getElementById('ld_brand').addEventListener('change', (e) => { laporanDetail.brand = e.target.value; laporanDetail.kodeKontrak=''; renderLaporanDetailPanel(container); });
+  wireDrilldownHandlers(container);
+}
 
 function renderLaporan(container) {
   const payouts = STATE.payouts;
@@ -1801,11 +1943,15 @@ function renderLaporan(container) {
       </table>`}
     </div>
 
-    <div class="panel">
-      <div style="display:flex; gap:2px; margin-bottom:14px; border-bottom:1px solid var(--line);">
+    <div class="panel" style="padding-bottom:0;">
+      <div style="display:flex; gap:2px; border-bottom:1px solid var(--line);">
         <button class="btn-subtab ${laporanFilter.tab==='investor'?'active':''}" data-subtab="investor">Payout Capital Partner</button>
         <button class="btn-subtab ${laporanFilter.tab==='vendor'?'active':''}" data-subtab="vendor">Pembayaran Konveksi/Supplier</button>
+        <button class="btn-subtab ${laporanFilter.tab==='detail'?'active':''}" data-subtab="detail">Rekap per Kontrak/Brand</button>
       </div>
+    </div>
+    ${laporanFilter.tab === 'detail' ? '<div id="laporanDetailArea"></div>' : `
+    <div class="panel">
       <div class="field" style="max-width:220px;"><label>Status</label>
         <select id="laporanStatusFilter">
           <option value="belum" ${laporanFilter.status==='belum'?'selected':''}>Belum Dibayar</option>
@@ -1814,12 +1960,13 @@ function renderLaporan(container) {
         </select>
       </div>
       <div id="laporanTableArea" style="margin-top:10px;"></div>
-    </div>
+    </div>`}
   `;
 
   container.querySelectorAll('[data-subtab]').forEach(btn => {
     btn.addEventListener('click', () => { laporanFilter.tab = btn.dataset.subtab; renderLaporan(container); });
   });
+  if (laporanFilter.tab === 'detail') { renderLaporanDetailPanel(document.getElementById('laporanDetailArea')); return; }
   document.getElementById('laporanStatusFilter').addEventListener('change', (e) => { laporanFilter.status = e.target.value; renderLaporan(container); });
 
   renderLaporanTable(document.getElementById('laporanTableArea'), container);
