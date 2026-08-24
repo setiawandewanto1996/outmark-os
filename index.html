@@ -929,7 +929,7 @@ function renderPartnerList(el) {
       <tbody>
         ${STATE.capitalPartners.map(p => `<tr>
           <td><b>${p.kode2}</b></td><td>${p.nama}</td><td>${p.kontak || '-'}</td>
-          <td>${p.tanggalBergabung ? new Date(p.tanggalBergabung).toLocaleDateString('id-ID') : '-'}</td>
+          <td>${fmtTanggal(p.tanggalBergabung)}</td>
           <td><span class="pill ${p.status==='Aktif'?'ok':'off'}">${p.status}</span></td>
           <td><button class="icon-del" data-del-partner="${p.id}" title="Hapus">✕</button></td>
         </tr>`).join('')}
@@ -1256,7 +1256,7 @@ function renderProdukDetailHtml(p) {
               <label>${s} ${hist.length > 1 ? `<span class="pill" data-hist-toggle="${p.nama}_${s}" style="cursor:pointer;">${hist.length}x</span>` : ''}</label>
               <input type="number" class="update-harga-size-input" data-size="${s}" value="${cur != null ? cur : ''}" placeholder="belum ada">
               <div id="hist_${p.nama}_${s}" style="display:none; font-size:11px; color:var(--ink-soft); margin-top:4px;">
-                ${hist.slice().reverse().map(h => `${fmtRp(h.harga)} &middot; ${h.tanggal ? new Date(h.tanggal).toLocaleDateString('id-ID') : 'migrasi'} (${h.sumber})`).join('<br>')}
+                ${hist.slice().reverse().map(h => `${fmtRp(h.harga)} &middot; ${h.tanggal ? fmtTanggal(h.tanggal) : 'migrasi'} (${h.sumber})`).join('<br>')}
               </div>
             </div>
           `;
@@ -1402,8 +1402,8 @@ function renderDatabase(container) {
             <td class="num">${r.komisiPlatform!=null?fmtRpCompact(r.komisiPlatform):'-'}</td>
             <td class="num">${r.komisiAfiliasi!=null?fmtRpCompact(r.komisiAfiliasi):'-'}</td>
             <td class="num">${r.profit!=null?fmtRpCompact(r.profit):(r.netSettlement!=null?fmtRpCompact(r.netSettlement)+'*':'-')}</td>
-            <td style="font-size:10.5px;">${r.tanggalPesan ? new Date(r.tanggalPesan).toLocaleDateString('id-ID') : '-'}</td>
-            <td style="font-size:10.5px;">${r.tanggalPenarikan ? new Date(r.tanggalPenarikan).toLocaleDateString('id-ID') : '-'}</td>
+            <td style="font-size:10.5px;">${fmtTanggal(r.tanggalPesan)}</td>
+            <td style="font-size:10.5px;">${fmtTanggal(r.tanggalPenarikan)}</td>
           </tr>`).join('')}
         </tbody>
       </table>
@@ -1503,7 +1503,7 @@ function renderKontrak(container) {
             const profitBerjalan = terjual * (c.nilaiMargin||0);
             return `<tr>
               <td>${c.produk}</td><td>${c.kodeKontrak}</td><td>${partner ? partner.nama : '(tidak ditemukan)'}</td>
-              <td>${c.tanggalMasuk ? new Date(c.tanggalMasuk).toLocaleDateString('id-ID',{day:'2-digit',month:'2-digit',year:'2-digit'}) : '-'}</td>
+              <td>${fmtTanggal(c.tanggalMasuk, {short:true})}</td>
               <td class="num">${fmtRpCompact(c.hargaModalPcs)}</td><td class="num">${c.stockAwal}</td><td class="num">${fmtRpCompact(modalAwal)}</td>
               <td class="num">${terjual}</td><td class="num">${c.stockAkhir}</td>
               <td class="num">${fmtRpCompact(c.nilaiMargin)}</td><td class="num">${fmtRpCompact(profitBerjalan)}</td>
@@ -1728,6 +1728,16 @@ function renderKontrak(container) {
   }
 }
 function fmtRp(n) { if (n==null||isNaN(n)) return '-'; return 'Rp ' + Math.round(n).toLocaleString('id-ID'); }
+// Format tanggal LANGSUNG dari teks ISO (YYYY-MM-DD...) tanpa lewat konversi zona waktu browser,
+// supaya tanggal yg ditampilkan SELALU sama persis dgn tanggal yg tersimpan, di zona waktu manapun dibuka.
+function fmtTanggal(isoString, opts) {
+  if (!isoString) return '-';
+  const datePart = String(isoString).slice(0, 10); // "YYYY-MM-DD"
+  const [y, m, d] = datePart.split('-');
+  if (!y || !m || !d) return '-';
+  if (opts && opts.short) return `${d}/${m}/${y.slice(2)}`;
+  return `${d}/${m}/${y}`;
+}
 function fmtRpCompact(n) {
   if (n==null||isNaN(n)) return '-';
   n = Math.round(n);
