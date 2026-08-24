@@ -95,6 +95,9 @@
     <button data-tab="database">Database Penjualan</button>
     <button data-tab="laporan">Laporan Penarikan</button>
     <button data-tab="ads">Ads Mingguan</button>
+    <button data-tab="opex">Biaya Operasional</button>
+    <button data-tab="pnl">PNL</button>
+    <button data-tab="dashboard">Dashboard</button>
   </nav>
   <div id="app"></div>
 </div>
@@ -119,8 +122,8 @@ let STATE = {
                                   // cair maupun belum, supaya SKU-nya "diingat" sampai kapan pun akhirnya cair
   payouts: [],                  // kewajiban bayar ke capital partner per batch: {id, produk, kode2, capitalPartnerId, kodeKontrak, qty, rate, payout, tanggalDihitung, tanggalDibayar}
   vendorPayouts: [],              // kewajiban bayar ke konveksi/supplier: {id, brand, produk, qty, total, tanggalDihitung, tanggalDibayar}
-  adsMingguan: [],                 // biaya iklan periodik: {id, tanggal, storeId, storeNama, jumlah, catatan}
   adsMingguan: [],                 // biaya iklan per periode per toko: {id, tanggalDari, tanggalSampai, storeId, storeName, platform, biaya, catatan}
+  biayaOperasional: [],            // biaya operasional periodik: {id, tanggalDari, tanggalSampai, kategori, jumlah, catatan}
 };
 let stateFileId = null;
 let accessToken = null;
@@ -537,7 +540,7 @@ async function loadState() {
   const loaded = text ? JSON.parse(text) : {};
   // DEFAULT_STATE mencakup SEMUA field yg pernah ada -- supaya file lama (dari sebelum field baru ditambahkan)
   // tidak jadi undefined pas dimuat. Tiap kali nambah field baru ke STATE, tambahkan juga di sini.
-  const DEFAULT_STATE = { capitalPartners: [], stores: [], products: [], contracts: [], colorCodeMap: {}, pembagiPctManual: {}, orderDb: [], pendingOrderSku: {}, payouts: [], vendorPayouts: [], adsMingguan: [] };
+  const DEFAULT_STATE = { capitalPartners: [], stores: [], products: [], contracts: [], colorCodeMap: {}, pembagiPctManual: {}, orderDb: [], pendingOrderSku: {}, payouts: [], vendorPayouts: [], adsMingguan: [], biayaOperasional: [] };
   STATE = Object.assign({}, DEFAULT_STATE, loaded);
 }
 
@@ -2335,7 +2338,310 @@ function renderAds(container) {
   });
 }
 
-const renderers = { master: renderMaster, kontrak: renderKontrak, import: renderImport, database: renderDatabase, laporan: renderLaporan, ads: renderAds };
+/* =========================================================================
+   TAB: BIAYA OPERASIONAL
+   ========================================================================= */
+let opexFilter = { kategori: '', tglDari: '', tglSampai: '' };
+const OPEX_KATEGORI = ['Gaji Karyawan', 'Sewa Gudang/Kantor', 'Listrik & Internet', 'Perlengkapan Kantor', 'Transportasi', 'Lain-lain'];
+
+function renderOpex(container) {
+  let filtered = STATE.biayaOperasional;
+  if (opexFilter.kategori) filtered = filtered.filter(o => o.kategori === opexFilter.kategori);
+  if (opexFilter.tglDari) filtered = filtered.filter(o => o.tanggalSampai && o.tanggalSampai.slice(0,10) >= opexFilter.tglDari);
+  if (opexFilter.tglSampai) filtered = filtered.filter(o => o.tanggalDari && o.tanggalDari.slice(0,10) <= opexFilter.tglSampai);
+  filtered = filtered.slice().sort((a,b) => new Date(b.tanggalDari||0) - new Date(a.tanggalDari||0));
+
+  const totalFiltered = filtered.reduce((s,o) => s + (o.jumlah||0), 0);
+  const byKategori = {};
+  filtered.forEach(o => { byKategori[o.kategori] = (byKategori[o.kategori]||0) + (o.jumlah||0); });
+
+  container.innerHTML = `
+    <div class="panel">
+      <h2>Tambah Biaya Operasional</h2>
+      <div class="desc">Catat biaya non-produksi (gaji, sewa, listrik, dll) untuk 1 periode.</div>
+      <form id="formOpex">
+        <div class="grid2">
+          <div class="field"><label>Tanggal Dari</label><input type="date" id="opex_tglDari" required></div>
+          <div class="field"><label>Tanggal Sampai</label><input type="date" id="opex_tglSampai" required></div>
+        </div>
+        <div class="grid2">
+          <div class="field"><label>Kategori</label>
+            <select id="opex_kategori" required><option value="">Pilih kategori</option>${OPEX_KATEGORI.map(k=>`<option value="${k}">${k}</option>`).join('')}</select>
+          </div>
+          <div class="field"><label>Jumlah (Rp)</label><input type="number" id="opex_jumlah" required min="0"></div>
+        </div>
+        <div class="field"><label>Catatan (opsional)</label><input type="text" id="opex_catatan" placeholder="mis. gaji Agustus minggu ke-3"></div>
+        <button type="submit" class="btn btn-primary">+ Tambah Biaya Operasional</button>
+        <div class="status-box" id="opexMsg"></div>
+      </form>
+    </div>
+
+    <div class="kpi-row">
+      <div class="kpi"><div class="kpi-label">Total (sesuai filter)</div><div class="kpi-value">${fmtRp(totalFiltered)}</div></div>
+      <div class="kpi"><div class="kpi-label">Jumlah Entri</div><div class="kpi-value">${filtered.length}</div></div>
+    </div>
+
+    <div class="panel">
+      <h2>Filter</h2>
+      <div class="field"><label>Kategori</label>
+        <select id="opexFilterKategori"><option value="">Semua Kategori</option>${OPEX_KATEGORI.map(k=>`<option value="${k}" ${opexFilter.kategori===k?'selected':''}>${k}</option>`).join('')}</select>
+      </div>
+      <div class="grid2">
+        <div class="field"><label>Dari Tanggal</label><input type="date" id="opexFilterTglDari" value="${opexFilter.tglDari}"></div>
+        <div class="field"><label>Sampai Tanggal</label><input type="date" id="opexFilterTglSampai" value="${opexFilter.tglSampai}"></div>
+      </div>
+      ${Object.keys(byKategori).length ? `
+      <div class="desc" style="margin-top:10px;"><b>Rincian per kategori:</b> ${Object.entries(byKategori).map(([k,t])=>`${k}: ${fmtRp(t)}`).join(' &middot; ')}</div>
+      ` : ''}
+      <div style="overflow-x:auto; margin-top:10px;">
+      ${!filtered.length ? '<div class="empty-note">Belum ada data.</div>' : `
+      <table class="data compact">
+        <thead><tr><th>Tanggal</th><th>Kategori</th><th class="num">Jumlah</th><th>Catatan</th><th></th></tr></thead>
+        <tbody>
+          ${filtered.map(o => `<tr>
+            <td>${fmtTanggal(o.tanggalDari,{short:true})} - ${fmtTanggal(o.tanggalSampai,{short:true})}</td>
+            <td>${o.kategori}</td><td class="num">${fmtRp(o.jumlah)}</td>
+            <td style="font-size:11px; color:var(--ink-soft);">${o.catatan||'-'}</td>
+            <td><button class="icon-del" data-del-opex="${o.id}">✕</button></td>
+          </tr>`).join('')}
+        </tbody>
+      </table>`}
+      </div>
+    </div>
+  `;
+
+  document.getElementById('formOpex').addEventListener('submit', async (ev) => {
+    ev.preventDefault();
+    const msg = document.getElementById('opexMsg');
+    const tglDari = document.getElementById('opex_tglDari').value;
+    const tglSampai = document.getElementById('opex_tglSampai').value;
+    const kategori = document.getElementById('opex_kategori').value;
+    const jumlah = Number(document.getElementById('opex_jumlah').value);
+    const catatan = document.getElementById('opex_catatan').value.trim();
+    if (!kategori) { showMsg(msg, 'err', 'Pilih kategori dulu.'); return; }
+    if (new Date(tglSampai) < new Date(tglDari)) { showMsg(msg, 'err', 'Tanggal Sampai tidak boleh sebelum Tanggal Dari.'); return; }
+    STATE.biayaOperasional.push({
+      id: uid('opex'), tanggalDari: new Date(tglDari).toISOString(), tanggalSampai: new Date(tglSampai).toISOString(),
+      kategori, jumlah, catatan: catatan||null,
+    });
+    await withSaving(msg, 'Biaya operasional ditambahkan.', async () => {
+      await saveState();
+      document.getElementById('formOpex').reset();
+    });
+    setTimeout(() => renderOpex(container), 800);
+  });
+  document.getElementById('opexFilterKategori').addEventListener('change', (e) => { opexFilter.kategori = e.target.value; renderOpex(container); });
+  document.getElementById('opexFilterTglDari').addEventListener('change', (e) => { opexFilter.tglDari = e.target.value; renderOpex(container); });
+  document.getElementById('opexFilterTglSampai').addEventListener('change', (e) => { opexFilter.tglSampai = e.target.value; renderOpex(container); });
+  container.querySelectorAll('[data-del-opex]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      if (!confirm('Hapus entri biaya operasional ini?')) return;
+      STATE.biayaOperasional = STATE.biayaOperasional.filter(o => o.id !== btn.dataset.delOpex);
+      await saveState();
+      renderOpex(container);
+    });
+  });
+}
+
+/* =========================================================================
+   TAB: PNL
+   ========================================================================= */
+let pnlFilter = { dari: '', sampai: '', preset: 'bulan_ini' };
+
+function pnlDateRangeFromPreset(preset) {
+  const now = new Date();
+  const y = now.getUTCFullYear(), m = now.getUTCMonth(), d = now.getUTCDate();
+  if (preset === 'minggu_ini') {
+    const dow = now.getUTCDay() || 7; // Senin=1..Minggu=7
+    const senin = new Date(Date.UTC(y,m,d-dow+1));
+    return { dari: senin.toISOString().slice(0,10), sampai: new Date().toISOString().slice(0,10) };
+  }
+  if (preset === 'bulan_ini') {
+    return { dari: new Date(Date.UTC(y,m,1)).toISOString().slice(0,10), sampai: new Date().toISOString().slice(0,10) };
+  }
+  if (preset === 'bulan_lalu') {
+    return { dari: new Date(Date.UTC(y,m-1,1)).toISOString().slice(0,10), sampai: new Date(Date.UTC(y,m,0)).toISOString().slice(0,10) };
+  }
+  return { dari: '', sampai: '' };
+}
+
+function computePNL(dari, sampai) {
+  const inRange = (isoStr) => { if (!isoStr) return false; const d = isoStr.slice(0,10); return (!dari || d >= dari) && (!sampai || d <= sampai); };
+  const overlaps = (dariStr, sampaiStr) => { // utk entri ber-rentang (ads/opex): overlap dgn rentang filter
+    if (!dariStr || !sampaiStr) return false;
+    const a1 = dariStr.slice(0,10), a2 = sampaiStr.slice(0,10);
+    return (!sampai || a1 <= sampai) && (!dari || a2 >= dari);
+  };
+
+  const orderRows = STATE.orderDb.filter(r => inRange(r.tanggalPenarikan));
+  const pendapatan = orderRows.reduce((s,r) => s + (r.pendapatan||0), 0);
+
+  const vendorRows = STATE.vendorPayouts.filter(v => inRange(v.tanggalDihitung));
+  const biayaModal = vendorRows.reduce((s,v) => s + (v.total||0), 0);
+
+  const komisiPlatform = orderRows.reduce((s,r) => s + (r.komisiPlatform||0), 0);
+  const biayaLayanan = orderRows.reduce((s,r) => s + (r.biayaLayanan||0), 0);
+  const biayaPembayaran = orderRows.reduce((s,r) => s + (r.biayaPembayaran||0), 0);
+  const komisiAfiliasi = orderRows.reduce((s,r) => s + (r.komisiAfiliasi||0), 0);
+  const komisiDinamis = orderRows.reduce((s,r) => s + (r.komisiDinamis||0), 0);
+  const pajak = orderRows.reduce((s,r) => s + (r.pajak||0), 0);
+  const adsRows = STATE.adsMingguan.filter(a => overlaps(a.tanggalDari, a.tanggalSampai));
+  const biayaIklan = adsRows.reduce((s,a) => s + (a.biaya||0), 0);
+  const bebanPenjualan = komisiPlatform + biayaLayanan + biayaPembayaran + komisiAfiliasi + komisiDinamis + pajak + biayaIklan;
+
+  const grossMargin = pendapatan - biayaModal;
+
+  const opexRows = STATE.biayaOperasional.filter(o => overlaps(o.tanggalDari, o.tanggalSampai));
+  const biayaOperasional = opexRows.reduce((s,o) => s + (o.jumlah||0), 0);
+
+  const nettMargin = grossMargin - bebanPenjualan - biayaOperasional;
+
+  const payoutRows = STATE.payouts.filter(p => inRange(p.tanggalDihitung));
+  const payoutInvestor = payoutRows.reduce((s,p) => s + (p.payout||0), 0);
+
+  const profitAkhir = nettMargin - payoutInvestor;
+
+  return { pendapatan, biayaModal, grossMargin, komisiPlatform, biayaLayanan, biayaPembayaran, komisiAfiliasi, komisiDinamis, pajak, biayaIklan, bebanPenjualan, biayaOperasional, nettMargin, payoutInvestor, profitAkhir, nOrder: orderRows.length };
+}
+
+function renderPnl(container) {
+  if (pnlFilter.preset !== 'custom' && (!pnlFilter.dari || !pnlFilter.sampai)) {
+    Object.assign(pnlFilter, pnlDateRangeFromPreset(pnlFilter.preset));
+  }
+  const p = computePNL(pnlFilter.dari, pnlFilter.sampai);
+
+  container.innerHTML = `
+    <div class="panel">
+      <h2>Periode</h2>
+      <div class="field"><label>Preset</label>
+        <select id="pnlPreset">
+          <option value="minggu_ini" ${pnlFilter.preset==='minggu_ini'?'selected':''}>Minggu Ini</option>
+          <option value="bulan_ini" ${pnlFilter.preset==='bulan_ini'?'selected':''}>Bulan Ini</option>
+          <option value="bulan_lalu" ${pnlFilter.preset==='bulan_lalu'?'selected':''}>Bulan Lalu</option>
+          <option value="custom" ${pnlFilter.preset==='custom'?'selected':''}>Custom</option>
+        </select>
+      </div>
+      <div class="grid2">
+        <div class="field"><label>Dari Tanggal</label><input type="date" id="pnlDari" value="${pnlFilter.dari}"></div>
+        <div class="field"><label>Sampai Tanggal</label><input type="date" id="pnlSampai" value="${pnlFilter.sampai}"></div>
+      </div>
+      <div class="desc">${p.nOrder.toLocaleString('id-ID')} baris transaksi dalam periode ini.</div>
+    </div>
+
+    <div class="panel">
+      <table class="data">
+        <tbody>
+          <tr><td>Pendapatan</td><td class="num">${fmtRp(p.pendapatan)}</td></tr>
+          <tr><td style="padding-left:20px; color:var(--ink-soft);">Biaya Modal (Konveksi/Supplier)</td><td class="num">(${fmtRp(p.biayaModal)})</td></tr>
+          <tr style="font-weight:600; border-top:1px solid var(--ink);"><td>Gross Margin</td><td class="num">${fmtRp(p.grossMargin)}</td></tr>
+          <tr><td style="padding-top:14px; padding-left:20px; color:var(--ink-soft);">Komisi Platform</td><td class="num" style="padding-top:14px;">(${fmtRp(p.komisiPlatform)})</td></tr>
+          <tr><td style="padding-left:20px; color:var(--ink-soft);">Biaya Layanan</td><td class="num">(${fmtRp(p.biayaLayanan)})</td></tr>
+          <tr><td style="padding-left:20px; color:var(--ink-soft);">Biaya Pembayaran</td><td class="num">(${fmtRp(p.biayaPembayaran)})</td></tr>
+          <tr><td style="padding-left:20px; color:var(--ink-soft);">Komisi Afiliasi</td><td class="num">(${fmtRp(p.komisiAfiliasi)})</td></tr>
+          <tr><td style="padding-left:20px; color:var(--ink-soft);">Komisi Dinamis</td><td class="num">(${fmtRp(p.komisiDinamis)})</td></tr>
+          <tr><td style="padding-left:20px; color:var(--ink-soft);">Pajak</td><td class="num">(${fmtRp(p.pajak)})</td></tr>
+          <tr><td style="padding-left:20px; color:var(--ink-soft);">Biaya Iklan (Ads Mingguan)</td><td class="num">(${fmtRp(p.biayaIklan)})</td></tr>
+          <tr style="font-weight:600;"><td style="padding-left:20px;">Total Beban Penjualan</td><td class="num">(${fmtRp(p.bebanPenjualan)})</td></tr>
+          <tr><td style="padding-left:20px; color:var(--ink-soft);">Biaya Operasional</td><td class="num">(${fmtRp(p.biayaOperasional)})</td></tr>
+          <tr style="font-weight:600; border-top:2px solid var(--ink); font-size:15px;"><td style="padding-top:10px;">Nett Margin</td><td class="num" style="padding-top:10px;">${fmtRp(p.nettMargin)}</td></tr>
+          <tr><td style="padding-top:14px; color:var(--ink-soft);">Payout Capital Partner</td><td class="num" style="padding-top:14px;">(${fmtRp(p.payoutInvestor)})</td></tr>
+          <tr style="font-weight:700; border-top:2px solid var(--ink); font-size:16px;"><td style="padding-top:10px;">Profit Akhir Perusahaan</td><td class="num" style="padding-top:10px;">${fmtRp(p.profitAkhir)}</td></tr>
+        </tbody>
+      </table>
+    </div>
+  `;
+  document.getElementById('pnlPreset').addEventListener('change', (e) => {
+    pnlFilter.preset = e.target.value;
+    if (e.target.value !== 'custom') Object.assign(pnlFilter, pnlDateRangeFromPreset(e.target.value));
+    renderPnl(container);
+  });
+  document.getElementById('pnlDari').addEventListener('change', (e) => { pnlFilter.preset='custom'; pnlFilter.dari = e.target.value; renderPnl(container); });
+  document.getElementById('pnlSampai').addEventListener('change', (e) => { pnlFilter.preset='custom'; pnlFilter.sampai = e.target.value; renderPnl(container); });
+}
+
+/* =========================================================================
+   TAB: DASHBOARD (SALES)
+   ========================================================================= */
+let dashFilter = { dari: '', sampai: '', preset: 'bulan_ini' };
+
+function renderDashboard(container) {
+  if (dashFilter.preset !== 'custom' && (!dashFilter.dari || !dashFilter.sampai)) {
+    Object.assign(dashFilter, pnlDateRangeFromPreset(dashFilter.preset));
+  }
+  const inRange = (isoStr) => { if (!isoStr) return false; const d = isoStr.slice(0,10); return (!dashFilter.dari || d >= dashFilter.dari) && (!dashFilter.sampai || d <= dashFilter.sampai); };
+  const rows = STATE.orderDb.filter(r => inRange(r.tanggalPenarikan));
+
+  const totalOmzet = rows.reduce((s,r) => s + (r.pendapatan||0), 0);
+  const totalQty = rows.reduce((s,r) => s + (r.qty||1), 0);
+  const totalProfit = rows.reduce((s,r) => s + (r.profit||0), 0);
+
+  const bySumber = {};
+  rows.forEach(r => { const k = r.sumber || 'Tidak diketahui'; bySumber[k] = bySumber[k] || {omzet:0,qty:0}; bySumber[k].omzet += r.pendapatan||0; bySumber[k].qty += r.qty||1; });
+  const sumberList = Object.entries(bySumber).sort((a,b) => b[1].omzet - a[1].omzet);
+  const maxOmzetSumber = Math.max(1, ...sumberList.map(([,v]) => v.omzet));
+
+  const byProduk = {};
+  rows.forEach(r => { const k = r.produk || 'Tidak diketahui'; byProduk[k] = byProduk[k] || {omzet:0,qty:0}; byProduk[k].omzet += r.pendapatan||0; byProduk[k].qty += r.qty||1; });
+  const produkList = Object.entries(byProduk).sort((a,b) => b[1].omzet - a[1].omzet).slice(0,10);
+  const maxOmzetProduk = Math.max(1, ...produkList.map(([,v]) => v.omzet));
+
+  container.innerHTML = `
+    <div class="panel">
+      <h2>Periode</h2>
+      <div class="field"><label>Preset</label>
+        <select id="dashPreset">
+          <option value="minggu_ini" ${dashFilter.preset==='minggu_ini'?'selected':''}>Minggu Ini</option>
+          <option value="bulan_ini" ${dashFilter.preset==='bulan_ini'?'selected':''}>Bulan Ini</option>
+          <option value="bulan_lalu" ${dashFilter.preset==='bulan_lalu'?'selected':''}>Bulan Lalu</option>
+          <option value="custom" ${dashFilter.preset==='custom'?'selected':''}>Custom</option>
+        </select>
+      </div>
+      <div class="grid2">
+        <div class="field"><label>Dari Tanggal</label><input type="date" id="dashDari" value="${dashFilter.dari}"></div>
+        <div class="field"><label>Sampai Tanggal</label><input type="date" id="dashSampai" value="${dashFilter.sampai}"></div>
+      </div>
+    </div>
+
+    <div class="kpi-row">
+      <div class="kpi"><div class="kpi-label">Total Omzet</div><div class="kpi-value">${fmtRp(totalOmzet)}</div></div>
+      <div class="kpi"><div class="kpi-label">Total Qty Terjual</div><div class="kpi-value">${totalQty.toLocaleString('id-ID')}</div></div>
+      <div class="kpi"><div class="kpi-label">Total Profit</div><div class="kpi-value">${fmtRp(totalProfit)}</div></div>
+    </div>
+
+    <div class="panel">
+      <h2>Omzet per Toko/Platform</h2>
+      ${!sumberList.length ? '<div class="empty-note">Tidak ada data di periode ini.</div>' : sumberList.map(([nama,v]) => `
+        <div style="margin-bottom:10px;">
+          <div style="display:flex; justify-content:space-between; font-size:12px; margin-bottom:3px;">
+            <span>${nama}</span><span>${fmtRp(v.omzet)} &middot; ${v.qty} unit</span>
+          </div>
+          <div style="background:var(--line); border-radius:2px; height:10px;"><div style="background:var(--accent); height:100%; border-radius:2px; width:${(v.omzet/maxOmzetSumber*100).toFixed(1)}%;"></div></div>
+        </div>
+      `).join('')}
+    </div>
+
+    <div class="panel">
+      <h2>Top 10 Produk (by Omzet)</h2>
+      ${!produkList.length ? '<div class="empty-note">Tidak ada data di periode ini.</div>' : produkList.map(([nama,v]) => `
+        <div style="margin-bottom:10px;">
+          <div style="display:flex; justify-content:space-between; font-size:12px; margin-bottom:3px;">
+            <span>${nama}</span><span>${fmtRp(v.omzet)} &middot; ${v.qty} unit</span>
+          </div>
+          <div style="background:var(--line); border-radius:2px; height:10px;"><div style="background:var(--ok); height:100%; border-radius:2px; width:${(v.omzet/maxOmzetProduk*100).toFixed(1)}%;"></div></div>
+        </div>
+      `).join('')}
+    </div>
+  `;
+  document.getElementById('dashPreset').addEventListener('change', (e) => {
+    dashFilter.preset = e.target.value;
+    if (e.target.value !== 'custom') Object.assign(dashFilter, pnlDateRangeFromPreset(e.target.value));
+    renderDashboard(container);
+  });
+  document.getElementById('dashDari').addEventListener('change', (e) => { dashFilter.preset='custom'; dashFilter.dari = e.target.value; renderDashboard(container); });
+  document.getElementById('dashSampai').addEventListener('change', (e) => { dashFilter.preset='custom'; dashFilter.sampai = e.target.value; renderDashboard(container); });
+}
+
+const renderers = { master: renderMaster, kontrak: renderKontrak, import: renderImport, database: renderDatabase, laporan: renderLaporan, ads: renderAds, opex: renderOpex, pnl: renderPnl, dashboard: renderDashboard };
 function switchTab(tab) {
   document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
   renderers[tab](document.getElementById('app'));
