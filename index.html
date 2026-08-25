@@ -1720,7 +1720,7 @@ function renderKontrak(container) {
 
     <div class="panel">
       <h2>Kontrak Aktif (DANA BELUM CAIR) <span class="pill">${activeContracts.length}</span></h2>
-      <div class="desc">Modal, Terjual, dan Profit dihitung otomatis dari Stock Awal/Akhir &times; Harga/Nilai Margin.</div>
+      <div class="desc">Modal, Terjual, dan Profit dihitung otomatis dari Stock Awal/Akhir &times; Harga/Nilai Margin. Kode kontrak dgan tanda <span class="pill" style="font-size:9px;">rollover</span> punya riwayat kontrak sebelumnya -- klik utk lihat.</div>
       ${!activeContracts.length ? '<div class="empty-note">Belum ada kontrak aktif.</div>' : `
       <div style="overflow-x:auto;">
       <table class="data compact">
@@ -1735,8 +1735,13 @@ function renderKontrak(container) {
             const modalAwal = (c.stockAwal||0) * (c.hargaModalPcs||0);
             const terjual = (c.stockAwal||0) - (c.stockAkhir||0);
             const profitBerjalan = terjual * (c.nilaiMargin||0);
+            const adaRiwayat = c.rolledFromKodeKontrak || STATE.contracts.some(x => x.rolledFromKodeKontrak === c.kodeKontrak);
             return `<tr>
-              <td>${c.produk}</td><td>${c.kodeKontrak}</td><td>${partner ? partner.nama : '(tidak ditemukan)'}</td>
+              <td>${c.produk}</td>
+              <td>${c.kodeKontrak}${adaRiwayat ? ` <span class="pill" data-riwayat-toggle="${c.kodeKontrak}" style="font-size:9px; cursor:pointer;">rollover</span>` : ''}
+                <div id="riwayat_${c.kodeKontrak}" style="display:none; font-size:10.5px; color:var(--ink-soft); margin-top:4px; white-space:normal;"></div>
+              </td>
+              <td>${partner ? partner.nama : '(tidak ditemukan)'}</td>
               <td>${fmtTanggal(c.tanggalMasuk, {short:true})}</td>
               <td class="num">${fmtRpCompact(c.hargaModalPcs)}</td><td class="num">${c.stockAwal}</td><td class="num">${fmtRpCompact(modalAwal)}</td>
               <td class="num">${terjual}</td><td class="num">${c.stockAkhir}</td>
@@ -1753,6 +1758,12 @@ function renderKontrak(container) {
       <h2>Total per Capital Partner</h2>
       <div class="desc">Total dana yang sedang dikelola (dijumlah dari semua kontrak aktif, lintas produk).</div>
       <div id="partnerTotalView"></div>
+    </div>
+
+    <div class="panel">
+      <h2>Saldo di Luar Kontrak</h2>
+      <div class="desc">Sisa pembulatan dari rollover kontrak (Putar Penuh/Putar Modal Saja) yang belum genap jadi 1 unit produk apa pun. Terkumpul lintas produk per investor. Murni informasi -- dipakainya kapan &amp; ke produk apa, kamu putuskan manual.</div>
+      <div id="saldoDiluarView"></div>
     </div>
 
     <div class="panel">
@@ -1881,6 +1892,30 @@ function renderKontrak(container) {
     });
   });
 
+  // ---- Handlers: Jejak Rollover (telusuri mundur ke kontrak asal, dan maju ke kontrak lanjutan) ----
+  container.querySelectorAll('[data-riwayat-toggle]').forEach(pill => {
+    pill.addEventListener('click', () => {
+      const kode = pill.dataset.riwayatToggle;
+      const target = document.getElementById('riwayat_' + kode);
+      if (!target) return;
+      if (target.style.display === 'block') { target.style.display = 'none'; return; }
+      // Telusuri mundur: kontrak ini -> asal-usulnya (rolledFromKodeKontrak), berlapis kalau ada
+      const rantaiMundur = [];
+      let cur = STATE.contracts.find(x => x.kodeKontrak === kode);
+      while (cur && cur.rolledFromKodeKontrak) {
+        rantaiMundur.push(cur.rolledFromKodeKontrak + (cur.rolledTipe ? ` (${cur.rolledTipe==='putar_penuh'?'putar penuh':'putar modal saja'})` : ''));
+        cur = STATE.contracts.find(x => x.kodeKontrak === cur.rolledFromKodeKontrak);
+      }
+      // Telusuri maju: kontrak lain yg rolledFrom = kode ini
+      const lanjutan = STATE.contracts.filter(x => x.rolledFromKodeKontrak === kode);
+      let html = '';
+      if (rantaiMundur.length) html += `<div><b>Asal:</b> ${rantaiMundur.reverse().join(' &rarr; ')} &rarr; ${kode}</div>`;
+      if (lanjutan.length) html += `<div><b>Lanjutan:</b> ${kode} &rarr; ${lanjutan.map(x=>x.kodeKontrak+(x.rolledTipe?` (${x.rolledTipe==='putar_penuh'?'putar penuh':'putar modal saja'})`:'')).join(', ')}</div>`;
+      target.innerHTML = html || 'Tidak ada riwayat.';
+      target.style.display = 'block';
+    });
+  });
+
   // ---- Handlers: Kode Warna ----
   renderColorCodeList(document.getElementById('colorCodeList'));
   document.getElementById('btnAddColorCode').addEventListener('click', async () => {
@@ -1916,6 +1951,24 @@ function renderKontrak(container) {
             <td><b>${p.kode2}</b></td><td>${p.nama}</td><td class="num">${p.produkSet.size}</td>
             <td class="num">${p.nKontrak}</td><td class="num">${fmtRp(p.totalModal)}</td>
           </tr>`).join('')}
+        </tbody>
+      </table>
+    `;
+  }
+
+  // ---- Saldo di Luar Kontrak ----
+  const saldoEl = document.getElementById('saldoDiluarView');
+  const saldoEntries = Object.entries(STATE.saldoDiluarKontrak || {}).filter(([,v]) => v > 0);
+  if (!saldoEntries.length) { saldoEl.innerHTML = '<div class="empty-note">Belum ada saldo di luar kontrak.</div>'; }
+  else {
+    saldoEl.innerHTML = `
+      <table class="data">
+        <thead><tr><th>Kode</th><th>Nama</th><th class="num">Saldo</th></tr></thead>
+        <tbody>
+          ${saldoEntries.map(([cpId, jumlah]) => {
+            const partner = findPartnerById(cpId);
+            return `<tr><td><b>${partner?partner.kode2:'?'}</b></td><td>${partner?partner.nama:'(tidak ditemukan)'}</td><td class="num">${fmtRp(jumlah)}</td></tr>`;
+          }).sort().join('')}
         </tbody>
       </table>
     `;
@@ -2219,6 +2272,19 @@ function renderLaporan(container) {
           ${partnerSummary.map(p => `<tr><td><b>${p.kode2}</b></td><td>${p.nama}</td><td class="num">${p.nItem}</td><td class="num">${fmtRp(p.total)}</td></tr>`).join('')}
         </tbody>
       </table>`}
+    </div>
+
+    <div class="panel">
+      <h2>Saldo di Luar Kontrak</h2>
+      <div class="desc">Sisa pembulatan dari rollover kontrak (Putar Penuh/Putar Modal Saja), terkumpul lintas produk per investor. Murni catatan -- belum otomatis dipakai jadi kontrak baru.</div>
+      ${(() => {
+        const saldoEntries = Object.entries(STATE.saldoDiluarKontrak).filter(([,v]) => v > 0);
+        if (!saldoEntries.length) return '<div class="empty-note">Belum ada saldo di luar kontrak.</div>';
+        return `<table class="data">
+          <thead><tr><th>Investor</th><th class="num">Saldo</th></tr></thead>
+          <tbody>${saldoEntries.map(([cpId,v]) => { const p = findPartnerById(cpId); return `<tr><td>${p?p.nama:cpId}</td><td class="num">${fmtRp(v)}</td></tr>`; }).join('')}</tbody>
+        </table>`;
+      })()}
     </div>
 
     <div class="panel" style="padding-bottom:0;">
