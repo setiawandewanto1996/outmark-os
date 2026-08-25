@@ -812,6 +812,13 @@ function renderMaster(container) {
       <h2>Daftar Toko</h2>
       <div id="storeList"></div>
     </div>
+
+    <div class="panel">
+      <h2>Tandai Riwayat Rollover (Data Lama)</h2>
+      <div class="desc">Sekali jalan: telusuri kontrak2 hasil migrasi UJUSO, tandai yang polanya jelas rollover (kontrak sebelumnya habis dulu baru yang baru mulai), dan perbaiki tanggal placeholder yang aneh. Aman diulang -- yang sudah ditandai tidak akan ditimpa.</div>
+      <button class="btn btn-ghost" id="btnInferRollover">Tandai Sekarang</button>
+      <div class="status-box" id="inferRolloverMsg"></div>
+    </div>
   `;
 
   renderPartnerList(document.getElementById('partnerList'));
@@ -1076,6 +1083,21 @@ function renderMaster(container) {
       document.getElementById('formStore').reset();
       renderStoreList(document.getElementById('storeList'));
     });
+  });
+
+  document.getElementById('btnInferRollover').addEventListener('click', async () => {
+    const msg = document.getElementById('inferRolloverMsg');
+    if (!confirm('Tandai riwayat rollover dari kontrak lama? Ini akan MENGUBAH data kontrak (menambah field riwayat + memperbaiki beberapa tanggal placeholder). Yakin lanjut?')) return;
+    showMsg(msg, 'info', 'Menganalisa...');
+    try {
+      const r = inferRolloverLineage();
+      await saveState();
+      let text = `${r.nDitandai} kontrak ditandai riwayat rollover-nya. ${r.nTglDiperbaiki} tanggal placeholder diperbaiki. ${r.nDilewati} pasangan dilewati (kemungkinan kontrak paralel/split, bukan rollover linear).`;
+      showMsg(msg, 'ok', text);
+      if (r.dilewatiList.length) console.log('Dilewati (perlu cek manual kalau perlu):', r.dilewatiList);
+    } catch (e) {
+      showMsg(msg, 'err', 'Gagal: ' + e.message);
+    }
   });
 }
 
@@ -2087,6 +2109,53 @@ function renderKontrakDetailTable(payout) {
 }
 
 // Rekonstruksi PERKIRAAN payouts dari histori PENJUALAN yg sudah dimigrasi -- SEPENUHNYA TERPISAH dari alur
+// Tandai riwayat rollover utk kontrak2 LAMA (dari migrasi UJUSO) berdasarkan pola: kontrak sebelumnya
+// habis total (stockAkhir=0) tepat sebelum kontrak berikutnya (nomor urut+1, investor+produk sama) mulai.
+// TIDAK menandai kalau kontrak sebelumnya masih ada sisa (brarti bukan rollover linear, tapi kontrak paralel/split).
+// Juga perbaiki tanggal placeholder (2025-01-01) dgn interpolasi dari tetangganya dlm urutan yg sama.
+function inferRolloverLineage() {
+  const groups = {};
+  STATE.contracts.forEach(c => {
+    const m = String(c.kodeKontrak).match(/^([A-Z]{2})([A-Z])(\d+)$/i);
+    if (!m) return;
+    const key = (m[1]+m[2]).toUpperCase();
+    groups[key] = groups[key] || [];
+    groups[key].push({ c, num: parseInt(m[3],10) });
+  });
+
+  let nTglDiperbaiki = 0, nDitandai = 0, nDilewati = 0;
+  const dilewatiList = [];
+
+  Object.values(groups).forEach(list => {
+    list.sort((a,b) => a.num - b.num);
+    list.forEach((item, i) => {
+      const tgl = item.c.tanggalMasuk ? item.c.tanggalMasuk.slice(0,10) : null;
+      if (tgl === '2025-01-01') {
+        const prev = list[i-1], next = list[i+1];
+        if (prev && prev.c.tanggalMasuk && next && next.c.tanggalMasuk) {
+          const tPrev = new Date(prev.c.tanggalMasuk).getTime(), tNext = new Date(next.c.tanggalMasuk).getTime();
+          item.c.tanggalMasuk = new Date(tPrev + (tNext - tPrev) / 2).toISOString();
+          nTglDiperbaiki++;
+        }
+      }
+    });
+    list.sort((a,b) => new Date(a.c.tanggalMasuk||0) - new Date(b.c.tanggalMasuk||0));
+    for (let i = 1; i < list.length; i++) {
+      const prev = list[i-1].c, cur = list[i].c;
+      if (cur.rolledFromKodeKontrak) continue;
+      if ((prev.stockAkhir||0) === 0) {
+        cur.rolledFromKodeKontrak = prev.kodeKontrak;
+        cur.rolledTipe = 'historis';
+        nDitandai++;
+      } else {
+        dilewatiList.push(`${prev.kodeKontrak} -> ${cur.kodeKontrak} (${prev.kodeKontrak} masih sisa ${prev.stockAkhir})`);
+        nDilewati++;
+      }
+    }
+  });
+  return { nTglDiperbaiki, nDitandai, nDilewati, dilewatiList };
+}
+
 // Import Mingguan asli. TIDAK PERNAH menyentuh STATE.contracts atau STATE.orderDb -- cuma BACA dari orderDb,
 // TULIS ke STATE.payouts/vendorPayouts saja. Aman dijalankan berkali-kali (hapus hasil lama dulu tiap kali).
 // PAKAI kodeKontrakHistoris (kolom B di PENJUALAN) LANGSUNG sbg sumber kebenaran -- BUKAN hitung ulang alokasi
