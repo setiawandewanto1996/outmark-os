@@ -16,7 +16,7 @@
     --shopee: #EE4D2D; --tiktok: #17181A; --tokopedia: #42B549;
   }
   * { box-sizing: border-box; }
-  body { margin: 0; background: var(--paper); color: var(--ink); font-family: 'Inter', sans-serif; min-height: 100vh; }
+  body { margin: 0; background: linear-gradient(150deg, #F7F1E8 0%, #F2F0EE 35%, #EDF0F6 70%, #E9EEF9 100%); color: var(--ink); font-family: 'Inter', sans-serif; min-height: 100vh; }
 
   .app-shell { display: flex; min-height: 100vh; }
   .sidebar {
@@ -38,7 +38,7 @@
   .sidebar-footer .email { color: #8FD9B6; }
   .sidebar-footer button { background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.15); color: #fff; border-radius: 4px; padding: 6px 10px; font-family: 'IBM Plex Mono', monospace; font-size: 10.5px; cursor: pointer; margin-top: 8px; width: 100%; }
 
-  .main-content { flex: 1; min-width: 0; padding: 30px 40px 90px; max-width: 1400px; }
+  .main-content { flex: 1; min-width: 0; padding: 30px 44px 90px; }
   .mobile-topbar { display: none; }
   .sidebar-overlay { display: none; }
   @media (max-width: 900px) {
@@ -72,11 +72,11 @@
   input, select { font-family: 'Inter', sans-serif; font-size: 14px; padding: 9px 10px; border: 1px solid var(--line); border-radius: 7px; }
   input:focus, select:focus { outline: none; border-color: var(--accent); }
 
-  .btn { font-family: 'Space Grotesk', sans-serif; font-weight: 600; font-size: 14px; border: none; border-radius: 7px; padding: 11px 18px; cursor: pointer; }
-  .btn-primary { background: var(--ink); color: var(--paper); }
-  .btn-primary:hover { background: var(--accent); }
-  .btn-primary:disabled { background: #B8B6AC; cursor: not-allowed; }
-  .btn-ghost { background: transparent; color: var(--ink-soft); border: 1px solid var(--line); font-size: 12.5px; padding: 7px 12px; }
+  .btn { font-family: 'Space Grotesk', sans-serif; font-weight: 600; font-size: 14px; border: none; border-radius: 7px; padding: 11px 18px; cursor: pointer; box-shadow: 0 1px 2px rgba(52,87,213,0.15); }
+  .btn-primary { background: var(--accent); color: #fff; }
+  .btn-primary:hover { background: #2A45AD; }
+  .btn-primary:disabled { background: #B8B6AC; box-shadow: none; cursor: not-allowed; }
+  .btn-ghost { background: transparent; color: var(--ink-soft); border: 1px solid var(--line); font-size: 12.5px; padding: 7px 12px; box-shadow: none; }
   .btn-ghost:hover { border-color: var(--accent); color: var(--accent); }
 
   table.data { width: 100%; border-collapse: collapse; font-size: 13px; }
@@ -86,6 +86,7 @@
   .pill { display: inline-block; font-family: 'IBM Plex Mono', monospace; font-size: 10.5px; padding: 2px 8px; border-radius: 20px; background: var(--line); color: var(--ink-soft); }
   .pill.ok { background: #E3EFE8; color: var(--ok); }
   .pill.off { background: #F3E5E2; color: var(--err); }
+  .pill.pending { background: #FBF0DC; color: #96650F; }
 
   .status-box { font-family: 'IBM Plex Mono', monospace; font-size: 12px; padding: 10px 12px; border-radius: 7px; margin-top: 10px; display: none; }
   .status-box.show { display: block; }
@@ -107,7 +108,10 @@
   .drop-filename { font-size: 12.5px; font-weight: 500; }
   .kpi-row { display: grid; grid-template-columns: repeat(3,1fr); gap: 12px; }
   @media (max-width: 640px) { .kpi-row { grid-template-columns: 1fr 1fr; } }
-  .kpi { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 16px 18px; box-shadow: 0 1px 3px rgba(20,20,20,0.045); }
+  .kpi { background: var(--surface); border: 1px solid var(--line); border-top: 3px solid var(--accent); border-radius: 10px; padding: 16px 18px; box-shadow: 0 1px 3px rgba(20,20,20,0.045); }
+  .kpi-row .kpi:nth-child(2) { border-top-color: var(--gold); }
+  .kpi-row .kpi:nth-child(3) { border-top-color: var(--ok); }
+  .kpi-row .kpi:nth-child(4) { border-top-color: #8A5FBF; }
   .kpi-label { font-family: 'IBM Plex Mono', monospace; font-size: 10px; text-transform: uppercase; letter-spacing: 1px; color: var(--ink-soft); margin-bottom: 5px; }
   .kpi-value { font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 20px; }
   .btn-subtab { font-family: 'IBM Plex Mono', monospace; font-size: 12px; background: none; border: none; padding: 8px 14px; cursor: pointer; color: var(--ink-soft); border-bottom: 2px solid transparent; margin-bottom: -1px; }
@@ -2547,7 +2551,7 @@ function renderLaporanTable(el, container) {
           ${filtered.map(p => `<tr>
             <td>${fmtTanggal(p.tanggalDihitung)}${p.sumberData==='backfill_estimasi'?' <span class="pill" style="font-size:9px;">perkiraan</span>':''}</td><td>${p.namaInvestor||'-'}</td><td>${p.produk}</td><td style="font-size:11px;">${p.kodeKontrak||'-'}</td>
             <td class="num">${p.qty}</td><td class="num">${p.rate?fmtRpCompact(p.rate):'-'}</td><td class="num">${p.payout?fmtRp(p.payout):'-'}</td>
-            <td>${p.tanggalDibayar ? `<span class="pill ok">Lunas ${fmtTanggal(p.tanggalDibayar,{short:true})}</span>` : `<span class="pill off">Belum</span>`}</td>
+            <td>${p.tanggalDibayar ? `<span class="pill ok">Lunas ${fmtTanggal(p.tanggalDibayar,{short:true})}</span>` : `<span class="pill pending">Belum</span>`}</td>
             <td>${!p.tanggalDibayar ? `<button class="btn btn-ghost" data-mark-payout="${p.id}" style="padding:4px 8px; font-size:11px;">Tandai Dibayar</button>` : ''}</td>
           </tr>`).join('')}
         </tbody>
