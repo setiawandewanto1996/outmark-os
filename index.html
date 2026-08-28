@@ -34,6 +34,8 @@
   .sidebar-nav button:hover { background: rgba(255,255,255,0.06); color: #fff; }
   .sidebar-nav button.active { background: rgba(124,150,238,0.16); color: #fff; border-left-color: #7C96EE; font-weight: 600; }
   .sidebar-nav button:disabled { opacity: 0.3; cursor: not-allowed; }
+  .sidebar-group-label { font-family: 'IBM Plex Mono', monospace; font-size: 9.5px; letter-spacing: 1px; text-transform: uppercase; color: #6B6A76; padding: 16px 12px 6px; }
+  .sidebar-group-label:first-child { padding-top: 4px; }
   .sidebar-footer { border-top: 1px solid rgba(255,255,255,0.1); padding-top: 12px; margin-top: 10px; font-family: 'IBM Plex Mono', monospace; font-size: 10.5px; }
   .sidebar-footer .email { color: #8FD9B6; }
   .sidebar-footer button { background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.15); color: #fff; border-radius: 4px; padding: 6px 10px; font-family: 'IBM Plex Mono', monospace; font-size: 10.5px; cursor: pointer; margin-top: 8px; width: 100%; }
@@ -125,15 +127,18 @@
   <nav class="sidebar" id="sidebar">
     <div class="sidebar-wordmark">Outmark <span>OS</span></div>
     <div class="sidebar-nav" id="tabs" style="display:none;">
-      <button data-tab="master" class="active">Data Master</button>
-      <button data-tab="kontrak">Produk &amp; Kontrak</button>
+      <div class="sidebar-group-label">Menu Utama</div>
+      <button data-tab="dashboard" class="active">Dashboard</button>
       <button data-tab="import">Import Mingguan</button>
       <button data-tab="database">Database Penjualan</button>
       <button data-tab="laporan">Laporan Penarikan</button>
+      <div class="sidebar-group-label">Operasional</div>
       <button data-tab="ads">Ads Mingguan</button>
       <button data-tab="opex">Biaya Operasional</button>
       <button data-tab="pnl">PNL</button>
-      <button data-tab="dashboard">Dashboard</button>
+      <div class="sidebar-group-label">Pengaturan</div>
+      <button data-tab="kontrak">Produk &amp; Kontrak</button>
+      <button data-tab="master">Data Master</button>
     </div>
     <div class="sidebar-footer" id="authStatus"></div>
   </nav>
@@ -802,7 +807,7 @@ async function onLoggedIn() {
   try {
     await loadState();
     document.getElementById('tabs').style.display = 'flex';
-    switchTab('master');
+    switchTab('dashboard');
   } catch (e) {
     document.getElementById('app').innerHTML = `<div class="panel"><div class="status-box show err">Gagal memuat data: ${e.message}</div></div>`;
   }
