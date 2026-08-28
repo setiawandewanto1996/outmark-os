@@ -1319,6 +1319,21 @@ function labelForPlatform(platform) {
   return { order: 'Semua Pesanan', income: 'Income' };
 }
 
+// Bersihkan "Menunggu Cair" dari order yg TERNYATA sudah ada di Database Penjualan (sudah cair beneran),
+// tapi ketinggalan di pendingOrderSku krn belum pernah dibersihkan (mis. dari sebelum perbaikan ini ada).
+function cleanupPendingAlreadySettled() {
+  const settledKeys = new Set(STATE.orderDb.map(r => r.orderId + '|' + r.sku));
+  let nRemoved = 0, nOrdersAffected = 0;
+  Object.keys(STATE.pendingOrderSku).forEach(orderId => {
+    const before = STATE.pendingOrderSku[orderId].length;
+    STATE.pendingOrderSku[orderId] = STATE.pendingOrderSku[orderId].filter(p => !settledKeys.has(orderId + '|' + p.sku));
+    const removed = before - STATE.pendingOrderSku[orderId].length;
+    if (removed > 0) { nRemoved += removed; nOrdersAffected++; }
+    if (STATE.pendingOrderSku[orderId].length === 0) delete STATE.pendingOrderSku[orderId];
+  });
+  return { nRemoved, nOrdersAffected };
+}
+
 async function uploadOrderListOnly(store, orderFile) {
   const wb = XLSX.read(await orderFile.arrayBuffer(), { type:'array' }); // TANPA cellDates -- baca angka mentah
   let count = 0, nDibatalkan = 0;
@@ -1658,6 +1673,8 @@ function renderDatabase(container) {
       <h2>Pesanan Menunggu Cair <span class="pill">${nPending}</span></h2>
       <div class="desc">Order dari file "Semua Pesanan"/"Order All" yang belum ketemu pasangan cair-nya di Income (atau berstatus "Pending" dari histori). SKU-nya tetap diingat sistem sampai kapan pun akhirnya cair.</div>
       <button class="btn btn-ghost" id="btnTogglePending">${showPendingOrders ? 'Sembunyikan' : 'Lihat Daftar'}</button>
+      <button class="btn btn-ghost" id="btnCleanupPending" style="margin-left:8px;">Bersihkan yang Sudah Cair</button>
+      <div class="status-box" id="cleanupPendingMsg"></div>
       ${showPendingOrders ? `
       <div class="field" style="margin-top:10px; max-width:320px;"><label>Cari Order ID / SKU</label><input type="text" id="pendingSearchInput" value="${pendingSearch}" placeholder="ketik order ID atau SKU..."></div>
       <div class="desc">${pendingIds.length.toLocaleString('id-ID')} order cocok pencarian.</div>
@@ -1795,6 +1812,19 @@ function renderDatabase(container) {
 function wirePendingHandlers(container) {
   const btn = document.getElementById('btnTogglePending');
   if (btn) btn.addEventListener('click', () => { showPendingOrders = !showPendingOrders; renderDatabase(container); });
+  const cleanupBtn = document.getElementById('btnCleanupPending');
+  if (cleanupBtn) cleanupBtn.addEventListener('click', async () => {
+    const msg = document.getElementById('cleanupPendingMsg');
+    showMsg(msg, 'info', 'Membersihkan...');
+    try {
+      const { nRemoved, nOrdersAffected } = cleanupPendingAlreadySettled();
+      await saveState();
+      showMsg(msg, 'ok', nRemoved ? `${nRemoved} baris (dari ${nOrdersAffected} order) dikeluarkan dari Menunggu Cair karena ternyata sudah ada di Database Penjualan.` : 'Tidak ada yang perlu dibersihkan -- semua di Menunggu Cair memang belum cair.');
+      renderDatabase(container);
+    } catch (e) {
+      showMsg(msg, 'err', 'Gagal: ' + e.message);
+    }
+  });
   const searchInput = document.getElementById('pendingSearchInput');
   if (searchInput) searchInput.addEventListener('input', (e) => { pendingSearch = e.target.value; pendingPage = 1; renderDatabase(container); });
   const prev = document.getElementById('pendingPrevPage');
