@@ -169,6 +169,7 @@ let STATE = {
   adsMingguan: [],                 // biaya iklan per periode per toko: {id, tanggalDari, tanggalSampai, storeId, storeName, platform, biaya, catatan}
   biayaOperasional: [],            // biaya operasional periodik: {id, tanggalDari, tanggalSampai, kategori, jumlah, catatan}
   saldoDiluarKontrak: {},          // {capitalPartnerId: jumlahRp} -- sisa pembulatan dari rollover kontrak, lintas produk per investor
+  biayaRetur: [],                  // biaya retur/refund dari order lama yg ditolak/dikembalikan: {id, tanggalDihitung, orderId, toko, jumlah, catatan}
 };
 let stateFileId = null;
 let accessToken = null;
@@ -426,6 +427,9 @@ async function processWeeklyBatch(storeImports) {
   // SKU dicari dari pendingOrderSku (hasil "Update Daftar Pesanan") + histori orderDb.
   const shopeeImports = storeImports.filter(si => si.store.platform === 'Shopee');
   const tiktokImports = storeImports.filter(si => si.store.platform === 'TikTok' || si.store.platform === 'Tokopedia');
+  // Baris "Pesanan" tapi Pendapatan=0 (mis. retur/ditolak konsumen, kita nanggung ongkir) -- BUKAN penjualan asli,
+  // jangan diproses sbg cair biasa (bisa salah kurangi stok kontrak) -- tangkap sbg BIAYA terpisah supaya tetap masuk PNL.
+  const returAdjustments = [];
 
   // ---- Shopee ----
   const shopeeFinance = {};
@@ -433,13 +437,19 @@ async function processWeeklyBatch(storeImports) {
     const objsI = rowsToObjects(sheetToRows(si.incomeWb.Sheets['Penghasilan']), 2, 3);
     objsI.filter(o => o['Lihat berdasarkan'] === 'Order').forEach(o => {
       const id = String(o['No. Pesanan']);
+      const pendapatan = Number(o['Harga Produk'])||0;
+      const netSettlement = Number(o['Total Penghasilan'])||0;
+      if (pendapatan === 0 && netSettlement !== 0) {
+        returAdjustments.push({ orderId: id, toko: si.store.nama, jumlah: netSettlement, tanggalCair: excelSerialToISO(o['Tanggal Dana Dilepaskan']) });
+        return;
+      }
       shopeeFinance[id] = {
-        toko: si.store.nama, pendapatan: Number(o['Harga Produk'])||0,
+        toko: si.store.nama, pendapatan,
         komisi_platform: sumCategory(o, SHOPEE_CATMAP.komisi_platform), biaya_layanan: sumCategory(o, SHOPEE_CATMAP.biaya_layanan),
         biaya_pembayaran: sumCategory(o, SHOPEE_CATMAP.biaya_pembayaran), komisi_afiliasi: sumCategory(o, SHOPEE_CATMAP.komisi_afiliasi),
         komisi_dinamis: sumCategory(o, SHOPEE_CATMAP.komisi_dinamis), biaya_iklan: sumCategory(o, SHOPEE_CATMAP.biaya_iklan),
         pajak: sumCategory(o, SHOPEE_CATMAP.pajak), lainnya: sumCategory(o, SHOPEE_CATMAP.lainnya),
-        netSettlement: Number(o['Total Penghasilan'])||0, tanggalCair: excelSerialToISO(o['Tanggal Dana Dilepaskan']),
+        netSettlement, tanggalCair: excelSerialToISO(o['Tanggal Dana Dilepaskan']),
       };
     });
   });
@@ -450,13 +460,19 @@ async function processWeeklyBatch(storeImports) {
     const objsI = rowsToObjects(sheetToRows(si.incomeWb.Sheets['Detail pesanan']), 0, 2);
     objsI.filter(o => o['Jenis transaksi'] === 'Pesanan').forEach(o => {
       const id = String(o['ID Pesanan/Penyesuaian']);
+      const pendapatan = Number(o['Total Pendapatan'])||0;
+      const netSettlement = Number(o['Jumlah penyelesaian pembayaran'])||0;
+      if (pendapatan === 0 && netSettlement !== 0) {
+        returAdjustments.push({ orderId: id, toko: si.store.nama, jumlah: netSettlement, tanggalCair: excelSerialToISO(o['Waktu pembayaran pesanan']) });
+        return;
+      }
       tiktokFinance[id] = {
-        toko: si.store.nama, pendapatan: Number(o['Total Pendapatan'])||0,
+        toko: si.store.nama, pendapatan,
         komisi_platform: sumCategory(o, TIKTOK_CATMAP.komisi_platform), biaya_layanan: sumCategory(o, TIKTOK_CATMAP.biaya_layanan),
         biaya_pembayaran: sumCategory(o, TIKTOK_CATMAP.biaya_pembayaran), komisi_afiliasi: sumCategory(o, TIKTOK_CATMAP.komisi_afiliasi),
         komisi_dinamis: sumCategory(o, TIKTOK_CATMAP.komisi_dinamis), biaya_iklan: sumCategory(o, TIKTOK_CATMAP.biaya_iklan),
         pajak: sumCategory(o, TIKTOK_CATMAP.pajak), lainnya: sumCategory(o, TIKTOK_CATMAP.lainnya),
-        netSettlement: Number(o['Jumlah penyelesaian pembayaran'])||0, tanggalCair: excelSerialToISO(o['Waktu pembayaran pesanan']),
+        netSettlement, tanggalCair: excelSerialToISO(o['Waktu pembayaran pesanan']),
       };
     });
   });
@@ -617,7 +633,7 @@ async function processWeeklyBatch(storeImports) {
     return { produk, qty: Math.round(qtyTotal), hargaInvestor, totalKonveksi, totalSurplus, surplusPerUnit: totalSurplus/qtyDenganHarga };
   });
 
-  return { cairSkuRows: newCairSkuRows, qtyPerProduk, allocations, vendorPayments, surplusRows, matchStats, nSkippedAlreadyRecorded: skippedAlreadyRecorded.length, timestamp: new Date().toISOString() };
+  return { cairSkuRows: newCairSkuRows, qtyPerProduk, allocations, vendorPayments, surplusRows, matchStats, nSkippedAlreadyRecorded: skippedAlreadyRecorded.length, returAdjustments, timestamp: new Date().toISOString() };
 }
 
 /* =========================================================================
@@ -678,7 +694,7 @@ async function loadState() {
   const loaded = text ? JSON.parse(text) : {};
   // DEFAULT_STATE mencakup SEMUA field yg pernah ada -- supaya file lama (dari sebelum field baru ditambahkan)
   // tidak jadi undefined pas dimuat. Tiap kali nambah field baru ke STATE, tambahkan juga di sini.
-  const DEFAULT_STATE = { capitalPartners: [], stores: [], products: [], contracts: [], colorCodeMap: {}, pembagiPctManual: {}, orderDb: [], pendingOrderSku: {}, payouts: [], vendorPayouts: [], adsMingguan: [], biayaOperasional: [], saldoDiluarKontrak: {} };
+  const DEFAULT_STATE = { capitalPartners: [], stores: [], products: [], contracts: [], colorCodeMap: {}, pembagiPctManual: {}, orderDb: [], pendingOrderSku: {}, payouts: [], vendorPayouts: [], adsMingguan: [], biayaOperasional: [], saldoDiluarKontrak: {}, biayaRetur: [] };
   STATE = Object.assign({}, DEFAULT_STATE, loaded);
 }
 
@@ -1302,6 +1318,16 @@ async function applyBatchResult(result, tanggalPenarikanIso) {
   });
   Object.entries(result.vendorPayments).forEach(([brand, d]) => {
     STATE.vendorPayouts.push({ id: uid('vpo'), tanggalDihitung: tglPenarikan, brand, produk: [...d.produk].join(', '), qty: d.qty, total: d.total, tanggalDibayar: null, skuBreakdown: d.skuBreakdown||{} });
+  });
+
+  // Biaya retur/refund (order lama yg ditolak/dikembalikan konsumen, kita nanggung ongkirnya) -- catat sbg biaya
+  // spy tetap masuk PNL, meski TIDAK diproses sbg penjualan baru (jumlah selalu negatif dari sumbernya).
+  // Dedup by orderId -- kalau file yg sama di-import ulang, jangan dobel catat.
+  const existingReturOrderIds = new Set(STATE.biayaRetur.map(r => r.orderId));
+  (result.returAdjustments || []).forEach(r => {
+    if (existingReturOrderIds.has(r.orderId)) return;
+    STATE.biayaRetur.push({ id: uid('retur'), tanggalDihitung: r.tanggalCair || tglPenarikan, orderId: r.orderId, toko: r.toko, jumlah: Math.abs(r.jumlah), catatan: 'Retur/refund -- biaya ongkir/penyesuaian ditanggung' });
+    existingReturOrderIds.add(r.orderId);
   });
 
   await saveState();
@@ -2925,7 +2951,9 @@ function computePNL(dari, sampai) {
   const pajak = orderRows.reduce((s,r) => s + (r.pajak||0), 0);
   const adsRows = STATE.adsMingguan.filter(a => overlaps(a.tanggalDari, a.tanggalSampai));
   const biayaIklan = adsRows.reduce((s,a) => s + (a.biaya||0), 0);
-  const bebanPenjualan = komisiPlatform + biayaLayanan + biayaPembayaran + komisiAfiliasi + komisiDinamis + pajak + biayaIklan;
+  const returRows = STATE.biayaRetur.filter(r => inRange(r.tanggalDihitung));
+  const biayaRetur = returRows.reduce((s,r) => s + (r.jumlah||0), 0);
+  const bebanPenjualan = komisiPlatform + biayaLayanan + biayaPembayaran + komisiAfiliasi + komisiDinamis + pajak + biayaIklan + biayaRetur;
 
   const grossMargin = pendapatan - biayaModal;
 
@@ -2939,7 +2967,7 @@ function computePNL(dari, sampai) {
 
   const profitAkhir = nettMargin - payoutInvestor;
 
-  return { pendapatan, biayaModal, grossMargin, komisiPlatform, biayaLayanan, biayaPembayaran, komisiAfiliasi, komisiDinamis, pajak, biayaIklan, bebanPenjualan, biayaOperasional, nettMargin, payoutInvestor, profitAkhir, nOrder: orderRows.length };
+  return { pendapatan, biayaModal, grossMargin, komisiPlatform, biayaLayanan, biayaPembayaran, komisiAfiliasi, komisiDinamis, pajak, biayaIklan, biayaRetur, bebanPenjualan, biayaOperasional, nettMargin, payoutInvestor, profitAkhir, nOrder: orderRows.length };
 }
 
 function renderPnl(container) {
@@ -2979,6 +3007,7 @@ function renderPnl(container) {
           <tr><td style="padding-left:20px; color:var(--ink-soft);">Komisi Dinamis</td><td class="num">(${fmtRp(p.komisiDinamis)})</td></tr>
           <tr><td style="padding-left:20px; color:var(--ink-soft);">Pajak</td><td class="num">(${fmtRp(p.pajak)})</td></tr>
           <tr><td style="padding-left:20px; color:var(--ink-soft);">Biaya Iklan (Ads Mingguan)</td><td class="num">(${fmtRp(p.biayaIklan)})</td></tr>
+          <tr><td style="padding-left:20px; color:var(--ink-soft);">Biaya Retur/Refund</td><td class="num">(${fmtRp(p.biayaRetur)})</td></tr>
           <tr style="font-weight:600;"><td style="padding-left:20px;">Total Beban Penjualan</td><td class="num">(${fmtRp(p.bebanPenjualan)})</td></tr>
           <tr><td style="padding-left:20px; color:var(--ink-soft);">Biaya Operasional</td><td class="num">(${fmtRp(p.biayaOperasional)})</td></tr>
           <tr style="font-weight:600; border-top:2px solid var(--ink); font-size:15px;"><td style="padding-top:10px;">Nett Margin</td><td class="num" style="padding-top:10px;">${fmtRp(p.nettMargin)}</td></tr>
