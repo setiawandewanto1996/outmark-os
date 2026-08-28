@@ -192,6 +192,14 @@ function excelSerialToISO(serial) {
   return isNaN(d) ? null : d.toISOString();
 }
 
+// Kebalikan dari excelSerialToISO -- dipakai utk bikin "baris income palsu" di fitur Tambah Transaksi Manual,
+// supaya bisa lewat pipeline processWeeklyBatch yg sama persis (bukan reimplementasi alokasi terpisah).
+function dateStrToExcelSerial(dateStr) {
+  if (!dateStr) return null;
+  const ms = new Date(dateStr + 'T00:00:00.000Z').getTime();
+  return (ms / 86400000) + 25569;
+}
+
 /* =========================================================================
    LOGIKA INTI (dipindahkan dari versi sebelumnya, sudah tervalidasi)
    ========================================================================= */
@@ -427,6 +435,37 @@ function allocateLargestRemainder(qtyTotal, pctMap) {
   return floors;
 }
 
+// Tambah 1 transaksi manual (order yg SKU-nya tdk ketemu otomatis lewat pipeline biasa) --
+// dibuat dgn cara membungkus jadi "baris income palsu" 1 baris, lalu diproses lewat processWeeklyBatch +
+// applyBatchResult YG SAMA PERSIS spt batch normal -- supaya alokasi/stok kontrak/payout/dedup semuanya
+// konsisten dgn jalur biasa, BUKAN reimplementasi terpisah yg rawan beda logika.
+async function processManualTransaction({ orderId, store, sku, warna, qty, pendapatan, netSettlement, tanggalCairStr }) {
+  qty = qty || 1;
+  STATE.pendingOrderSku[orderId] = STATE.pendingOrderSku[orderId] || [];
+  if (!STATE.pendingOrderSku[orderId].some(p => p.sku === sku)) {
+    STATE.pendingOrderSku[orderId].push({ sku, qty, warna: warna||null, storeName: store.nama });
+  }
+  const serial = dateStrToExcelSerial(tanggalCairStr);
+  let fakeWb;
+  if (store.platform === 'Shopee') {
+    fakeWb = { Sheets: { 'Penghasilan': {
+      '!ref': 'A1:E4',
+      A3:{v:'Lihat berdasarkan'}, B3:{v:'No. Pesanan'}, C3:{v:'Harga Produk'}, D3:{v:'Total Penghasilan'}, E3:{v:'Tanggal Dana Dilepaskan'},
+      A4:{v:'Order'}, B4:{v:orderId}, C4:{v:pendapatan}, D4:{v:netSettlement}, E4:{v:serial},
+    } } };
+  } else {
+    fakeWb = { Sheets: { 'Detail pesanan': {
+      '!ref': 'A1:E3',
+      A1:{v:'ID Pesanan/Penyesuaian'}, B1:{v:'Jenis transaksi'}, C1:{v:'Total Pendapatan'}, D1:{v:'Jumlah penyelesaian pembayaran'}, E1:{v:'Waktu pembayaran pesanan'},
+      A3:{v:orderId}, B3:{v:'Pesanan'}, C3:{v:pendapatan}, D3:{v:netSettlement}, E3:{v:serial},
+    } } };
+  }
+  const result = await processWeeklyBatch([{ store, incomeWb: fakeWb }]);
+  const tglPenarikanIso = new Date(tanggalCairStr + 'T00:00:00.000Z').toISOString();
+  const { added, updated } = await applyBatchResult(result, tglPenarikanIso);
+  return { result, added, updated };
+}
+
 async function processWeeklyBatch(storeImports) {
   // storeImports: [{ store: {id,nama,platform}, incomeWb }] -- TIDAK perlu file Order lagi,
   // SKU dicari dari pendingOrderSku (hasil "Update Daftar Pesanan") + histori orderDb.
@@ -444,7 +483,11 @@ async function processWeeklyBatch(storeImports) {
       const id = String(o['No. Pesanan']);
       const pendapatan = Number(o['Harga Produk'])||0;
       const netSettlement = Number(o['Total Penghasilan'])||0;
-      if (pendapatan === 0 && netSettlement !== 0) {
+      // Settlement = 0 -> TIDAK ADA uang yg benar2 masuk sama sekali (order batal/gagal sblm settle) -- BUKAN
+      // penjualan asli, BUKAN retur juga (tidak ada biaya yg ditanggung) -- lewati total, jangan dihitung apa pun.
+      if (netSettlement === 0) return;
+      // Settlement negatif -> biaya retur/refund (ongkir/penyesuaian yg kita tanggung), TIDAK masuk sbg penjualan.
+      if (netSettlement < 0) {
         returAdjustments.push({ orderId: id, toko: si.store.nama, jumlah: netSettlement, tanggalCair: excelSerialToISO(o['Tanggal Dana Dilepaskan']) });
         return;
       }
@@ -467,7 +510,8 @@ async function processWeeklyBatch(storeImports) {
       const id = String(o['ID Pesanan/Penyesuaian']);
       const pendapatan = Number(o['Total Pendapatan'])||0;
       const netSettlement = Number(o['Jumlah penyelesaian pembayaran'])||0;
-      if (pendapatan === 0 && netSettlement !== 0) {
+      if (netSettlement === 0) return;
+      if (netSettlement < 0) {
         returAdjustments.push({ orderId: id, toko: si.store.nama, jumlah: netSettlement, tanggalCair: excelSerialToISO(o['Waktu pembayaran pesanan']) });
         return;
       }
@@ -1422,6 +1466,33 @@ function renderImport(container) {
     </div>
 
     <div class="panel">
+      <h2>Tambah Transaksi Manual</h2>
+      <div class="desc">Utk order yang SKU-nya tidak ketemu otomatis (mis. dari "notFoundOrderIds"), tapi kamu tahu sudah benar-benar cair. Diproses lewat jalur normal (alokasi kontrak/payout tetap otomatis), cuma SKU &amp; angkanya diinput manual.</div>
+      ${!activeStores.length ? '<div class="empty-note">Belum ada toko terdaftar.</div>' : `
+      <div class="grid2">
+        <div class="field"><label>Order ID</label><input type="text" id="mt_orderId" placeholder="mis. 585414689456096370"></div>
+        <div class="field"><label>Toko</label>
+          <select id="mt_store"><option value="">Pilih toko</option>${activeStores.map(s=>`<option value="${s.id}">${s.nama} (${s.platform})</option>`).join('')}</select>
+        </div>
+      </div>
+      <div class="grid2">
+        <div class="field"><label>SKU</label><input type="text" id="mt_sku" placeholder="mis. OSWNVY07"></div>
+        <div class="field"><label>Warna (opsional)</label><input type="text" id="mt_warna" placeholder="mis. Navy"></div>
+      </div>
+      <div class="grid2">
+        <div class="field"><label>Qty</label><input type="number" id="mt_qty" value="1" min="1"></div>
+        <div class="field"><label>Total Pendapatan (Rp)</label><input type="number" id="mt_pendapatan" placeholder="mis. 279000"></div>
+      </div>
+      <div class="grid2">
+        <div class="field"><label>Total Settlement/Net (Rp)</label><input type="number" id="mt_settlement" placeholder="mis. 230111"></div>
+        <div class="field"><label>Tanggal Penarikan</label><input type="date" id="mt_tanggal"></div>
+      </div>
+      <button class="btn btn-ghost" id="btnManualTransaction" style="margin-top:8px;">Tambahkan sebagai Cair</button>
+      <div class="status-box" id="manualTransactionMsg"></div>
+      `}
+    </div>
+
+    <div class="panel">
       <h2>1. Pilih Toko &amp; Upload File Income (untuk Proses Cair Mingguan)</h2>
       <div class="desc">SKU dicari otomatis dari daftar pesanan yang sudah diupload di panel atas (atau histori sebelumnya). Tidak perlu upload file Order lagi di sini.</div>
       ${!activeStores.length ? '<div class="empty-note">Belum ada toko terdaftar. Tambah di tab Data Master dulu.</div>' : `
@@ -1471,6 +1542,36 @@ function renderImport(container) {
         const { count, nDibatalkan } = await uploadOrderListOnly(store, orderFile);
         showMsg(msg, 'ok', `${count} pesanan dari ${store.nama} diperbarui/diingat sistem.` + (nDibatalkan ? ` ${nDibatalkan} order yang sebelumnya menunggu ternyata dibatalkan -- otomatis dikeluarkan dari daftar.` : ''));
         renderImport(container);
+      } catch (e) {
+        showMsg(msg, 'err', 'Gagal: ' + e.message);
+      }
+    });
+
+    const btnManual = document.getElementById('btnManualTransaction');
+    if (btnManual) btnManual.addEventListener('click', async () => {
+      const msg = document.getElementById('manualTransactionMsg');
+      const store = activeStores.find(s => s.id === document.getElementById('mt_store').value);
+      const orderId = document.getElementById('mt_orderId').value.trim();
+      const sku = document.getElementById('mt_sku').value.trim();
+      const warna = document.getElementById('mt_warna').value.trim();
+      const qty = Number(document.getElementById('mt_qty').value) || 1;
+      const pendapatan = Number(document.getElementById('mt_pendapatan').value);
+      const netSettlement = Number(document.getElementById('mt_settlement').value);
+      const tanggalCairStr = document.getElementById('mt_tanggal').value;
+      if (!store || !orderId || !sku || !pendapatan || !netSettlement || !tanggalCairStr) {
+        showMsg(msg, 'err', 'Lengkapi semua field dulu (Order ID, Toko, SKU, Pendapatan, Settlement, Tanggal).'); return;
+      }
+      showMsg(msg, 'info', 'Memproses...');
+      try {
+        const { result, added, updated } = await processManualTransaction({ orderId, store, sku, warna, qty, pendapatan, netSettlement, tanggalCairStr });
+        if (added === 0 && updated === 0) {
+          showMsg(msg, 'err', `Tidak ada yang tersimpan -- kemungkinan order ini sudah pernah tercatat sebelumnya (dicek via dedup normal).`);
+        } else {
+          showMsg(msg, 'ok', `Tersimpan sebagai transaksi cair (${added} baris baru${updated?`, ${updated} diperbarui`:''}). Stok kontrak & payout investor sudah diperbarui otomatis.`);
+          document.getElementById('mt_orderId').value = ''; document.getElementById('mt_sku').value = '';
+          document.getElementById('mt_warna').value = ''; document.getElementById('mt_pendapatan').value = '';
+          document.getElementById('mt_settlement').value = '';
+        }
       } catch (e) {
         showMsg(msg, 'err', 'Gagal: ' + e.message);
       }
