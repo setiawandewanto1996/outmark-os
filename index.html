@@ -440,12 +440,14 @@ function allocateLargestRemainder(qtyTotal, pctMap) {
 // dibuat dgn cara membungkus jadi "baris income palsu" 1 baris, lalu diproses lewat processWeeklyBatch +
 // applyBatchResult YG SAMA PERSIS spt batch normal -- supaya alokasi/stok kontrak/payout/dedup semuanya
 // konsisten dgn jalur biasa, BUKAN reimplementasi terpisah yg rawan beda logika.
-async function processManualTransaction({ orderId, store, sku, warna, qty, pendapatan, netSettlement, tanggalCairStr }) {
-  qty = qty || 1;
+async function processManualTransaction({ orderId, store, skuRows, pendapatan, netSettlement, tanggalCairStr }) {
+  // skuRows: [{sku, qty, warna}, ...] -- 1 order bisa punya BANYAK SKU berbeda (order isi banyak produk sekaligus)
   STATE.pendingOrderSku[orderId] = STATE.pendingOrderSku[orderId] || [];
-  if (!STATE.pendingOrderSku[orderId].some(p => p.sku === sku)) {
-    STATE.pendingOrderSku[orderId].push({ sku, qty, warna: warna||null, storeName: store.nama });
-  }
+  skuRows.forEach(r => {
+    if (!STATE.pendingOrderSku[orderId].some(p => p.sku === r.sku)) {
+      STATE.pendingOrderSku[orderId].push({ sku: r.sku, qty: r.qty||1, warna: r.warna||null, storeName: store.nama });
+    }
+  });
   const serial = dateStrToExcelSerial(tanggalCairStr);
   let fakeWb;
   if (store.platform === 'Shopee') {
@@ -1490,26 +1492,22 @@ function renderImport(container) {
 
     <div class="panel">
       <h2>Tambah Transaksi Manual</h2>
-      <div class="desc">Utk order yang SKU-nya tidak ketemu otomatis (mis. dari "notFoundOrderIds"), tapi kamu tahu sudah benar-benar cair. Diproses lewat jalur normal (alokasi kontrak/payout tetap otomatis), cuma SKU &amp; angkanya diinput manual.</div>
+      <div class="desc">Utk order yang SKU-nya tidak ketemu otomatis (mis. dari "notFoundOrderIds"), tapi kamu tahu sudah benar-benar cair. Diproses lewat jalur normal (alokasi kontrak/payout tetap otomatis), cuma SKU &amp; angkanya diinput manual. Mendukung 1 order isi BANYAK SKU (order isi banyak produk sekaligus).</div>
       ${!activeStores.length ? '<div class="empty-note">Belum ada toko terdaftar.</div>' : `
       <div class="grid2">
-        <div class="field"><label>Order ID</label><input type="text" id="mt_orderId" placeholder="mis. 585414689456096370"></div>
+        <div class="field"><label>Order ID</label><input type="text" id="mt_orderId" placeholder="mis. 585620049046766664"></div>
         <div class="field"><label>Toko</label>
           <select id="mt_store"><option value="">Pilih toko</option>${activeStores.map(s=>`<option value="${s.id}">${s.nama} (${s.platform})</option>`).join('')}</select>
         </div>
       </div>
-      <div class="grid2">
-        <div class="field"><label>SKU</label><input type="text" id="mt_sku" placeholder="mis. OSWNVY07"></div>
-        <div class="field"><label>Warna (opsional)</label><input type="text" id="mt_warna" placeholder="mis. Navy"></div>
+      <div class="field"><label>SKU dalam order ini (satu per baris -- format: SKU,Warna,Qty -- Warna &amp; Qty opsional, Qty default 1)</label>
+        <textarea id="mt_skuRows" rows="4" placeholder="OSWHTM03,Hitam,1&#10;OSWHTM08,Hitam,1&#10;OSWHTM04,Hitam,2"></textarea>
       </div>
       <div class="grid2">
-        <div class="field"><label>Qty</label><input type="number" id="mt_qty" value="1" min="1"></div>
-        <div class="field"><label>Total Pendapatan (Rp)</label><input type="number" id="mt_pendapatan" placeholder="mis. 279000"></div>
+        <div class="field"><label>Total Pendapatan (Rp) -- utk SELURUH order ini</label><input type="number" id="mt_pendapatan" placeholder="mis. 1196000"></div>
+        <div class="field"><label>Total Settlement/Net (Rp) -- utk SELURUH order ini</label><input type="number" id="mt_settlement" placeholder="mis. 963048"></div>
       </div>
-      <div class="grid2">
-        <div class="field"><label>Total Settlement/Net (Rp)</label><input type="number" id="mt_settlement" placeholder="mis. 230111"></div>
-        <div class="field"><label>Tanggal Penarikan</label><input type="date" id="mt_tanggal"></div>
-      </div>
+      <div class="field" style="max-width:260px;"><label>Tanggal Penarikan</label><input type="date" id="mt_tanggal"></div>
       <button class="btn btn-ghost" id="btnManualTransaction" style="margin-top:8px;">Tambahkan sebagai Cair</button>
       <div class="status-box" id="manualTransactionMsg"></div>
       `}
@@ -1583,25 +1581,26 @@ function renderImport(container) {
       const msg = document.getElementById('manualTransactionMsg');
       const store = activeStores.find(s => s.id === document.getElementById('mt_store').value);
       const orderId = document.getElementById('mt_orderId').value.trim();
-      const sku = document.getElementById('mt_sku').value.trim();
-      const warna = document.getElementById('mt_warna').value.trim();
-      const qty = Number(document.getElementById('mt_qty').value) || 1;
+      const skuRowsRaw = document.getElementById('mt_skuRows').value.split('\n').map(s => s.trim()).filter(Boolean);
+      const skuRows = skuRowsRaw.map(line => {
+        const [sku, warna, qty] = line.split(',').map(s => s ? s.trim() : s);
+        return { sku, warna: warna || null, qty: Number(qty) || 1 };
+      }).filter(r => r.sku);
       const pendapatan = Number(document.getElementById('mt_pendapatan').value);
       const netSettlement = Number(document.getElementById('mt_settlement').value);
       const tanggalCairStr = document.getElementById('mt_tanggal').value;
-      if (!store || !orderId || !sku || !pendapatan || !netSettlement || !tanggalCairStr) {
-        showMsg(msg, 'err', 'Lengkapi semua field dulu (Order ID, Toko, SKU, Pendapatan, Settlement, Tanggal).'); return;
+      if (!store || !orderId || !skuRows.length || !pendapatan || !netSettlement || !tanggalCairStr) {
+        showMsg(msg, 'err', 'Lengkapi semua field dulu (Order ID, Toko, minimal 1 SKU, Pendapatan, Settlement, Tanggal).'); return;
       }
       showMsg(msg, 'info', 'Memproses...');
       try {
-        const { result, added, updated } = await processManualTransaction({ orderId, store, sku, warna, qty, pendapatan, netSettlement, tanggalCairStr });
+        const { result, added, updated } = await processManualTransaction({ orderId, store, skuRows, pendapatan, netSettlement, tanggalCairStr });
         if (added === 0 && updated === 0) {
           showMsg(msg, 'err', `Tidak ada yang tersimpan -- kemungkinan order ini sudah pernah tercatat sebelumnya (dicek via dedup normal).`);
         } else {
-          showMsg(msg, 'ok', `Tersimpan sebagai transaksi cair (${added} baris baru${updated?`, ${updated} diperbarui`:''}). Stok kontrak & payout investor sudah diperbarui otomatis.`);
-          document.getElementById('mt_orderId').value = ''; document.getElementById('mt_sku').value = '';
-          document.getElementById('mt_warna').value = ''; document.getElementById('mt_pendapatan').value = '';
-          document.getElementById('mt_settlement').value = '';
+          showMsg(msg, 'ok', `Tersimpan sebagai transaksi cair (${added} baris baru${updated?`, ${updated} diperbarui`:''}, ${skuRows.reduce((s,r)=>s+r.qty,0)} unit total). Stok kontrak & payout investor sudah diperbarui otomatis.`);
+          document.getElementById('mt_orderId').value = ''; document.getElementById('mt_skuRows').value = '';
+          document.getElementById('mt_pendapatan').value = ''; document.getElementById('mt_settlement').value = '';
         }
       } catch (e) {
         showMsg(msg, 'err', 'Gagal: ' + e.message);
