@@ -440,7 +440,13 @@ function allocateLargestRemainder(qtyTotal, pctMap) {
 // dibuat dgn cara membungkus jadi "baris income palsu" 1 baris, lalu diproses lewat processWeeklyBatch +
 // applyBatchResult YG SAMA PERSIS spt batch normal -- supaya alokasi/stok kontrak/payout/dedup semuanya
 // konsisten dgn jalur biasa, BUKAN reimplementasi terpisah yg rawan beda logika.
-async function processManualTransaction({ orderId, store, skuRows, pendapatan, netSettlement, tanggalCairStr }) {
+// TAHAP 1 (preview): siapkan "baris income palsu" & jalankan lewat processWeeklyBatch SAJA -- BELUM ditulis
+// ke database. Dipisah dari eksekusi (finalizeManualTransaction) supaya kalau ternyata kontrak produk ini
+// habis di tengah (butuh keputusan Putar Penuh/Modal Saja/Stop) ATAU produk ini tidak punya kontrak aktif
+// SAMA SEKALI, user diminta keputusan/diberi peringatan DULU -- sebelumnya kasus ini lolos diam-diam karena
+// jalur manual tidak pernah mengecek result.allocations sama sekali sebelum applyBatchResult (ditemukan
+// lewat kasus nyata: 4 unit OSWALD tercatat cair tapi tidak pernah teralokasikan ke investor manapun).
+async function prepareManualTransaction({ orderId, store, skuRows, pendapatan, netSettlement, tanggalCairStr }) {
   // skuRows: [{sku, qty, warna}, ...] -- 1 order bisa punya BANYAK SKU berbeda (order isi banyak produk sekaligus)
   STATE.pendingOrderSku[orderId] = STATE.pendingOrderSku[orderId] || [];
   skuRows.forEach(r => {
@@ -463,10 +469,26 @@ async function processManualTransaction({ orderId, store, skuRows, pendapatan, n
       A3:{v:orderId}, B3:{v:'Pesanan'}, C3:{v:pendapatan}, D3:{v:netSettlement}, E3:{v:serial},
     } } };
   }
-  const result = await processWeeklyBatch([{ store, incomeWb: fakeWb }]);
+  return processWeeklyBatch([{ store, incomeWb: fakeWb }]);
+}
+
+// Kasus produk yg SAMA SEKALI tidak punya kontrak aktif (beda dgn "kontrak habis di tengah" yg py riwayat
+// kontrak lama utk di-rollover) -- tandai eksplisit di sini spy bisa dideteksi & diblokir di UI manual,
+// TANPA mengubah perilaku Import Mingguan biasa (jalur itu sudah tervalidasi, sengaja tidak disentuh).
+function manualNeedsAttention(result) {
+  const perluKontrakBaru = result.allocations.filter(a => a.perluKontrakBaru);
+  const tanpaKontrakSamaSekali = result.allocations.filter(a => !a.perluKontrakBaru && !a.capitalPartnerId && a.catatan === 'Tidak ada kontrak aktif utk produk ini');
+  return { perluKontrakBaru, tanpaKontrakSamaSekali };
+}
+
+// TAHAP 2 (eksekusi): dipanggil SETELAH semua keputusan rollover (kalau ada) sudah diselesaikan di UI.
+async function finalizeManualTransaction(result, tanggalCairStr, rolloverResolutions) {
+  if (rolloverResolutions && Object.keys(rolloverResolutions).length) {
+    resolveRolloverIntoAllocations(result, rolloverResolutions);
+  }
   const tglPenarikanIso = new Date(tanggalCairStr + 'T00:00:00.000Z').toISOString();
   const { added, updated } = await applyBatchResult(result, tglPenarikanIso);
-  return { result, added, updated };
+  return { added, updated };
 }
 
 async function processWeeklyBatch(storeImports) {
@@ -1395,6 +1417,11 @@ async function applyBatchResult(result, tanggalPenarikanIso) {
    ========================================================================= */
 let pendingStoreImports = []; // [{store, orderFile, incomeFile}]
 let lastBatchResult = null;
+// Preview/rollover state khusus Tambah Transaksi Manual -- dipisah dari rolloverResolutions milik Import
+// Mingguan supaya 2 alur ini tidak saling menimpa keputusan kalau kebetulan dipakai berurutan.
+let manualPreviewResult = null;
+let manualTanggalCairStr = '';
+let manualRolloverResolutions = {};
 
 function labelForPlatform(platform) {
   if (platform === 'Shopee') return { order: 'Order All', income: 'Income Sudah Dilepas' };
@@ -1423,6 +1450,52 @@ function reverseContractAllocation(orderId) {
     nDibatalkan++;
   });
   return { nDibatalkan, nDilewati, totalQtyDikembalikan };
+}
+
+// Kebalikan dari reverseContractAllocation di atas -- utk order yg SUDAH tercatat di Database Penjualan
+// (produk Urban Outdoor) tapi TIDAK punya alokasi investor SAMA SEKALI (mis. baru dibatalkan lewat fungsi
+// di atas, atau dulu diinput manual saat produknya kebetulan tidak punya kontrak aktif -- lihat
+// manualNeedsAttention). TIDAK menyentuh orderDb sama sekali -- cuma membuat payout baru ke kontrak yang
+// dipilih & mengurangi stok kontrak itu. Aman dipanggil berkali-kali: mengecek dulu qty yg SUDAH punya
+// payout utk order+produk ini, supaya tidak dobel alokasi kalau sebagian sudah pernah dialokasikan.
+function alokasikanOrderKeKontrak(orderId, contractId) {
+  const kontrak = STATE.contracts.find(c => c.id === contractId);
+  if (!kontrak) throw new Error('Kontrak tujuan tidak ditemukan.');
+  if (kontrak.status !== 'DANA BELUM CAIR') throw new Error('Kontrak tujuan sudah tidak aktif (DANA SUDAH CAIR).');
+  const produkTarget = capitalPartnerProduk(kontrak.produk);
+
+  const rowsOrder = STATE.orderDb.filter(r => r.orderId === orderId && r.brand === 'URBAN OUTDOOR' && capitalPartnerProduk(r.produk) === produkTarget);
+  if (!rowsOrder.length) throw new Error(`Tidak ditemukan baris Database Penjualan utk order ini dgn produk "${produkTarget}" (brand URBAN OUTDOOR).`);
+
+  const totalQty = rowsOrder.reduce((s,r) => s + (r.qty||1), 0);
+  const sudahDialokasikan = STATE.payouts
+    .filter(p => (p.orderIds||[]).includes(orderId) && capitalPartnerProduk(p.produk) === produkTarget)
+    .reduce((s,p) => s + (p.qty||0), 0);
+  const sisaBelumAlokasi = totalQty - sudahDialokasikan;
+  if (sisaBelumAlokasi <= 0) return { qtyDialokasikan: 0, sudahLengkap: true };
+
+  const qtyDialokasikan = Math.min(sisaBelumAlokasi, kontrak.stockAkhir);
+  if (qtyDialokasikan <= 0) throw new Error(`Kontrak ${kontrak.kodeKontrak} sudah tidak ada sisa stok (0) -- pilih kontrak lain.`);
+
+  // Ambil unit individual (bukan baris -- krn 1 baris bisa qty>1) utk breakdown SKU yg akurat di laporan
+  const units = [];
+  rowsOrder.forEach(r => { for (let i = 0; i < (r.qty||1); i++) units.push(r.sku); });
+  const unitsDialokasikan = units.slice(0, qtyDialokasikan);
+  const skuBreakdown = {};
+  unitsDialokasikan.forEach(sku => { if (sku) skuBreakdown[sku] = (skuBreakdown[sku]||0) + 1; });
+
+  const partner = findPartnerById(kontrak.capitalPartnerId);
+  kontrak.stockAkhir -= qtyDialokasikan;
+  if (kontrak.stockAkhir === 0) kontrak.status = 'DANA SUDAH CAIR';
+
+  STATE.payouts.push({
+    id: uid('po'), tanggalDihitung: new Date().toISOString(), produk: kontrak.produk,
+    kode2: partner ? partner.kode2 : null, namaInvestor: partner ? partner.nama : null, capitalPartnerId: kontrak.capitalPartnerId,
+    kodeKontrak: kontrak.kodeKontrak, qty: qtyDialokasikan, rate: kontrak.nilaiMargin, payout: qtyDialokasikan * kontrak.nilaiMargin,
+    tanggalDibayar: null, hargaModalPcs: kontrak.hargaModalPcs, skuBreakdown, orderIds: [orderId], sumberData: 'alokasi_manual_susulan',
+  });
+
+  return { qtyDialokasikan, sisaTidakTertampung: sisaBelumAlokasi - qtyDialokasikan, kodeKontrak: kontrak.kodeKontrak };
 }
 
 function cleanupPendingAlreadySettled() {
@@ -1511,8 +1584,9 @@ function renderImport(container) {
         <div class="field"><label>Total Settlement/Net (Rp) -- utk SELURUH order ini</label><input type="number" id="mt_settlement" placeholder="mis. 963048"></div>
       </div>
       <div class="field" style="max-width:260px;"><label>Tanggal Penarikan</label><input type="date" id="mt_tanggal"></div>
-      <button class="btn btn-ghost" id="btnManualTransaction" style="margin-top:8px;">Tambahkan sebagai Cair</button>
+      <button class="btn btn-ghost" id="btnManualTransaction" style="margin-top:8px;">${manualPreviewResult ? 'Hitung Ulang Preview' : 'Cek & Proses'}</button>
       <div class="status-box" id="manualTransactionMsg"></div>
+      <div id="manualPreviewArea" style="margin-top:10px;"></div>
       `}
     </div>
 
@@ -1522,6 +1596,19 @@ function renderImport(container) {
       <div class="field"><label>Order ID (satu per baris, bisa lebih dari satu)</label><textarea id="ra_orderIds" rows="4" placeholder="260728T2D1AFG1&#10;260804EGGFF1KX&#10;585414689456096370"></textarea></div>
       <button class="btn btn-ghost" id="btnReverseAllocation" style="margin-top:8px;">Batalkan Alokasi</button>
       <div class="status-box" id="reverseAllocationMsg"></div>
+    </div>
+
+    <div class="panel">
+      <h2>Alokasikan Order ke Kontrak</h2>
+      <div class="desc">Kebalikan dari "Batalkan Alokasi" -- utk order yang SUDAH tercatat sbg penjualan di Database Penjualan (produk Urban Outdoor) tapi TIDAK punya alokasi investor sama sekali (mis. habis dibatalkan lewat panel di atas, atau dulu diinput manual saat produknya kebetulan tidak punya kontrak aktif). Order TIDAK disentuh, cuma dibuatkan payout baru ke kontrak yang kamu pilih &amp; stok kontrak itu dikurangi.</div>
+      <div class="grid2">
+        <div class="field"><label>Order ID</label><input type="text" id="aok_orderId" placeholder="mis. 585620049046766664"></div>
+        <div class="field"><label>Kontrak Tujuan (harus aktif/DANA BELUM CAIR)</label>
+          <select id="aok_kontrak"><option value="">Pilih kontrak</option>${STATE.contracts.filter(c=>c.status==='DANA BELUM CAIR').map(c=>{const partner=findPartnerById(c.capitalPartnerId);return `<option value="${c.id}">${c.kodeKontrak} -- ${c.produk} -- ${partner?partner.nama:'?'} (sisa ${c.stockAkhir})</option>`;}).join('')}</select>
+        </div>
+      </div>
+      <button class="btn btn-ghost" id="btnAlokasikanOrderKeKontrak" style="margin-top:8px;">Cek &amp; Alokasikan</button>
+      <div class="status-box" id="alokasikanOrderMsg"></div>
     </div>
 
     <div class="panel">
@@ -1595,16 +1682,18 @@ function renderImport(container) {
       if (!store || !orderId || !skuRows.length || !pendapatan || !netSettlement || !tanggalCairStr) {
         showMsg(msg, 'err', 'Lengkapi semua field dulu (Order ID, Toko, minimal 1 SKU, Pendapatan, Settlement, Tanggal).'); return;
       }
-      showMsg(msg, 'info', 'Memproses...');
+      showMsg(msg, 'info', 'Memproses preview...');
       try {
-        const { result, added, updated } = await processManualTransaction({ orderId, store, skuRows, pendapatan, netSettlement, tanggalCairStr });
-        if (added === 0 && updated === 0) {
-          showMsg(msg, 'err', `Tidak ada yang tersimpan -- kemungkinan order ini sudah pernah tercatat sebelumnya (dicek via dedup normal).`);
-        } else {
-          showMsg(msg, 'ok', `Tersimpan sebagai transaksi cair (${added} baris baru${updated?`, ${updated} diperbarui`:''}, ${skuRows.reduce((s,r)=>s+r.qty,0)} unit total). Stok kontrak & payout investor sudah diperbarui otomatis.`);
-          document.getElementById('mt_orderId').value = ''; document.getElementById('mt_skuRows').value = '';
-          document.getElementById('mt_pendapatan').value = ''; document.getElementById('mt_settlement').value = '';
+        const result = await prepareManualTransaction({ orderId, store, skuRows, pendapatan, netSettlement, tanggalCairStr });
+        if (result.cairSkuRows.length === 0 && !result.allocations.length) {
+          showMsg(msg, 'err', `Tidak ada yang diproses -- kemungkinan order ini sudah pernah tercatat sebelumnya (dicek via dedup normal).`);
+          return;
         }
+        manualPreviewResult = result;
+        manualTanggalCairStr = tanggalCairStr;
+        manualRolloverResolutions = {};
+        showMsg(msg, 'info', 'Preview siap di bawah -- cek dulu sebelum konfirmasi simpan (terutama kalau ada peringatan kontrak).');
+        renderManualPreview(document.getElementById('manualPreviewArea'), container);
       } catch (e) {
         showMsg(msg, 'err', 'Gagal: ' + e.message);
       }
@@ -1627,6 +1716,28 @@ function renderImport(container) {
         await saveState();
         showMsg(msg, totalDilewati ? 'info' : 'ok', `${totalDibatalkan} payout dibatalkan (${totalQty} unit stok kontrak dikembalikan).` + (totalDilewati ? ` ${totalDilewati} dilewati krn gabungan batch -- cek manual.` : '') + '<br>' + detail.join('<br>'));
         document.getElementById('ra_orderIds').value = '';
+      } catch (e) {
+        showMsg(msg, 'err', 'Gagal: ' + e.message);
+      }
+    });
+
+    const btnAlokasikan = document.getElementById('btnAlokasikanOrderKeKontrak');
+    if (btnAlokasikan) btnAlokasikan.addEventListener('click', async () => {
+      const msg = document.getElementById('alokasikanOrderMsg');
+      const orderId = document.getElementById('aok_orderId').value.trim();
+      const contractId = document.getElementById('aok_kontrak').value;
+      if (!orderId || !contractId) { showMsg(msg, 'err', 'Isi Order ID dan pilih kontrak tujuan dulu.'); return; }
+      showMsg(msg, 'info', 'Memproses...');
+      try {
+        const r = alokasikanOrderKeKontrak(orderId, contractId);
+        if (r.sudahLengkap) {
+          showMsg(msg, 'info', 'Tidak ada yang dialokasikan -- order ini utk produk kontrak tsb sepertinya sudah punya payout lengkap.');
+        } else {
+          await saveState();
+          showMsg(msg, 'ok', `${r.qtyDialokasikan} unit dialokasikan ke kontrak ${r.kodeKontrak}.` + (r.sisaTidakTertampung > 0 ? ` ⚠ ${r.sisaTidakTertampung} unit lagi belum tertampung (stok kontrak ini tidak cukup) -- pilih kontrak lain utk sisanya.` : ''));
+          document.getElementById('aok_orderId').value = '';
+          renderImport(container);
+        }
       } catch (e) {
         showMsg(msg, 'err', 'Gagal: ' + e.message);
       }
@@ -1656,6 +1767,7 @@ function renderImport(container) {
   const btnRun = document.getElementById('btnRunImport');
   if (btnRun) btnRun.addEventListener('click', runWeeklyImport);
   if (lastBatchResult) renderImportPreview(document.getElementById('importPreview'), lastBatchResult);
+  if (manualPreviewResult) renderManualPreview(document.getElementById('manualPreviewArea'), container);
 }
 
 async function runWeeklyImport() {
@@ -1684,8 +1796,10 @@ async function runWeeklyImport() {
 
 let rolloverResolutions = {}; // key (kode2|produk) -> { tipe: 'putar_penuh'|'putar_modal'|'stop', hargaBaru }
 
-function renderRolloverCase(a, key) {
-  const res = rolloverResolutions[key];
+// `resolutions` diteruskan sbg parameter (bukan hardcode ke rolloverResolutions global) supaya bisa dipakai
+// ulang di alur lain (mis. manualRolloverResolutions milik Tambah Transaksi Manual) tanpa saling menimpa.
+function renderRolloverCase(a, key, resolutions) {
+  const res = resolutions[key];
   const modalLama = a.qtyKontrakLama * a.hargaModalPcsLama;
   const profitLama = a.qtyKontrakLama * a.nilaiMarginLama;
   return `
@@ -1709,11 +1823,11 @@ function renderRolloverCase(a, key) {
   `;
 }
 
-function wireRolloverHandlers(el, container, result, rerender) {
+function wireRolloverHandlers(el, resolutions, rerender) {
   el.querySelectorAll('[data-rollover-pilih]').forEach(btn => {
     btn.addEventListener('click', () => {
       const key = btn.dataset.caseKey, tipe = btn.dataset.rolloverPilih;
-      if (tipe === 'stop') { rolloverResolutions[key] = { tipe: 'stop' }; rerender(); return; }
+      if (tipe === 'stop') { resolutions[key] = { tipe: 'stop' }; rerender(); return; }
       const area = document.getElementById('rolloverInputArea_' + key);
       area.innerHTML = `
         <div class="grid2" style="margin-top:8px; max-width:400px;">
@@ -1724,13 +1838,13 @@ function wireRolloverHandlers(el, container, result, rerender) {
       document.getElementById('rolloverInputArea_' + key).querySelector('[data-confirm-rollover]').addEventListener('click', () => {
         const harga = Number(document.getElementById('rolloverHarga_' + key).value);
         if (!harga || harga <= 0) { alert('Isi harga modal baru dulu.'); return; }
-        rolloverResolutions[key] = { tipe, hargaBaru: harga };
+        resolutions[key] = { tipe, hargaBaru: harga };
         rerender();
       });
     });
   });
   el.querySelectorAll('[data-rollover-ubah]').forEach(btn => {
-    btn.addEventListener('click', () => { delete rolloverResolutions[btn.dataset.rolloverUbah]; rerender(); });
+    btn.addEventListener('click', () => { delete resolutions[btn.dataset.rolloverUbah]; rerender(); });
   });
 }
 
@@ -1764,7 +1878,7 @@ function renderImportPreview(el, result) {
       </div>` : ''}
       ${perluKontrakBaru.length ? `<div class="status-box show err" style="margin-top:10px;">
         <b>⚠ PERLU KEPUTUSAN -- Kontrak Habis di Tengah (wajib diputuskan sebelum Simpan):</b>
-        ${perluKontrakBaru.map(a => renderRolloverCase(a, a.kode2 + '|' + a.produk)).join('')}
+        ${perluKontrakBaru.map(a => renderRolloverCase(a, a.kode2 + '|' + a.produk, rolloverResolutions)).join('')}
       </div>` : ''}
       ${(result.notFoundOrderIds && result.notFoundOrderIds.length) ? `<div class="status-box show err" style="margin-top:10px;">
         <b>⚠ ${result.notFoundOrderIds.length} Order Tidak Ketemu SKU-nya:</b>
@@ -1825,7 +1939,7 @@ function renderImportPreview(el, result) {
       <div class="status-box" id="applyMsg"></div>
     </div>
   `;
-  wireRolloverHandlers(el, null, result, rerender);
+  wireRolloverHandlers(el, rolloverResolutions, rerender);
   const btnZeroSettlement = document.getElementById('btnToggleZeroSettlement');
   if (btnZeroSettlement) btnZeroSettlement.addEventListener('click', () => {
     const target = document.getElementById('zeroSettlementDetail');
@@ -1854,6 +1968,82 @@ function renderImportPreview(el, result) {
     }
   });
 }
+
+// Preview khusus Tambah Transaksi Manual -- dipisah dari renderImportPreview krn kontennya lebih ringkas
+// (cuma 1 order) & punya kasus tambahan "produk tidak punya kontrak aktif sama sekali" yg tidak muncul
+// di alur Import Mingguan biasa (lihat manualNeedsAttention). Tujuannya spy keputusan rollover/peringatan
+// "tidak ada kontrak" WAJIB dilihat & diputuskan dulu sebelum data ditulis -- sebelumnya alur manual
+// langsung applyBatchResult tanpa pernah menampilkan result.allocations ke user sama sekali.
+function renderManualPreview(el, container) {
+  if (!manualPreviewResult) { el.innerHTML = ''; return; }
+  const result = manualPreviewResult;
+  const { perluKontrakBaru, tanpaKontrakSamaSekali } = manualNeedsAttention(result);
+  const semuaRolloverSelesai = perluKontrakBaru.every(a => manualRolloverResolutions[a.kode2 + '|' + a.produk]);
+  const bisaSimpanNormal = semuaRolloverSelesai && !tanpaKontrakSamaSekali.length;
+  const rerender = () => renderManualPreview(el, container);
+
+  el.innerHTML = `
+    <div style="border:1px solid var(--line); border-radius:6px; padding:14px; background:#F8F7F3;">
+      <div style="font-weight:600; margin-bottom:8px;">Preview Alokasi (belum tersimpan)</div>
+      <table class="data compact">
+        <thead><tr><th>Produk</th><th>Investor</th><th>Kode Kontrak</th><th class="num">Qty</th><th class="num">Payout</th><th>Catatan</th></tr></thead>
+        <tbody>${result.allocations.map(a => `<tr>
+          <td>${a.produk}</td><td>${a.namaInvestor||'-'}</td><td>${a.kodeKontrak||'-'}</td>
+          <td class="num">${a.qty}</td><td class="num">${a.payout?fmtRpCompact(a.payout):'-'}</td>
+          <td style="font-size:11px;color:var(--ink-soft);white-space:normal;">${a.catatan||'-'}</td>
+        </tr>`).join('')}</tbody>
+      </table>
+      ${tanpaKontrakSamaSekali.length ? `<div class="status-box show err" style="margin-top:10px;">
+        <b>⚠ Produk ini TIDAK PUNYA kontrak aktif sama sekali</b> (${tanpaKontrakSamaSekali.map(a=>`${a.produk}: ${a.qty} unit`).join(', ')}) --
+        kalau disimpan sekarang, unit ini TIDAK akan terikat ke investor manapun (persis kasus yg pernah ditemukan sebelumnya).
+        Sebaiknya tambah/aktifkan kontrak dulu di tab <b>Produk &amp; Kontrak</b>, lalu ulangi "Cek &amp; Proses" di atas.
+        Kalau tetap mau disimpan sekarang, pakai tombol "Simpan Tanpa Investor" di bawah, lalu alokasikan belakangan lewat
+        panel <b>"Alokasikan Order ke Kontrak"</b> begitu kontraknya sudah ada.
+      </div>` : ''}
+      ${perluKontrakBaru.length ? `<div class="status-box show err" style="margin-top:10px;">
+        <b>⚠ PERLU KEPUTUSAN -- Kontrak Habis (wajib diputuskan sebelum simpan):</b>
+        ${perluKontrakBaru.map(a => renderRolloverCase(a, a.kode2 + '|' + a.produk, manualRolloverResolutions)).join('')}
+      </div>` : ''}
+      <div style="margin-top:12px; display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+        <button class="btn btn-primary" id="btnKonfirmasiManual" ${!bisaSimpanNormal?'disabled':''}>Konfirmasi &amp; Simpan sebagai Cair</button>
+        ${(tanpaKontrakSamaSekali.length && semuaRolloverSelesai) ? `<button class="btn btn-ghost" id="btnPaksaSimpanTanpaKontrak">Simpan Tanpa Investor (tidak disarankan)</button>` : ''}
+        <button class="btn btn-ghost" id="btnBatalPreviewManual">Batal</button>
+      </div>
+      <div class="status-box" id="manualConfirmMsg"></div>
+    </div>
+  `;
+  wireRolloverHandlers(el, manualRolloverResolutions, rerender);
+  document.getElementById('btnBatalPreviewManual').addEventListener('click', () => {
+    manualPreviewResult = null; manualRolloverResolutions = {};
+    renderImport(container);
+  });
+  const btnKonfirmasi = document.getElementById('btnKonfirmasiManual');
+  if (btnKonfirmasi) btnKonfirmasi.addEventListener('click', () => confirmManualTransaction(container));
+  const btnPaksa = document.getElementById('btnPaksaSimpanTanpaKontrak');
+  if (btnPaksa) btnPaksa.addEventListener('click', () => {
+    if (!confirm('Simpan tanpa investor? Unit ini akan tercatat sbg penjualan TAPI tidak terikat modal investor manapun sampai kamu alokasikan manual nanti.')) return;
+    confirmManualTransaction(container);
+  });
+}
+
+async function confirmManualTransaction(container) {
+  const msg = document.getElementById('manualConfirmMsg');
+  showMsg(msg, 'info', 'Menyimpan...');
+  try {
+    const { added, updated } = await finalizeManualTransaction(manualPreviewResult, manualTanggalCairStr, manualRolloverResolutions);
+    const totalUnit = Object.values(manualPreviewResult.qtyPerProduk).reduce((a,b)=>a+Math.round(b),0)
+      + manualPreviewResult.allocations.filter(a=>!a.capitalPartnerId).reduce((s,a)=>s+a.qty,0);
+    manualPreviewResult = null; manualRolloverResolutions = {}; manualTanggalCairStr = '';
+    document.getElementById('mt_orderId').value = ''; document.getElementById('mt_skuRows').value = '';
+    document.getElementById('mt_pendapatan').value = ''; document.getElementById('mt_settlement').value = '';
+    const topMsg = document.getElementById('manualTransactionMsg');
+    showMsg(topMsg, 'ok', `Tersimpan sebagai transaksi cair (${added} baris baru${updated?`, ${updated} diperbarui`:''}, ${totalUnit} unit total). Stok kontrak & payout investor sudah diperbarui otomatis.`);
+    renderImport(container);
+  } catch (e) {
+    showMsg(msg, 'err', 'Gagal simpan: ' + e.message);
+  }
+}
+
 let expandedProduk = null;
 
 function renderProdukDetailHtml(p) {
