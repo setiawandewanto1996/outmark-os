@@ -1276,6 +1276,12 @@ async function applyBatchResult(result, tanggalPenarikanIso) {
       added++;
     }
     genuinelySettledKeys.add(key);
+
+    // Order ini SUDAH CAIR beneran sekarang -- keluarkan dari "Menunggu Cair" spy tidak nyangkut selamanya
+    if (STATE.pendingOrderSku[r.orderId]) {
+      STATE.pendingOrderSku[r.orderId] = STATE.pendingOrderSku[r.orderId].filter(p => p.sku !== r.sku);
+      if (STATE.pendingOrderSku[r.orderId].length === 0) delete STATE.pendingOrderSku[r.orderId];
+    }
   });
 
   // kurangi stock kontrak sesuai alokasi, auto-tutup kalau habis
