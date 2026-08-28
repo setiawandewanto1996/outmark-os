@@ -71,8 +71,9 @@
   @media (max-width: 640px) { .grid2 { grid-template-columns: 1fr; } }
   .field { display: flex; flex-direction: column; gap: 5px; margin-bottom: 12px; }
   label { font-family: 'IBM Plex Mono', monospace; font-size: 10.5px; letter-spacing: 0.8px; text-transform: uppercase; color: var(--ink-soft); }
-  input, select { font-family: 'Inter', sans-serif; font-size: 14px; padding: 9px 10px; border: 1px solid var(--line); border-radius: 7px; }
-  input:focus, select:focus { outline: none; border-color: var(--accent); }
+  input, select, textarea { font-family: 'Inter', sans-serif; font-size: 14px; padding: 9px 10px; border: 1px solid var(--line); border-radius: 7px; }
+  input:focus, select:focus, textarea:focus { outline: none; border-color: var(--accent); }
+  textarea { font-family: 'IBM Plex Mono', monospace; font-size: 12px; resize: vertical; }
 
   .btn { font-family: 'Space Grotesk', sans-serif; font-weight: 600; font-size: 14px; border: none; border-radius: 7px; padding: 11px 18px; cursor: pointer; box-shadow: 0 1px 2px rgba(52,87,213,0.15); }
   .btn-primary { background: var(--accent); color: #fff; }
@@ -1397,6 +1398,28 @@ function labelForPlatform(platform) {
 
 // Bersihkan "Menunggu Cair" dari order yg TERNYATA sudah ada di Database Penjualan (sudah cair beneran),
 // tapi ketinggalan di pendingOrderSku krn belum pernah dibersihkan (mis. dari sebelum perbaikan ini ada).
+// Batalkan alokasi kontrak utk 1 order ID -- order TETAP tercatat sbg penjualan di Database Penjualan,
+// tapi stok kontrak dikembalikan & payout terkait dihapus (dianggap "tidak terikat modal investor manapun").
+// HANYA aman kalau payout itu PERSIS 1 order (spt hasil Tambah Transaksi Manual) -- kalau payout itu gabungan
+// dari BEBERAPA order sekaligus (batch normal), TIDAK disentuh (supaya tidak salah kurangi qty order lain).
+function reverseContractAllocation(orderId) {
+  const payoutsTerkait = STATE.payouts.filter(p => (p.orderIds||[]).includes(orderId));
+  let nDibatalkan = 0, nDilewati = 0, totalQtyDikembalikan = 0;
+  payoutsTerkait.forEach(p => {
+    if ((p.orderIds||[]).length > 1) { nDilewati++; return; } // gabungan bbrp order, tidak aman disentuh
+    const kontrak = STATE.contracts.find(c => c.kodeKontrak === p.kodeKontrak);
+    if (kontrak) {
+      kontrak.stockAkhir += p.qty;
+      if (kontrak.status !== 'DANA BELUM CAIR') kontrak.status = 'DANA BELUM CAIR';
+      totalQtyDikembalikan += p.qty;
+    }
+    const idx = STATE.payouts.indexOf(p);
+    STATE.payouts.splice(idx, 1);
+    nDibatalkan++;
+  });
+  return { nDibatalkan, nDilewati, totalQtyDikembalikan };
+}
+
 function cleanupPendingAlreadySettled() {
   const settledKeys = new Set(STATE.orderDb.map(r => r.orderId + '|' + r.sku));
   let nRemoved = 0, nOrdersAffected = 0;
@@ -1493,6 +1516,14 @@ function renderImport(container) {
     </div>
 
     <div class="panel">
+      <h2>Batalkan Alokasi ke Kontrak</h2>
+      <div class="desc">Utk order yang SUDAH tercatat (mis. lewat Tambah Transaksi Manual tadi) tapi ternyata SALAH dialokasikan ke kontrak investor -- order TETAP tercatat sbg penjualan, tapi stok kontrak dikembalikan &amp; payout terkait dihapus. Hanya aman utk order yg payout-nya berdiri sendiri (bukan gabungan batch banyak order).</div>
+      <div class="field"><label>Order ID (satu per baris, bisa lebih dari satu)</label><textarea id="ra_orderIds" rows="4" placeholder="260728T2D1AFG1&#10;260804EGGFF1KX&#10;585414689456096370"></textarea></div>
+      <button class="btn btn-ghost" id="btnReverseAllocation" style="margin-top:8px;">Batalkan Alokasi</button>
+      <div class="status-box" id="reverseAllocationMsg"></div>
+    </div>
+
+    <div class="panel">
       <h2>1. Pilih Toko &amp; Upload File Income (untuk Proses Cair Mingguan)</h2>
       <div class="desc">SKU dicari otomatis dari daftar pesanan yang sudah diupload di panel atas (atau histori sebelumnya). Tidak perlu upload file Order lagi di sini.</div>
       ${!activeStores.length ? '<div class="empty-note">Belum ada toko terdaftar. Tambah di tab Data Master dulu.</div>' : `
@@ -1572,6 +1603,28 @@ function renderImport(container) {
           document.getElementById('mt_warna').value = ''; document.getElementById('mt_pendapatan').value = '';
           document.getElementById('mt_settlement').value = '';
         }
+      } catch (e) {
+        showMsg(msg, 'err', 'Gagal: ' + e.message);
+      }
+    });
+
+    const btnReverse = document.getElementById('btnReverseAllocation');
+    if (btnReverse) btnReverse.addEventListener('click', async () => {
+      const msg = document.getElementById('reverseAllocationMsg');
+      const orderIds = document.getElementById('ra_orderIds').value.split('\n').map(s => s.trim()).filter(Boolean);
+      if (!orderIds.length) { showMsg(msg, 'err', 'Isi minimal 1 Order ID dulu.'); return; }
+      showMsg(msg, 'info', 'Memproses...');
+      try {
+        let totalDibatalkan = 0, totalDilewati = 0, totalQty = 0;
+        const detail = [];
+        orderIds.forEach(id => {
+          const r = reverseContractAllocation(id);
+          totalDibatalkan += r.nDibatalkan; totalDilewati += r.nDilewati; totalQty += r.totalQtyDikembalikan;
+          detail.push(`${id}: ${r.nDibatalkan} payout dibatalkan${r.nDilewati?`, ${r.nDilewati} dilewati (gabungan batch, tidak aman disentuh)`:''}`);
+        });
+        await saveState();
+        showMsg(msg, totalDilewati ? 'info' : 'ok', `${totalDibatalkan} payout dibatalkan (${totalQty} unit stok kontrak dikembalikan).` + (totalDilewati ? ` ${totalDilewati} dilewati krn gabungan batch -- cek manual.` : '') + '<br>' + detail.join('<br>'));
+        document.getElementById('ra_orderIds').value = '';
       } catch (e) {
         showMsg(msg, 'err', 'Gagal: ' + e.message);
       }
