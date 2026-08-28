@@ -1023,7 +1023,7 @@ function renderMaster(container) {
       }
 
       // ---- Histori PENJUALAN -> orderDb (level order/SKU, 1 baris = 1 unit, utk fallback pencarian SKU order lama) ----
-      let nHistAdded = 0, nHistUpdated = 0;
+      let nHistAdded = 0, nHistUpdated = 0, nHistDipindahKePending = 0;
       if (wsPJ) {
         function toNumOrNull(v) { const n = Number(v); return (v!==null&&v!==undefined&&v!==''&&!isNaN(n)) ? n : null; }
         const histRows = XU.sheet_to_json(wsPJ, { header: 1 });
@@ -1043,7 +1043,34 @@ function renderMaster(container) {
         // existingByKey: kumpulan REFERENSI baris orderDb yg sudah ada, per kombinasi order+SKU (bisa lebih dari 1, krn qty>1 dipecah jadi beberapa baris)
         const existingByKey = {};
         STATE.orderDb.forEach(r => { const k = r.orderId + '|' + (r.sku||''); existingByKey[k] = existingByKey[k] || []; existingByKey[k].push(r); });
-        const seenThisPass = {};
+
+        // Pra-pindai: hitung TOTAL & jumlah occurrence "Pending" per key dari source SEKARANG, supaya bisa
+        // deteksi & bersihkan sisa migrasi versi lama (sblm aturan Pending ini ada) dgn benar -- termasuk kasus
+        // langka di mana 1 key (order+SKU sama) py CAMPURAN occurrence Pending & non-Pending (indeksnya beda2).
+        const totalCountPerKey = {}, pendingCountPerKey = {};
+        for (let r = 1; r < histRows.length; r++) {
+          const row = histRows[r]; if (!row) continue;
+          const noRef = iNoRef>=0 ? row[iNoRef] : null; const nama = row[iNamaBarang2];
+          if (!noRef || !nama) continue;
+          const key = String(noRef) + '|' + (row[iSKU2]||'');
+          totalCountPerKey[key] = (totalCountPerKey[key]||0) + 1;
+          if (row[iStatus2] === 'Pending') pendingCountPerKey[key] = (pendingCountPerKey[key]||0) + 1;
+        }
+        Object.keys(totalCountPerKey).forEach(key => {
+          const expectedNonPending = totalCountPerKey[key] - (pendingCountPerKey[key]||0);
+          const existingRows = existingByKey[key] || [];
+          if (existingRows.length > expectedNonPending) {
+            const excess = existingRows.length - expectedNonPending;
+            for (let i = 0; i < excess; i++) {
+              const rowToRemove = existingRows[existingRows.length - 1 - i];
+              const idx = STATE.orderDb.indexOf(rowToRemove);
+              if (idx >= 0) { STATE.orderDb.splice(idx, 1); nHistDipindahKePending++; }
+            }
+            existingByKey[key] = existingRows.slice(0, expectedNonPending);
+          }
+        });
+
+        const seenThisPass = {}; // occurrence index KHUSUS utk baris non-Pending (dipakai match existingByKey)
         for (let r = 1; r < histRows.length; r++) {
           const row = histRows[r];
           if (!row) continue;
@@ -1052,10 +1079,22 @@ function renderMaster(container) {
           if (!noRef || !nama) continue;
           const sku = row[iSKU2];
           const key = String(noRef) + '|' + (sku||'');
-          seenThisPass[key] = (seenThisPass[key]||0) + 1;
-          const occurrenceIdx = seenThisPass[key] - 1; // ke berapa (0-based) kemunculan key ini di pass sekarang
           let tglPenarikan = row[iTglPenarikan2] ? excelSerialToISO(row[iTglPenarikan2]) : null;
           let tglPesan = row[iTglPesan2] ? excelSerialToISO(row[iTglPesan2]) : null;
+
+          // Order berstatus "Pending" (belum final) -- JANGAN masuk Database Penjualan, taruh di "Menunggu Cair"
+          // spy SKU-nya tetap diingat sampai statusnya jelas nanti (bukan transaksi cair beneran).
+          if (row[iStatus2] === 'Pending') {
+            const pendingKey = String(noRef);
+            STATE.pendingOrderSku[pendingKey] = STATE.pendingOrderSku[pendingKey] || [];
+            if (!STATE.pendingOrderSku[pendingKey].some(p => p.sku === (sku||null))) {
+              STATE.pendingOrderSku[pendingKey].push({ sku: sku||null, qty: 1, warna: row[iWarna2]||null, storeName: row[iSumber2]||null, tanggalPesan: tglPesan });
+            }
+            continue;
+          }
+
+          seenThisPass[key] = (seenThisPass[key]||0) + 1;
+          const occurrenceIdx = seenThisPass[key] - 1; // ke berapa (0-based) kemunculan key NON-PENDING ini
           const biayaLayananGabungan = (toNumOrNull(row[iBiayaLayanan2])||0) + (toNumOrNull(row[iOngkir2])||0) + (toNumOrNull(row[iBiayaPesanan2])||0);
           const freshData = {
             orderId: String(noRef), sumber: row[iSumber2]||null, produk: nama, sku: sku||null, brand: row[iBrand2]||null, warna: row[iWarna2]||null,
@@ -1084,7 +1123,7 @@ function renderMaster(container) {
 
       showMsg(msg, 'info', 'Menyimpan ke Google Drive (bisa beberapa detik untuk data sebesar ini)...');
       await saveState();
-      showMsg(msg, 'ok', `Selesai: ${nPartnerAdded} Capital Partner, ${nStoreAdded} toko, ${nProductAdded} produk, ${nColorAdded} kode warna, ${nContractAdded} kontrak baru, ${nContractUpdated} kontrak diperbarui, ${nHistAdded} baris histori baru, ${nHistUpdated} baris histori di-refresh.`);
+      showMsg(msg, 'ok', `Selesai: ${nPartnerAdded} Capital Partner, ${nStoreAdded} toko, ${nProductAdded} produk, ${nColorAdded} kode warna, ${nContractAdded} kontrak baru, ${nContractUpdated} kontrak diperbarui, ${nHistAdded} baris histori baru, ${nHistUpdated} baris histori di-refresh.` + (nHistDipindahKePending ? ` ${nHistDipindahKePending} baris "Pending" dipindah ke Menunggu Cair.` : ''));
       renderPartnerList(document.getElementById('partnerList'));
       renderStoreList(document.getElementById('storeList'));
     } catch (e) {
@@ -1582,6 +1621,7 @@ let dbFilters = { produk: '', brand: '', sumber: '', search: '', tglPesanDari: '
 const DB_PAGE_SIZE = 50;
 let showPendingOrders = false;
 let pendingPage = 1;
+let pendingSearch = '';
 
 function renderDatabase(container) {
   const db = STATE.orderDb;
@@ -1590,7 +1630,10 @@ function renderDatabase(container) {
     container.innerHTML = `<div class="panel"><div class="empty-note">Database masih kosong. Migrasi dari file UJUSO di tab Data Master, atau proses Import Mingguan dulu.</div></div>`;
     return;
   }
-  const pendingIds = Object.keys(STATE.pendingOrderSku);
+  const allPendingIds = Object.keys(STATE.pendingOrderSku);
+  const pendingIds = pendingSearch
+    ? allPendingIds.filter(id => id.toLowerCase().includes(pendingSearch.toLowerCase()) || STATE.pendingOrderSku[id].some(r => (r.sku||'').toLowerCase().includes(pendingSearch.toLowerCase())))
+    : allPendingIds;
   const pendingTotalPages = Math.max(1, Math.ceil(pendingIds.length / DB_PAGE_SIZE));
   pendingPage = Math.min(pendingPage, pendingTotalPages);
   const pendingPageIds = pendingIds.slice((pendingPage-1)*DB_PAGE_SIZE, pendingPage*DB_PAGE_SIZE);
@@ -1598,9 +1641,11 @@ function renderDatabase(container) {
   const pendingPanel = `
     <div class="panel">
       <h2>Pesanan Menunggu Cair <span class="pill">${nPending}</span></h2>
-      <div class="desc">Order dari file "Semua Pesanan"/"Order All" yang belum ketemu pasangan cair-nya di Income. SKU-nya tetap diingat sistem sampai kapan pun akhirnya cair.</div>
+      <div class="desc">Order dari file "Semua Pesanan"/"Order All" yang belum ketemu pasangan cair-nya di Income (atau berstatus "Pending" dari histori). SKU-nya tetap diingat sistem sampai kapan pun akhirnya cair.</div>
       <button class="btn btn-ghost" id="btnTogglePending">${showPendingOrders ? 'Sembunyikan' : 'Lihat Daftar'}</button>
       ${showPendingOrders ? `
+      <div class="field" style="margin-top:10px; max-width:320px;"><label>Cari Order ID / SKU</label><input type="text" id="pendingSearchInput" value="${pendingSearch}" placeholder="ketik order ID atau SKU..."></div>
+      <div class="desc">${pendingIds.length.toLocaleString('id-ID')} order cocok pencarian.</div>
       <div style="overflow-x:auto; margin-top:10px;">
       <table class="data compact">
         <thead><tr><th>Order ID</th><th>Toko</th><th>SKU</th><th class="num">Qty</th></tr></thead>
@@ -1735,6 +1780,8 @@ function renderDatabase(container) {
 function wirePendingHandlers(container) {
   const btn = document.getElementById('btnTogglePending');
   if (btn) btn.addEventListener('click', () => { showPendingOrders = !showPendingOrders; renderDatabase(container); });
+  const searchInput = document.getElementById('pendingSearchInput');
+  if (searchInput) searchInput.addEventListener('input', (e) => { pendingSearch = e.target.value; pendingPage = 1; renderDatabase(container); });
   const prev = document.getElementById('pendingPrevPage');
   if (prev) prev.addEventListener('click', () => { pendingPage--; renderDatabase(container); });
   const next = document.getElementById('pendingNextPage');
