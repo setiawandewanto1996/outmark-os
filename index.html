@@ -1315,29 +1315,38 @@ function labelForPlatform(platform) {
 
 async function uploadOrderListOnly(store, orderFile) {
   const wb = XLSX.read(await orderFile.arrayBuffer(), { type:'array' }); // TANPA cellDates -- baca angka mentah
-  let count = 0;
+  let count = 0, nDibatalkan = 0;
   function toIso(v) { return excelSerialToISO(v); }
+  const STATUS_BATAL = new Set(['Batal', 'Dibatalkan']); // istilah beda per platform, artinya sama
   if (store.platform === 'Shopee') {
     const objs = rowsToObjects(sheetToRows(wb.Sheets['orders']), 0, 1);
-    const byOrder = {};
+    const byOrder = {}; const statusById = {};
     objs.forEach(o => {
       const id = String(o['No. Pesanan']);
       byOrder[id] = byOrder[id] || [];
       byOrder[id].push({ sku: o['Nomor Referensi SKU'], qty: Number(o['Jumlah'])||0, warna: parseWarna(o['Nama Variasi']), storeName: store.nama, tanggalPesan: toIso(o['Waktu Pesanan Dibuat']) });
+      statusById[id] = o['Status Pesanan'];
     });
-    Object.entries(byOrder).forEach(([id, rows]) => { STATE.pendingOrderSku[id] = rows; count++; }); // timpa (bukan tambah) -- data terbaru dari upload ini
+    Object.entries(byOrder).forEach(([id, rows]) => {
+      if (STATUS_BATAL.has(statusById[id])) { delete STATE.pendingOrderSku[id]; nDibatalkan++; }
+      else { STATE.pendingOrderSku[id] = rows; count++; } // timpa (bukan tambah) -- data terbaru dari upload ini
+    });
   } else {
     const objs = rowsToObjects(sheetToRows(wb.Sheets['OrderSKUList']), 0, 2);
-    const byOrder = {};
+    const byOrder = {}; const statusById = {};
     objs.forEach(o => {
       const id = String(o['Order ID']);
       byOrder[id] = byOrder[id] || [];
       byOrder[id].push({ sku: o['Seller SKU'], qty: Number(o['Quantity'])||0, warna: parseWarna(o['Variation']), storeName: store.nama, tanggalPesan: toIso(o['Created Time']) });
+      statusById[id] = o['Order Status'];
     });
-    Object.entries(byOrder).forEach(([id, rows]) => { STATE.pendingOrderSku[id] = rows; count++; });
+    Object.entries(byOrder).forEach(([id, rows]) => {
+      if (STATUS_BATAL.has(statusById[id])) { delete STATE.pendingOrderSku[id]; nDibatalkan++; }
+      else { STATE.pendingOrderSku[id] = rows; count++; }
+    });
   }
   await saveState();
-  return count;
+  return { count, nDibatalkan };
 }
 
 function renderImport(container) {
@@ -1406,8 +1415,8 @@ function renderImport(container) {
       if (!store || !orderFile) { showMsg(msg, 'err', 'Pilih toko dan file dulu.'); return; }
       showMsg(msg, 'info', 'Memproses...');
       try {
-        const count = await uploadOrderListOnly(store, orderFile);
-        showMsg(msg, 'ok', `${count} pesanan dari ${store.nama} diperbarui/diingat sistem.`);
+        const { count, nDibatalkan } = await uploadOrderListOnly(store, orderFile);
+        showMsg(msg, 'ok', `${count} pesanan dari ${store.nama} diperbarui/diingat sistem.` + (nDibatalkan ? ` ${nDibatalkan} order yang sebelumnya menunggu ternyata dibatalkan -- otomatis dikeluarkan dari daftar.` : ''));
         renderImport(container);
       } catch (e) {
         showMsg(msg, 'err', 'Gagal: ' + e.message);
