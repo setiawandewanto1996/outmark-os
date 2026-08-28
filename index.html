@@ -477,6 +477,9 @@ async function processWeeklyBatch(storeImports) {
   // Baris "Pesanan" tapi Pendapatan=0 (mis. retur/ditolak konsumen, kita nanggung ongkir) -- BUKAN penjualan asli,
   // jangan diproses sbg cair biasa (bisa salah kurangi stok kontrak) -- tangkap sbg BIAYA terpisah supaya tetap masuk PNL.
   const returAdjustments = [];
+  // Order berstatus "Pesanan" tapi Settlement=0 (tdk pernah settle sama sekali, mis. batal sblm bayar) --
+  // DICATAT di sini (bukan cuma dilewati diam2) spy tetap KELIHATAN di ringkasan hasil batch, bukan hilang tanpa jejak.
+  const zeroSettlementSkipped = [];
 
   // ---- Shopee ----
   const shopeeFinance = {};
@@ -487,8 +490,8 @@ async function processWeeklyBatch(storeImports) {
       const pendapatan = Number(o['Harga Produk'])||0;
       const netSettlement = Number(o['Total Penghasilan'])||0;
       // Settlement = 0 -> TIDAK ADA uang yg benar2 masuk sama sekali (order batal/gagal sblm settle) -- BUKAN
-      // penjualan asli, BUKAN retur juga (tidak ada biaya yg ditanggung) -- lewati total, jangan dihitung apa pun.
-      if (netSettlement === 0) return;
+      // penjualan asli, BUKAN retur juga (tidak ada biaya yg ditanggung) -- lewati dari perhitungan, TAPI dicatat.
+      if (netSettlement === 0) { zeroSettlementSkipped.push({ orderId: id, toko: si.store.nama }); return; }
       // Settlement negatif -> biaya retur/refund (ongkir/penyesuaian yg kita tanggung), TIDAK masuk sbg penjualan.
       if (netSettlement < 0) {
         returAdjustments.push({ orderId: id, toko: si.store.nama, jumlah: netSettlement, tanggalCair: excelSerialToISO(o['Tanggal Dana Dilepaskan']) });
@@ -513,7 +516,7 @@ async function processWeeklyBatch(storeImports) {
       const id = String(o['ID Pesanan/Penyesuaian']);
       const pendapatan = Number(o['Total Pendapatan'])||0;
       const netSettlement = Number(o['Jumlah penyelesaian pembayaran'])||0;
-      if (netSettlement === 0) return;
+      if (netSettlement === 0) { zeroSettlementSkipped.push({ orderId: id, toko: si.store.nama }); return; }
       if (netSettlement < 0) {
         returAdjustments.push({ orderId: id, toko: si.store.nama, jumlah: netSettlement, tanggalCair: excelSerialToISO(o['Waktu pembayaran pesanan']) });
         return;
@@ -686,7 +689,7 @@ async function processWeeklyBatch(storeImports) {
     return { produk, qty: Math.round(qtyTotal), hargaInvestor, totalKonveksi, totalSurplus, surplusPerUnit: totalSurplus/qtyDenganHarga };
   });
 
-  return { cairSkuRows: newCairSkuRows, qtyPerProduk, allocations, vendorPayments, surplusRows, matchStats, nSkippedAlreadyRecorded: skippedAlreadyRecorded.length, returAdjustments, notFoundOrderIds, timestamp: new Date().toISOString() };
+  return { cairSkuRows: newCairSkuRows, qtyPerProduk, allocations, vendorPayments, surplusRows, matchStats, nSkippedAlreadyRecorded: skippedAlreadyRecorded.length, returAdjustments, notFoundOrderIds, zeroSettlementSkipped, timestamp: new Date().toISOString() };
 }
 
 /* =========================================================================
@@ -1737,9 +1740,28 @@ function renderImportPreview(el, result) {
   const perluKontrakBaru = result.allocations.filter(a => a.perluKontrakBaru);
   const semuaTerselesaikan = perluKontrakBaru.every(a => rolloverResolutions[a.kode2 + '|' + a.produk]);
   const rerender = () => renderImportPreview(el, result);
+  const zeroSettlement = result.zeroSettlementSkipped || [];
+  const grandTotal = result.matchStats.shopeeTotal + result.matchStats.tiktokTotal + result.returAdjustments.length + zeroSettlement.length;
   el.innerHTML = `
     <div class="panel">
       <div class="status-box show info">Angka mencakup semua order cair di file yg diupload -- kalau rentangnya lebih dari 1 periode penarikan biasamu, hasilnya otomatis gabungan.</div>
+      <h2 style="margin-top:14px;">Ringkasan Rekonsiliasi <span class="pill">${grandTotal} baris "Pesanan" total di semua file Income</span></h2>
+      <div class="desc">Semua kategori di bawah ini kalau dijumlah HARUS sama dengan total di atas -- supaya kamu bisa lihat sendiri tidak ada yang hilang diam-diam.</div>
+      <table class="data compact" style="margin-top:8px;">
+        <tbody>
+          <tr><td>Diproses sbg cair (SKU ketemu)</td><td class="num">${result.matchStats.shopeeFound + result.matchStats.tiktokFound}</td></tr>
+          <tr><td>SKU tidak ketemu (lihat daftar di bawah kalau ada)</td><td class="num">${result.matchStats.shopeeNotFound + result.matchStats.tiktokNotFound}</td></tr>
+          <tr><td>Sudah pernah tercatat sebelumnya (tidak dihitung ulang)</td><td class="num">${result.nSkippedAlreadyRecorded}</td></tr>
+          <tr><td>Jadi biaya retur/refund (settlement minus)</td><td class="num">${result.returAdjustments.length}</td></tr>
+          <tr><td>Dilewati -- settlement Rp0 (order batal sblm settle apa pun)</td><td class="num">${zeroSettlement.length}</td></tr>
+        </tbody>
+      </table>
+      ${zeroSettlement.length ? `<div style="margin-top:10px;">
+        <button class="btn btn-ghost" id="btnToggleZeroSettlement" style="font-size:11px; padding:5px 10px;">Lihat ${zeroSettlement.length} Order Settlement Rp0</button>
+        <div id="zeroSettlementDetail" style="display:none; font-family:'IBM Plex Mono',monospace; font-size:11px; margin-top:8px; line-height:1.8; max-height:200px; overflow-y:auto;">
+          ${zeroSettlement.map(o => `${o.orderId} <span style="color:var(--ink-soft);">(${o.toko})</span>`).join('<br>')}
+        </div>
+      </div>` : ''}
       ${perluKontrakBaru.length ? `<div class="status-box show err" style="margin-top:10px;">
         <b>⚠ PERLU KEPUTUSAN -- Kontrak Habis di Tengah (wajib diputuskan sebelum Simpan):</b>
         ${perluKontrakBaru.map(a => renderRolloverCase(a, a.kode2 + '|' + a.produk)).join('')}
@@ -1804,6 +1826,11 @@ function renderImportPreview(el, result) {
     </div>
   `;
   wireRolloverHandlers(el, null, result, rerender);
+  const btnZeroSettlement = document.getElementById('btnToggleZeroSettlement');
+  if (btnZeroSettlement) btnZeroSettlement.addEventListener('click', () => {
+    const target = document.getElementById('zeroSettlementDetail');
+    if (target) target.style.display = target.style.display === 'none' ? 'block' : 'none';
+  });
   el.querySelectorAll('[data-produk-qty]').forEach(row => {
     row.addEventListener('click', () => {
       const target = document.getElementById('produkQtyDetail_' + row.dataset.produkQty);
