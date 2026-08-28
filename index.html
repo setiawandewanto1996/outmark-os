@@ -487,18 +487,19 @@ async function processWeeklyBatch(storeImports) {
   STATE.orderDb.forEach(r => { if (r.orderId && r.sku) { historicalOrderSku[r.orderId] = historicalOrderSku[r.orderId] || []; historicalOrderSku[r.orderId].push({ sku: r.sku, qty: r.qty, warna: r.warna }); } });
 
   const cairSkuRows = [];
+  const notFoundOrderIds = [];
   const matchStats = { shopeeTotal:0, shopeeFound:0, shopeeNotFound:0, tiktokTotal:0, tiktokFound:0, tiktokNotFound:0 };
   Object.keys(shopeeFinance).forEach(id => {
     matchStats.shopeeTotal++;
     let rows = STATE.pendingOrderSku[id] || historicalOrderSku[id];
     if (rows) { matchStats.shopeeFound++; rows.forEach(r => cairSkuRows.push({ orderId:id, sku:r.sku, qty:r.qty, warna:r.warna, ...financeShare(shopeeFinance[id], r, rows) })); }
-    else matchStats.shopeeNotFound++;
+    else { matchStats.shopeeNotFound++; notFoundOrderIds.push({ orderId: id, toko: shopeeFinance[id].toko }); }
   });
   Object.keys(tiktokFinance).forEach(id => {
     matchStats.tiktokTotal++;
     let rows = STATE.pendingOrderSku[id] || historicalOrderSku[id];
     if (rows) { matchStats.tiktokFound++; rows.forEach(r => cairSkuRows.push({ orderId:id, sku:r.sku, qty:r.qty, warna:r.warna, ...financeShare(tiktokFinance[id], r, rows) })); }
-    else matchStats.tiktokNotFound++;
+    else { matchStats.tiktokNotFound++; notFoundOrderIds.push({ orderId: id, toko: tiktokFinance[id].toko }); }
   });
 
   function financeShare(fin, row, allRows) {
@@ -638,7 +639,7 @@ async function processWeeklyBatch(storeImports) {
     return { produk, qty: Math.round(qtyTotal), hargaInvestor, totalKonveksi, totalSurplus, surplusPerUnit: totalSurplus/qtyDenganHarga };
   });
 
-  return { cairSkuRows: newCairSkuRows, qtyPerProduk, allocations, vendorPayments, surplusRows, matchStats, nSkippedAlreadyRecorded: skippedAlreadyRecorded.length, returAdjustments, timestamp: new Date().toISOString() };
+  return { cairSkuRows: newCairSkuRows, qtyPerProduk, allocations, vendorPayments, surplusRows, matchStats, nSkippedAlreadyRecorded: skippedAlreadyRecorded.length, returAdjustments, notFoundOrderIds, timestamp: new Date().toISOString() };
 }
 
 /* =========================================================================
@@ -1589,6 +1590,12 @@ function renderImportPreview(el, result) {
       ${perluKontrakBaru.length ? `<div class="status-box show err" style="margin-top:10px;">
         <b>⚠ PERLU KEPUTUSAN -- Kontrak Habis di Tengah (wajib diputuskan sebelum Simpan):</b>
         ${perluKontrakBaru.map(a => renderRolloverCase(a, a.kode2 + '|' + a.produk)).join('')}
+      </div>` : ''}
+      ${(result.notFoundOrderIds && result.notFoundOrderIds.length) ? `<div class="status-box show err" style="margin-top:10px;">
+        <b>⚠ ${result.notFoundOrderIds.length} Order Tidak Ketemu SKU-nya:</b>
+        <div style="font-family:'IBM Plex Mono',monospace; font-size:11px; margin-top:6px; line-height:1.8;">
+          ${result.notFoundOrderIds.map(o => `${o.orderId} <span style="color:var(--ink-soft);">(${o.toko})</span>`).join('<br>')}
+        </div>
       </div>` : ''}
       <div class="kpi-row" style="margin-top:14px;">
         <div class="kpi"><div class="kpi-label">Total Payout Investor</div><div class="kpi-value">${fmtRp(totalPayout)}</div></div>
