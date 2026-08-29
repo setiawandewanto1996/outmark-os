@@ -276,7 +276,11 @@ function generateNextKodeKontrak(kodeKontrakLama) {
 // Eksekusi keputusan rollover (dari panel di preview batch) -- MENGUBAH result.allocations di tempat
 // supaya applyBatchResult() yg jalan setelah ini bisa memproses semuanya spt alokasi normal (bikin kontrak
 // baru beneran ke STATE.contracts kalau perlu, atau redistribusi ke investor lain kalau di-stop).
-function resolveRolloverIntoAllocations(result, resolutions) {
+function resolveRolloverIntoAllocations(result, resolutions, tanggalPenarikanForRollover) {
+  // Tanggal yg relevan utk penarikan batch ini -- dipakai utk menandai kontrak baru hasil rollover supaya
+  // nanti kalau tanggal yg SAMA di-"Hitung Ulang" dari nol, kontrak ini (yg murni lahir dari hasil rollover
+  // tanggal ini) bisa dikenali & tidak keliru dianggap "sudah ada dari awal" (lihat beginRecomputeForDate).
+  const dateForRollover = tanggalPenarikanForRollover ? String(tanggalPenarikanForRollover).slice(0,10) : (result.dateStr || null);
   const perluList = result.allocations.filter(a => a.perluKontrakBaru);
 
   // Tahap 1: proses PUTAR PENUH / PUTAR MODAL SAJA dulu -- bikin kontrak baru, supaya kontrak2 baru ini
@@ -333,6 +337,7 @@ function resolveRolloverIntoAllocations(result, resolutions) {
       tanggalMasuk: new Date().toISOString(), stockAwal: stockAwalBaru, stockAkhir: stockAwalBaru,
       hargaModalPcs: res.hargaBaru, nilaiMargin: a.nilaiMarginLama, status: 'DANA BELUM CAIR',
       rolledFromKodeKontrak: a.kodeKontrakLama, rolledTipe: res.tipe,
+      rolledForTanggalPenarikan: dateForRollover,
     };
     STATE.contracts.push(kontrakBaru);
 
@@ -620,7 +625,7 @@ function manualNeedsAttention(result) {
 // TAHAP 2 (eksekusi): dipanggil SETELAH semua keputusan rollover (kalau ada) sudah diselesaikan di UI.
 async function finalizeManualTransaction(result, tanggalCairStr, rolloverResolutions) {
   if (rolloverResolutions && Object.keys(rolloverResolutions).length) {
-    resolveRolloverIntoAllocations(result, rolloverResolutions);
+    resolveRolloverIntoAllocations(result, rolloverResolutions, tanggalCairStr);
   }
   const tglPenarikanIso = new Date(tanggalCairStr + 'T00:00:00.000Z').toISOString();
   const { added, updated } = await applyBatchResult(result, tglPenarikanIso);
@@ -1575,7 +1580,7 @@ let recomputeUndoSnapshot = null; // { dateStr, deletedPayouts: [...], contractC
 function beginRecomputeForDate(dateStr) {
   if (recomputeUndoSnapshot) throw new Error('Ada proses hitung ulang lain yg belum selesai/dibatalkan -- selesaikan atau batalkan itu dulu.');
   const payoutsForDate = STATE.payouts.filter(p => p.tanggalDihitung && p.tanggalDihitung.slice(0,10) === dateStr);
-  const snapshot = { dateStr, deletedPayouts: JSON.parse(JSON.stringify(payoutsForDate)), contractChanges: [] };
+  const snapshot = { dateStr, deletedPayouts: JSON.parse(JSON.stringify(payoutsForDate)), contractChanges: [], removedPhantomContracts: [] };
 
   payoutsForDate.forEach(p => {
     const kontrak = STATE.contracts.find(c => c.kodeKontrak === p.kodeKontrak);
@@ -1587,6 +1592,29 @@ function beginRecomputeForDate(dateStr) {
     const idx = STATE.payouts.indexOf(p);
     if (idx >= 0) STATE.payouts.splice(idx, 1);
   });
+
+  // Kontrak yg dulu lahir dari ROLLOVER khusus utk tanggal ini (mis. hasil "Hitung Ulang" atau import
+  // sebelumnya utk tanggal yg SAMA) harus ikut "dilenyapkan sementara" kalau kita benar2 mau hitung ulang
+  // dari nol -- kalau tidak, modal kontrak ini ikut kehitung di computePembagiPct() dan keliru menggeser
+  // persentase pembagian, mengambil jatah investor lain tanpa alasan (mis. IDO049 yg lahir dari rollover
+  // IDO047 di tanggal ini ikut menaikkan % investor ID di perhitungan ulang, padahal seharusnya BELUM ada
+  // sama sekali sebelum hitung ulang ini selesai). HANYA dilenyapkan kalau kontrak itu TIDAK PERNAH dipakai
+  // di payout tanggal LAIN -- kalau sudah pernah dipakai nyata di tanggal lain, itu kontrak asli yg harus
+  // tetap ada, jangan disentuh.
+  const kodeKontrakUsedElsewhere = new Set(
+    STATE.payouts
+      .filter(p => !(p.tanggalDihitung && p.tanggalDihitung.slice(0,10) === dateStr))
+      .map(p => p.kodeKontrak)
+  );
+  const phantomContracts = STATE.contracts.filter(c =>
+    c.rolledForTanggalPenarikan === dateStr && !kodeKontrakUsedElsewhere.has(c.kodeKontrak)
+  );
+  phantomContracts.forEach(c => {
+    snapshot.removedPhantomContracts.push(JSON.parse(JSON.stringify(c)));
+    const idx = STATE.contracts.indexOf(c);
+    if (idx >= 0) STATE.contracts.splice(idx, 1);
+  });
+
   recomputeUndoSnapshot = snapshot;
 
   const rowsForDate = STATE.orderDb.filter(r => r.brand === 'URBAN OUTDOOR' && r.tanggalPenarikan && r.tanggalPenarikan.slice(0,10) === dateStr && r.pendapatan != null && r.status !== 'Gagal');
@@ -1595,14 +1623,16 @@ function beginRecomputeForDate(dateStr) {
   const cairSkuRowsForDate = rowsForDate.map(r => ({ orderId: r.orderId, sku: r.sku, qty: r.qty||1, produk: r.produk }));
   const allocations = allocateUnitsToContracts(qtyPerProduk, cairSkuRowsForDate);
 
-  return { dateStr, allocations, qtyPerProduk, rowsForDate, nPayoutLamaDihapus: payoutsForDate.length };
+  return { dateStr, allocations, qtyPerProduk, rowsForDate, nPayoutLamaDihapus: payoutsForDate.length, nKontrakPhantomDilenyapkan: phantomContracts.length };
 }
 
 // Batalkan proses hitung ulang yg SEDANG preview (setelah beginRecomputeForDate, SEBELUM finalizeRecomputeForDate)
-// -- kembalikan payout lama & stok kontrak PERSIS spt sebelum beginRecomputeForDate dipanggil.
+// -- kembalikan payout lama, kontrak phantom yg sempat dilenyapkan, & stok kontrak PERSIS spt sebelum
+// beginRecomputeForDate dipanggil.
 function undoRecomputeForDate() {
   if (!recomputeUndoSnapshot) return;
   const snap = recomputeUndoSnapshot;
+  (snap.removedPhantomContracts || []).forEach(c => STATE.contracts.push(c));
   snap.contractChanges.forEach(cc => {
     const kontrak = STATE.contracts.find(c => c.id === cc.contractId);
     if (kontrak) {
@@ -1619,7 +1649,7 @@ function undoRecomputeForDate() {
 // sesuai hasil akhir, lalu saveState(). Setelah ini recomputeUndoSnapshot dibuang -- tidak bisa di-undo lagi.
 async function finalizeRecomputeForDate(result, rolloverResolutions) {
   if (rolloverResolutions && Object.keys(rolloverResolutions).length) {
-    resolveRolloverIntoAllocations(result, rolloverResolutions);
+    resolveRolloverIntoAllocations(result, rolloverResolutions, result.dateStr);
   }
   const tglIso = new Date(result.dateStr + 'T00:00:00.000Z').toISOString();
   result.allocations.forEach(a => {
@@ -2206,9 +2236,9 @@ function renderImportPreview(el, result) {
     const btn = ev.target; btn.disabled = true; btn.textContent = 'Menyimpan...';
     const msg = document.getElementById('applyMsg');
     try {
-      resolveRolloverIntoAllocations(result, rolloverResolutions);
       const tglInput = document.getElementById('applyTanggalPenarikan').value;
       const tglIso = tglInput ? new Date(tglInput).toISOString() : new Date().toISOString();
+      resolveRolloverIntoAllocations(result, rolloverResolutions, tglIso);
       const { added, updated } = await applyBatchResult(result, tglIso);
       rolloverResolutions = {}; // reset supaya batch berikutnya bersih
       showMsg(msg, 'ok', `${added} baris baru tersimpan${updated ? `, ${updated} baris lama diperbarui (mis. order "Gagal" yg ternyata koreksi jadi cair)` : ''} ke database. Stok kontrak diperbarui.`);
@@ -2350,6 +2380,7 @@ function renderRecomputePreview(el, container) {
   el.innerHTML = `
     <div style="border:1px solid var(--line); border-radius:6px; padding:14px; background:#F8F7F3;">
       <div style="font-weight:600; margin-bottom:8px;">Preview Alokasi Baru -- ${result.dateStr} <span style="font-weight:400; color:var(--ink-soft);">(${result.nPayoutLamaDihapus} payout lama sudah dihapus, BELUM final -- klik Batal utk kembalikan)</span></div>
+      ${result.nKontrakPhantomDilenyapkan ? `<div style="font-size:12px; color:var(--ink-soft); margin-bottom:8px;">ℹ ${result.nKontrakPhantomDilenyapkan} kontrak baru hasil rollover dari perhitungan tanggal ini SEBELUMNYA (yg belum pernah dipakai di tanggal lain) dilenyapkan sementara supaya perhitungan ulang ini benar2 dari nol -- kalau nanti diselesaikan lagi dgn rollover, kontrak penggantinya akan dibuat ulang.</div>` : ''}
       <table class="data compact">
         <thead><tr><th>Produk</th><th>Investor</th><th>Kode Kontrak</th><th class="num">Qty</th><th class="num">Payout</th><th>Catatan</th></tr></thead>
         <tbody>${result.allocations.map(a => `<tr>
