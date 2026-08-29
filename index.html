@@ -1438,6 +1438,7 @@ let recomputePreviewResult = null; // hasil beginRecomputeForDate (SUDAH menghap
 let recomputeRolloverResolutions = {};
 let koreksiTanggalPreview = null; // hasil previewKoreksiTanggalPenarikan (tahap konfirmasi, blm ada mutasi)
 let vendorOrphanFollowup = null; // { tanggalBaru, orphansByDate: {tanggalLama: [...vendorPayouts]} } -- muncul SETELAH koreksi tanggal orderDb sukses
+let vendorOrphanManualPreview = null; // { tanggalLama, tanggalBaru, orphans } -- versi manual, independen dari alur Koreksi Tanggal di atas
 
 function labelForPlatform(platform) {
   if (platform === 'Shopee') return { order: 'Order All', income: 'Income Sudah Dilepas' };
@@ -1747,6 +1748,18 @@ function renderImport(container) {
     </div>
 
     <div class="panel">
+      <h2>Pindahkan Pembayaran Konveksi yang Ketinggalan (Manual)</h2>
+      <div class="desc">Kalau setelah Koreksi Tanggal Penarikan di atas ternyata entri Pembayaran Konveksi/Supplier masih nyangkut di tanggal lama (mis. notifikasi "Pindahkan Juga" kelewatan atau belum sempat diklik), pakai panel ini utk cek &amp; pindahkan langsung. Tetap dijaga aman: HANYA akan ditemukan/dipindah kalau tanggal lama itu sudah benar-benar tidak dipakai baris Database Penjualan manapun lagi (jadi tidak mungkin tercampur order lain).</div>
+      <div class="grid2">
+        <div class="field"><label>Tanggal Lama (yang ketinggalan)</label><input type="date" id="vo_tanggalLama"></div>
+        <div class="field"><label>Tanggal Baru (tujuan)</label><input type="date" id="vo_tanggalBaru"></div>
+      </div>
+      <button class="btn btn-ghost" id="btnCekVendorOrphanManual" style="margin-top:8px;">Cek Dulu</button>
+      <div class="status-box" id="vendorOrphanManualMsg"></div>
+      <div id="vendorOrphanManualArea" style="margin-top:10px;"></div>
+    </div>
+
+    <div class="panel">
       <h2>Hitung Ulang Alokasi per Tanggal Penarikan</h2>
       <div class="desc">Utk order yang SUDAH tercatat sbg penjualan di Database Penjualan (produk Urban Outdoor) tapi TIDAK punya alokasi investor sama sekali di suatu Tanggal Penarikan (mis. habis dibatalkan lewat panel "Batalkan Alokasi" di atas) -- terutama order isi BANYAK produk sekaligus, yg tidak bisa dibetulkan dgn memilih 1 kontrak saja. Fitur ini menghapus SEMUA payout investor di tanggal yg dipilih, lalu menghitung ulang dari nol dari SEMUA order Urban Outdoor yang tercatat di tanggal tsb (persentase &amp; FIFO antar kontrak dihitung otomatis, sama seperti Import Mingguan biasa). ⚠ Payout yang sudah ditandai "Sudah Dibayar" di tanggal ini akan HILANG status itu &amp; perlu ditandai ulang manual setelah hitung ulang.</div>
       <div class="field" style="max-width:260px;"><label>Tanggal Penarikan</label><input type="date" id="rc_tanggal"></div>
@@ -1883,6 +1896,24 @@ function renderImport(container) {
       }
     });
 
+    const btnCekVendorOrphanManual = document.getElementById('btnCekVendorOrphanManual');
+    if (btnCekVendorOrphanManual) btnCekVendorOrphanManual.addEventListener('click', () => {
+      const msg = document.getElementById('vendorOrphanManualMsg');
+      const tanggalLama = document.getElementById('vo_tanggalLama').value;
+      const tanggalBaru = document.getElementById('vo_tanggalBaru').value;
+      if (!tanggalLama || !tanggalBaru) { showMsg(msg, 'err', 'Isi Tanggal Lama dan Tanggal Baru dulu.'); return; }
+      const orphans = cariVendorPayoutYatimSetelahKoreksi(tanggalLama);
+      if (!orphans.length) {
+        showMsg(msg, 'err', `Tidak ada Pembayaran Konveksi yang aman dipindah dari tanggal ${tanggalLama} -- baik krn memang tidak ada entri di tanggal itu, atau tanggal itu masih dipakai baris Database Penjualan lain (tidak aman dipisah).`);
+        vendorOrphanManualPreview = null;
+        renderVendorOrphanManualArea(document.getElementById('vendorOrphanManualArea'), container);
+        return;
+      }
+      vendorOrphanManualPreview = { tanggalLama, tanggalBaru, orphans };
+      showMsg(msg, 'info', 'Cek ringkasan di bawah sebelum konfirmasi.');
+      renderVendorOrphanManualArea(document.getElementById('vendorOrphanManualArea'), container);
+    });
+
     const btnCekRecompute = document.getElementById('btnCekRecompute');
     if (btnCekRecompute) btnCekRecompute.addEventListener('click', () => {
       const msg = document.getElementById('recomputeMsg');
@@ -1928,6 +1959,7 @@ function renderImport(container) {
   if (recomputeSummary || recomputePreviewResult) renderRecomputeArea(document.getElementById('recomputeArea'), container);
   if (koreksiTanggalPreview) renderKoreksiTanggalArea(document.getElementById('koreksiTanggalArea'), container);
   if (vendorOrphanFollowup) renderVendorOrphanFollowup(document.getElementById('koreksiTanggalArea'), container);
+  if (vendorOrphanManualPreview) renderVendorOrphanManualArea(document.getElementById('vendorOrphanManualArea'), container);
 }
 
 async function runWeeklyImport() {
@@ -2411,6 +2443,51 @@ function renderVendorOrphanFollowup(el, container) {
   document.getElementById('btnLewatiVendorOrphan').addEventListener('click', () => {
     vendorOrphanFollowup = null;
     renderVendorOrphanFollowup(el, container);
+  });
+}
+
+// Versi manual dari renderVendorOrphanFollowup -- utk kasus koreksi tanggalnya sendiri sudah lama selesai
+// (mis. dari sebelum fitur follow-up otomatis ini ada, atau notifikasinya kelewatan/tidak diklik saat itu),
+// jadi tidak ada lagi "tanggal lama" yg diingat sistem dari alur Koreksi Tanggal. Di sini user isi sendiri
+// tanggal lama & tanggal barunya -- tetap dijaga aman lewat cariVendorPayoutYatimSetelahKoreksi yg sama.
+function renderVendorOrphanManualArea(el, container) {
+  if (!vendorOrphanManualPreview) { el.innerHTML = ''; return; }
+  const p = vendorOrphanManualPreview;
+  const totalRp = p.orphans.reduce((s,v) => s + (v.total||0), 0);
+  el.innerHTML = `
+    <div style="border:1px solid var(--line); border-radius:6px; padding:14px; background:#F8F7F3;">
+      <div style="font-weight:600; margin-bottom:8px;">Konfirmasi Pindah Pembayaran Konveksi/Supplier</div>
+      <table class="data compact">
+        <thead><tr><th>Tgl Lama</th><th>Brand</th><th>Produk</th><th class="num">Qty</th><th class="num">Total</th></tr></thead>
+        <tbody>${p.orphans.map(v => `<tr>
+          <td>${fmtTanggal(p.tanggalLama)}</td><td>${v.brand}</td><td>${v.produk}</td><td class="num">${v.qty}</td><td class="num">${fmtRp(v.total)}</td>
+        </tr>`).join('')}</tbody>
+      </table>
+      <div style="margin-top:8px; font-size:12px;">Total: <b>${fmtRp(totalRp)}</b> -- akan dipindah ke tanggal <b>${fmtTanggal(p.tanggalBaru)}</b></div>
+      <div style="margin-top:12px; display:flex; gap:8px;">
+        <button class="btn btn-primary" id="btnKonfirmasiVendorOrphanManual">Ya, Pindahkan</button>
+        <button class="btn btn-ghost" id="btnBatalVendorOrphanManual">Batal</button>
+      </div>
+    </div>
+  `;
+  document.getElementById('btnKonfirmasiVendorOrphanManual').addEventListener('click', async () => {
+    const msg = document.getElementById('vendorOrphanManualMsg');
+    showMsg(msg, 'info', 'Menyimpan...');
+    try {
+      const { nUpdated } = pindahkanVendorPayoutKeTanggalBaru(p.orphans.map(v=>v.id), p.tanggalBaru);
+      await saveState();
+      vendorOrphanManualPreview = null;
+      const voLama = document.getElementById('vo_tanggalLama'); if (voLama) voLama.value = '';
+      const voBaru = document.getElementById('vo_tanggalBaru'); if (voBaru) voBaru.value = '';
+      showMsg(document.getElementById('vendorOrphanManualMsg'), 'ok', `${nUpdated} entri Pembayaran Konveksi/Supplier dipindah ke tanggal ${fmtTanggal(p.tanggalBaru)}.`);
+      renderImport(container);
+    } catch (e) {
+      showMsg(msg, 'err', 'Gagal: ' + e.message);
+    }
+  });
+  document.getElementById('btnBatalVendorOrphanManual').addEventListener('click', () => {
+    vendorOrphanManualPreview = null;
+    renderVendorOrphanManualArea(el, container);
   });
 }
 
