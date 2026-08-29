@@ -1436,6 +1436,7 @@ let manualRolloverResolutions = {};
 let recomputeSummary = null;       // hasil summarizeRecomputeForDate (tahap konfirmasi awal, blm ada mutasi)
 let recomputePreviewResult = null; // hasil beginRecomputeForDate (SUDAH menghapus payout lama, blm final)
 let recomputeRolloverResolutions = {};
+let koreksiTanggalPreview = null; // hasil previewKoreksiTanggalPenarikan (tahap konfirmasi, blm ada mutasi)
 
 function labelForPlatform(platform) {
   if (platform === 'Shopee') return { order: 'Order All', income: 'Income Sudah Dilepas' };
@@ -1583,6 +1584,34 @@ async function finalizeRecomputeForDate(result, rolloverResolutions) {
   return { nPayoutBaru };
 }
 
+// ==========================================================================
+// KOREKSI TANGGAL PENARIKAN YG SALAH INPUT
+// ==========================================================================
+// Bukan utk hitung ulang alokasi -- ini utk kasus Tanggal Penarikan-nya sendiri yg SALAH tercatat di Database
+// Penjualan (mis. seharusnya 28/08 tapi kesimpan 27/08, krn salah pilih tanggal saat Tambah Transaksi Manual/
+// import). HANYA mengubah field tanggalPenarikan di baris orderDb yg cocok -- TIDAK menyentuh payout sama
+// sekali. DIBLOKIR kalau order ini SUDAH punya payout investor (STATE.payouts.orderIds mengandung order ini)
+// -- supaya tidak menciptakan payout yg "nyasar" ke tanggal lama sementara orderDb-nya sudah pindah tanggal
+// (payout & orderDb harus tetap match tanggalnya, krn Hitung Ulang Alokasi & laporan lain mengelompokkan
+// berdasarkan tanggal ini). Kalau order-nya sudah py payout, selesaikan/pindahkan dulu (mis. Batalkan Alokasi,
+// atau Hitung Ulang Alokasi di tanggal lama) sebelum koreksi tanggal di sini.
+function previewKoreksiTanggalPenarikan(orderIds) {
+  const rows = STATE.orderDb.filter(r => orderIds.includes(r.orderId));
+  if (!rows.length) throw new Error('Tidak ditemukan baris Database Penjualan utk Order ID tsb.');
+  const tanggalLamaSet = [...new Set(rows.map(r => r.tanggalPenarikan ? r.tanggalPenarikan.slice(0,10) : null))];
+  const payoutsTerkait = STATE.payouts.filter(p => orderIds.some(id => (p.orderIds||[]).includes(id)));
+  return { rows, tanggalLamaSet, nRows: rows.length, totalQty: rows.reduce((s,r)=>s+(r.qty||1),0), adaPayoutTerkait: payoutsTerkait.length > 0, payoutsTerkait };
+}
+
+function terapkanKoreksiTanggalPenarikan(orderIds, tanggalBaruStr) {
+  const payoutsTerkait = STATE.payouts.filter(p => orderIds.some(id => (p.orderIds||[]).includes(id)));
+  if (payoutsTerkait.length) throw new Error('Order ini sudah punya payout investor -- selesaikan/pindahkan payoutnya dulu (mis. Batalkan Alokasi, atau Hitung Ulang Alokasi di tanggal lama) sebelum mengubah Tanggal Penarikan.');
+  const tglIso = new Date(tanggalBaruStr + 'T00:00:00.000Z').toISOString();
+  let nUpdated = 0;
+  STATE.orderDb.forEach(r => { if (orderIds.includes(r.orderId)) { r.tanggalPenarikan = tglIso; nUpdated++; } });
+  return { nUpdated };
+}
+
 function cleanupPendingAlreadySettled() {
   const settledKeys = new Set(STATE.orderDb.map(r => r.orderId + '|' + r.sku));
   let nRemoved = 0, nOrdersAffected = 0;
@@ -1681,6 +1710,18 @@ function renderImport(container) {
       <div class="field"><label>Order ID (satu per baris, bisa lebih dari satu)</label><textarea id="ra_orderIds" rows="4" placeholder="260728T2D1AFG1&#10;260804EGGFF1KX&#10;585414689456096370"></textarea></div>
       <button class="btn btn-ghost" id="btnReverseAllocation" style="margin-top:8px;">Batalkan Alokasi</button>
       <div class="status-box" id="reverseAllocationMsg"></div>
+    </div>
+
+    <div class="panel">
+      <h2>Koreksi Tanggal Penarikan (Salah Input)</h2>
+      <div class="desc">Utk order yang Tanggal Penarikan-nya SALAH tercatat di Database Penjualan (mis. seharusnya 28/08 tapi kesimpan 27/08). HANYA mengubah tanggal di Database Penjualan, TIDAK menyentuh payout. Kalau order ini SUDAH punya payout investor, akan diblokir dulu -- selesaikan/pindahkan payoutnya dulu (mis. lewat "Batalkan Alokasi" atau "Hitung Ulang Alokasi" di tanggal lama) sebelum koreksi tanggal di sini.</div>
+      <div class="grid2">
+        <div class="field"><label>Order ID (satu per baris, bisa lebih dari satu)</label><textarea id="kt_orderIds" rows="3" placeholder="585620049046766664"></textarea></div>
+        <div class="field"><label>Tanggal Penarikan yang BENAR</label><input type="date" id="kt_tanggalBaru"></div>
+      </div>
+      <button class="btn btn-ghost" id="btnCekKoreksiTanggal" style="margin-top:8px;">Cek Dulu</button>
+      <div class="status-box" id="koreksiTanggalMsg"></div>
+      <div id="koreksiTanggalArea" style="margin-top:10px;"></div>
     </div>
 
     <div class="panel">
@@ -1802,6 +1843,24 @@ function renderImport(container) {
       }
     });
 
+    const btnCekKoreksi = document.getElementById('btnCekKoreksiTanggal');
+    if (btnCekKoreksi) btnCekKoreksi.addEventListener('click', () => {
+      const msg = document.getElementById('koreksiTanggalMsg');
+      const orderIds = document.getElementById('kt_orderIds').value.split('\n').map(s => s.trim()).filter(Boolean);
+      const tanggalBaru = document.getElementById('kt_tanggalBaru').value;
+      if (!orderIds.length || !tanggalBaru) { showMsg(msg, 'err', 'Isi Order ID dan Tanggal Penarikan yang benar dulu.'); return; }
+      try {
+        const preview = previewKoreksiTanggalPenarikan(orderIds);
+        koreksiTanggalPreview = { orderIds, tanggalBaru, ...preview };
+        showMsg(msg, 'info', 'Cek ringkasan di bawah sebelum konfirmasi.');
+        renderKoreksiTanggalArea(document.getElementById('koreksiTanggalArea'), container);
+      } catch (e) {
+        koreksiTanggalPreview = null;
+        showMsg(msg, 'err', 'Gagal: ' + e.message);
+        renderKoreksiTanggalArea(document.getElementById('koreksiTanggalArea'), container);
+      }
+    });
+
     const btnCekRecompute = document.getElementById('btnCekRecompute');
     if (btnCekRecompute) btnCekRecompute.addEventListener('click', () => {
       const msg = document.getElementById('recomputeMsg');
@@ -1845,6 +1904,7 @@ function renderImport(container) {
   if (lastBatchResult) renderImportPreview(document.getElementById('importPreview'), lastBatchResult);
   if (manualPreviewResult) renderManualPreview(document.getElementById('manualPreviewArea'), container);
   if (recomputeSummary || recomputePreviewResult) renderRecomputeArea(document.getElementById('recomputeArea'), container);
+  if (koreksiTanggalPreview) renderKoreksiTanggalArea(document.getElementById('koreksiTanggalArea'), container);
 }
 
 async function runWeeklyImport() {
@@ -2216,6 +2276,53 @@ function renderRecomputePreview(el, container) {
       showMsg(msg, 'err', 'Gagal simpan: ' + e.message);
     }
   });
+}
+
+// Panel "Koreksi Tanggal Penarikan (Salah Input)" -- tahap konfirmasi tunggal (READ-ONLY sampai user klik
+// "Ya, Ubah Tanggal Penarikan"). Diblokir total kalau order yg mau dikoreksi SUDAH punya payout investor,
+// supaya payout tidak "nyasar" ke tanggal lama sementara orderDb-nya sudah pindah tanggal.
+function renderKoreksiTanggalArea(el, container) {
+  if (!koreksiTanggalPreview) { el.innerHTML = ''; return; }
+  const p = koreksiTanggalPreview;
+  el.innerHTML = `
+    <div style="border:1px solid var(--line); border-radius:6px; padding:14px; background:#F8F7F3;">
+      <div style="font-weight:600; margin-bottom:8px;">Konfirmasi Koreksi Tanggal Penarikan</div>
+      <table class="data compact">
+        <tbody>
+          <tr><td>Order ID</td><td>${p.orderIds.join(', ')}</td></tr>
+          <tr><td>Baris Database Penjualan ditemukan</td><td class="num">${p.nRows} baris / ${p.totalQty} unit</td></tr>
+          <tr><td>Tanggal Penarikan saat ini (tercatat)</td><td class="num">${p.tanggalLamaSet.filter(Boolean).map(d=>fmtTanggal(d)).join(', ') || '-'}</td></tr>
+          <tr><td>Akan diubah menjadi</td><td class="num">${fmtTanggal(p.tanggalBaru)}</td></tr>
+        </tbody>
+      </table>
+      ${p.adaPayoutTerkait ? `<div class="status-box show err" style="margin-top:10px;">
+        <b>⚠ Order ini SUDAH punya ${p.payoutsTerkait.length} payout investor</b> -- tidak bisa diubah tanggalnya dulu spy payout tidak jadi nyasar ke tanggal lama.
+        Selesaikan dulu payoutnya (mis. "Batalkan Alokasi" di atas, atau "Hitung Ulang Alokasi" di tanggal lama), baru ulangi koreksi ini.
+      </div>` : `
+      <div style="margin-top:12px; display:flex; gap:8px;">
+        <button class="btn btn-primary" id="btnKonfirmasiKoreksiTanggal">Ya, Ubah Tanggal Penarikan</button>
+        <button class="btn btn-ghost" id="btnBatalKoreksiTanggal">Batal</button>
+      </div>`}
+    </div>
+  `;
+  const btnKonfirmasi = document.getElementById('btnKonfirmasiKoreksiTanggal');
+  if (btnKonfirmasi) btnKonfirmasi.addEventListener('click', async () => {
+    const msg = document.getElementById('koreksiTanggalMsg');
+    showMsg(msg, 'info', 'Menyimpan...');
+    try {
+      const { nUpdated } = terapkanKoreksiTanggalPenarikan(p.orderIds, p.tanggalBaru);
+      await saveState();
+      koreksiTanggalPreview = null;
+      const ktOrderIds = document.getElementById('kt_orderIds'); if (ktOrderIds) ktOrderIds.value = '';
+      const ktTanggalBaru = document.getElementById('kt_tanggalBaru'); if (ktTanggalBaru) ktTanggalBaru.value = '';
+      showMsg(document.getElementById('koreksiTanggalMsg'), 'ok', `${nUpdated} baris Database Penjualan diperbarui ke tanggal ${fmtTanggal(p.tanggalBaru)}.`);
+      renderImport(container);
+    } catch (e) {
+      showMsg(msg, 'err', 'Gagal: ' + e.message);
+    }
+  });
+  const btnBatal = document.getElementById('btnBatalKoreksiTanggal');
+  if (btnBatal) btnBatal.addEventListener('click', () => { koreksiTanggalPreview = null; renderKoreksiTanggalArea(el, container); });
 }
 
 let expandedProduk = null;
