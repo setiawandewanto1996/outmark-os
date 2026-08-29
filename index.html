@@ -305,6 +305,9 @@ function resolveRolloverIntoAllocations(result, resolutions, tanggalPenarikanFor
     const orderUnitsAll = a.orderUnits || [];
     let sisaQty = qtyAwal;
     let unitCursor = 0;
+    const idSiblingYgDipakai = new Set(); // dikecualikan dari pencarian "kontrak blm kepakai" di bawah -- kontrak
+    // ini BARU SAJA kepakai (walau efek pengurangan stock-nya baru nyata nanti di finalize), jangan sampai
+    // jugadianggap "belum kepakai" & malah ditimpa ulang jadi kontrak baru hasil rollover.
     siblingContracts.forEach(sc => {
       if (sisaQty <= 0) return;
       const qtyDariSini = Math.min(sisaQty, sc.stockAkhir);
@@ -319,6 +322,7 @@ function resolveRolloverIntoAllocations(result, resolutions, tanggalPenarikanFor
         catatan: `${qtyDariSini} unit sisa dari ${a.kodeKontrakLama} (habis) dipakaikan dulu ke kontrak aktif ${sc.kodeKontrak} milik ${a.namaInvestor} sebelum ke kontrak baru hasil rollover`,
         orderUnits: subUnits, skuBreakdown, hargaModalPcs: sc.hargaModalPcs,
       });
+      idSiblingYgDipakai.add(sc.id);
       sisaQty -= qtyDariSini;
     });
     const qtyDariSibling = qtyAwal - sisaQty;
@@ -331,15 +335,37 @@ function resolveRolloverIntoAllocations(result, resolutions, tanggalPenarikanFor
     const stockAwalBaru = Math.floor(modalBaru / res.hargaBaru);
     const sisaRp = modalBaru - (stockAwalBaru * res.hargaBaru);
     STATE.saldoDiluarKontrak[a.capitalPartnerId] = (STATE.saldoDiluarKontrak[a.capitalPartnerId] || 0) + sisaRp;
-    const kodeBaru = generateNextKodeKontrak(a.kodeKontrakLama);
-    const kontrakBaru = {
-      id: uid('ct'), produk: a.produk, capitalPartnerId: a.capitalPartnerId, kodeKontrak: kodeBaru,
-      tanggalMasuk: new Date().toISOString(), stockAwal: stockAwalBaru, stockAkhir: stockAwalBaru,
-      hargaModalPcs: res.hargaBaru, nilaiMargin: a.nilaiMarginLama, status: 'DANA BELUM CAIR',
-      rolledFromKodeKontrak: a.kodeKontrakLama, rolledTipe: res.tipe,
-      rolledForTanggalPenarikan: dateForRollover,
-    };
-    STATE.contracts.push(kontrakBaru);
+    // Kalau SUDAH ADA kontrak hasil rollover dari sumber yg SAMA (a.kodeKontrakLama) yg BELUM PERNAH kepakai
+    // sama sekali (stockAkhir === stockAwal, blm ada 1 unit pun terjual), PAKAI ULANG kontrak itu -- JANGAN
+    // bikin kontrak baru lagi. Tanpa ini, tiap kali tanggal yg sama di-hitung ulang berkali2 (mis. sambil
+    // ganti2 versi perbaikan) & kebetulan kontrak lama itu blm sempat dibersihkan otomatis, numpuk kontrak
+    // duplikat kosong (nyata terjadi: IDO049, IDO050, IDO051 identik semua muncul dari 1 sumber IDO047) yg
+    // ikut menggelembungkan modal investor itu di computePembagiPct & mencuri jatah investor lain.
+    const existingUnusedSuccessor = STATE.contracts.find(c =>
+      c.rolledFromKodeKontrak === a.kodeKontrakLama && c.capitalPartnerId === a.capitalPartnerId &&
+      c.produk === a.produk && c.stockAkhir === c.stockAwal && !idSiblingYgDipakai.has(c.id)
+    );
+    let kontrakBaru;
+    if (existingUnusedSuccessor) {
+      // Samakan syaratnya dgn keputusan yg BARU saja diambil (harga baru dari percobaan sebelumnya bisa saja
+      // beda) -- supaya tidak "nyangkut" pakai syarat lama yg sudah tidak relevan lagi.
+      existingUnusedSuccessor.hargaModalPcs = res.hargaBaru;
+      existingUnusedSuccessor.stockAwal = stockAwalBaru;
+      existingUnusedSuccessor.stockAkhir = stockAwalBaru;
+      existingUnusedSuccessor.rolledTipe = res.tipe;
+      existingUnusedSuccessor.rolledForTanggalPenarikan = dateForRollover;
+      kontrakBaru = existingUnusedSuccessor;
+    } else {
+      const kodeBaru = generateNextKodeKontrak(a.kodeKontrakLama);
+      kontrakBaru = {
+        id: uid('ct'), produk: a.produk, capitalPartnerId: a.capitalPartnerId, kodeKontrak: kodeBaru,
+        tanggalMasuk: new Date().toISOString(), stockAwal: stockAwalBaru, stockAkhir: stockAwalBaru,
+        hargaModalPcs: res.hargaBaru, nilaiMargin: a.nilaiMarginLama, status: 'DANA BELUM CAIR',
+        rolledFromKodeKontrak: a.kodeKontrakLama, rolledTipe: res.tipe,
+        rolledForTanggalPenarikan: dateForRollover,
+      };
+      STATE.contracts.push(kontrakBaru);
+    }
 
     if (sisaQty <= 0) {
       // Semua sisa unit sudah tertampung kontrak aktif lama -- entri placeholder ini tidak perlu jadi payout lagi.
@@ -352,10 +378,10 @@ function resolveRolloverIntoAllocations(result, resolutions, tanggalPenarikanFor
     const subUnitsBaru = orderUnitsAll.slice(unitCursor, unitCursor + qtyAlokasi);
     const skuBreakdownBaru = {};
     subUnitsBaru.forEach(u => { skuBreakdownBaru[u.sku] = (skuBreakdownBaru[u.sku]||0) + 1; });
-    a.kodeKontrak = kodeBaru; a.contractId = kontrakBaru.id; a.qty = qtyAlokasi;
+    a.kodeKontrak = kontrakBaru.kodeKontrak; a.contractId = kontrakBaru.id; a.qty = qtyAlokasi;
     a.orderUnits = subUnitsBaru; a.skuBreakdown = skuBreakdownBaru;
     a.rate = a.nilaiMarginLama; a.payout = qtyAlokasi * a.nilaiMarginLama;
-    a.catatan = `Rollover (${res.tipe==='putar_penuh'?'putar penuh':'putar modal saja'}) dari ${a.kodeKontrakLama} -> ${kodeBaru}` +
+    a.catatan = `Rollover (${res.tipe==='putar_penuh'?'putar penuh':'putar modal saja'}) dari ${a.kodeKontrakLama} -> ${kontrakBaru.kodeKontrak}` +
       (qtyDariSibling > 0 ? ` -- ${qtyDariSibling} unit sudah dipakaikan dulu ke kontrak aktif lama sebelum ke kontrak baru ini` : '') +
       (qtyAlokasi < sisaQty ? ` -- ⚠ kontrak baru cuma cukup utk ${stockAwalBaru} dari ${sisaQty} unit, sisanya perlu ditangani manual` : '');
     delete a.perluKontrakBaru;
@@ -1503,6 +1529,7 @@ let recomputeRolloverResolutions = {};
 let koreksiTanggalPreview = null; // hasil previewKoreksiTanggalPenarikan (tahap konfirmasi, blm ada mutasi)
 let vendorOrphanFollowup = null; // { tanggalBaru, orphansByDate: {tanggalLama: [...vendorPayouts]} } -- muncul SETELAH koreksi tanggal orderDb sukses
 let vendorOrphanManualPreview = null; // { tanggalLama, tanggalBaru, orphans } -- versi manual, independen dari alur Koreksi Tanggal di atas
+let kontrakDuplikatPreview = null; // hasil cariKontrakRolloverDuplikatKosong() -- tahap konfirmasi, blm ada mutasi
 
 function labelForPlatform(platform) {
   if (platform === 'Shopee') return { order: 'Order All', income: 'Income Sudah Dilepas' };
@@ -1728,6 +1755,49 @@ function pindahkanVendorPayoutKeTanggalBaru(vendorPayoutIds, tanggalBaruStr) {
   return { nUpdated };
 }
 
+// ==========================================================================
+// BERSIHKAN KONTRAK ROLLOVER DUPLIKAT YANG BELUM PERNAH DIPAKAI
+// ==========================================================================
+// Ditemukan dari kasus nyata: krn beberapa kali percobaan "Hitung Ulang" utk tanggal yg sama (sebelum
+// resolveRolloverIntoAllocations dibuat "pakai ulang kontrak yg blm terpakai, jangan bikin baru lagi"),
+// numpuk kontrak2 hasil rollover identik yg sama sekali belum pernah kejual (mis. IDO049, IDO050, IDO051
+// semua dari sumber IDO047) -- masing2 tetap ikut dihitung modalnya di computePembagiPct, menggelembungkan
+// jatah investor itu & mengambil jatah investor lain. Alat ini HANYA membaca (read-only) dulu, tidak
+// menghapus apa2 sampai dikonfirmasi eksplisit.
+function cariKontrakRolloverDuplikatKosong() {
+  const groups = {};
+  STATE.contracts.forEach(c => {
+    if (!c.rolledFromKodeKontrak) return; // bukan hasil rollover, tidak relevan
+    if (c.stockAkhir !== c.stockAwal) return; // sudah kepakai sebagian/semua -- BUKAN kandidat duplikat kosong, jangan disentuh
+    const key = c.rolledFromKodeKontrak + '|' + c.capitalPartnerId + '|' + c.produk;
+    (groups[key] = groups[key] || []).push(c);
+  });
+  return Object.values(groups).filter(g => g.length > 1).map(g => {
+    const sorted = [...g].sort((a,b) => new Date(a.tanggalMasuk) - new Date(b.tanggalMasuk));
+    const partner = findPartnerById(sorted[0].capitalPartnerId);
+    return {
+      kodeKontrakLama: sorted[0].rolledFromKodeKontrak, capitalPartnerId: sorted[0].capitalPartnerId,
+      namaInvestor: partner ? partner.nama : sorted[0].capitalPartnerId, produk: sorted[0].produk,
+      simpan: sorted[0], hapus: sorted.slice(1),
+    };
+  });
+}
+
+// MUTASI: hapus kontrak2 duplikat (simpan hanya 1 per grup, yg paling awal dibuat). Aman krn semuanya
+// dijamin belum pernah kepakai sama sekali (stockAkhir === stockAwal) -- tidak ada payout manapun yg
+// mereferensikannya, jadi tidak ada riwayat yg rusak.
+async function terapkanBersihkanKontrakRolloverDuplikat(groups) {
+  let nDihapus = 0;
+  groups.forEach(g => {
+    g.hapus.forEach(c => {
+      const idx = STATE.contracts.indexOf(c);
+      if (idx >= 0) { STATE.contracts.splice(idx, 1); nDihapus++; }
+    });
+  });
+  await saveState();
+  return { nDihapus };
+}
+
 function cleanupPendingAlreadySettled() {
   const settledKeys = new Set(STATE.orderDb.map(r => r.orderId + '|' + r.sku));
   let nRemoved = 0, nOrdersAffected = 0;
@@ -1859,6 +1929,14 @@ function renderImport(container) {
       <button class="btn btn-ghost" id="btnCekRecompute" style="margin-top:8px;">Cek Tanggal Ini</button>
       <div class="status-box" id="recomputeMsg"></div>
       <div id="recomputeArea" style="margin-top:10px;"></div>
+    </div>
+
+    <div class="panel">
+      <h2>Bersihkan Kontrak Rollover Duplikat yang Belum Pernah Dipakai</h2>
+      <div class="desc">Kalau tanggal yang sama sempat di-"Hitung Ulang" berkali-kali (mis. sambil mencoba beberapa perbaikan berturut-turut), bisa numpuk beberapa kontrak hasil rollover yang identik dari sumber yang sama tapi belum pernah kejual sama sekali (mis. IDO049, IDO050, IDO051 semua dari IDO047) -- ini keliru ikut dihitung sbg modal investor & mengambil jatah investor lain. Alat ini HANYA menghapus kontrak yang benar-benar belum pernah kepakai (stock awal = stock akhir, tidak ada payout apapun yang mereferensikannya), menyisakan 1 saja per sumber.</div>
+      <button class="btn btn-ghost" id="btnCekKontrakDuplikat">Cek Sekarang</button>
+      <div class="status-box" id="kontrakDuplikatMsg"></div>
+      <div id="kontrakDuplikatArea" style="margin-top:10px;"></div>
     </div>
 
     <div class="panel">
@@ -2024,6 +2102,21 @@ function renderImport(container) {
       renderRecomputeArea(document.getElementById('recomputeArea'), container);
     });
 
+    const btnCekKontrakDuplikat = document.getElementById('btnCekKontrakDuplikat');
+    if (btnCekKontrakDuplikat) btnCekKontrakDuplikat.addEventListener('click', () => {
+      const msg = document.getElementById('kontrakDuplikatMsg');
+      const groups = cariKontrakRolloverDuplikatKosong();
+      if (!groups.length) {
+        showMsg(msg, 'ok', 'Tidak ada kontrak rollover duplikat yang belum terpakai saat ini. Aman.');
+        kontrakDuplikatPreview = null;
+        renderKontrakDuplikatArea(document.getElementById('kontrakDuplikatArea'), container);
+        return;
+      }
+      kontrakDuplikatPreview = groups;
+      showMsg(msg, 'info', 'Cek rincian di bawah sebelum konfirmasi.');
+      renderKontrakDuplikatArea(document.getElementById('kontrakDuplikatArea'), container);
+    });
+
     const storeSelect = document.getElementById('imp_store');
     storeSelect.addEventListener('change', () => {
       const store = activeStores.find(s => s.id === storeSelect.value);
@@ -2053,6 +2146,40 @@ function renderImport(container) {
   if (koreksiTanggalPreview) renderKoreksiTanggalArea(document.getElementById('koreksiTanggalArea'), container);
   if (vendorOrphanFollowup) renderVendorOrphanFollowup(document.getElementById('koreksiTanggalArea'), container);
   if (vendorOrphanManualPreview) renderVendorOrphanManualArea(document.getElementById('vendorOrphanManualArea'), container);
+  if (kontrakDuplikatPreview) renderKontrakDuplikatArea(document.getElementById('kontrakDuplikatArea'), container);
+}
+
+function renderKontrakDuplikatArea(el, container) {
+  const groups = kontrakDuplikatPreview;
+  if (!groups || !groups.length) { el.innerHTML = ''; return; }
+  el.innerHTML = `
+    <div style="border:1px solid var(--line); border-radius:6px; padding:14px; background:#F8F7F3;">
+      <div style="font-weight:600; margin-bottom:8px;">Ditemukan ${groups.length} grup kontrak duplikat</div>
+      <table class="data compact">
+        <thead><tr><th>Investor</th><th>Produk</th><th>Sumber (Kontrak Lama)</th><th>Disimpan</th><th>Akan Dihapus</th></tr></thead>
+        <tbody>${groups.map(g => `<tr>
+          <td>${g.namaInvestor}</td><td>${g.produk}</td><td>${g.kodeKontrakLama}</td>
+          <td>${g.simpan.kodeKontrak} <span style="color:var(--ink-soft);font-size:11px;">(stock ${g.simpan.stockAwal}, dibuat ${new Date(g.simpan.tanggalMasuk).toLocaleDateString('id-ID')})</span></td>
+          <td>${g.hapus.map(c => `${c.kodeKontrak} (stock ${c.stockAwal})`).join(', ')}</td>
+        </tr>`).join('')}</tbody>
+      </table>
+      <div style="margin-top:12px; display:flex; gap:8px;">
+        <button class="btn btn-primary" id="btnTerapkanBersihkanDuplikat">Ya, Hapus Duplikat (${groups.reduce((s,g)=>s+g.hapus.length,0)} kontrak)</button>
+        <button class="btn btn-ghost" id="btnBatalBersihkanDuplikat">Batal</button>
+      </div>
+    </div>
+  `;
+  document.getElementById('btnTerapkanBersihkanDuplikat').addEventListener('click', async () => {
+    const msg = document.getElementById('kontrakDuplikatMsg');
+    const { nDihapus } = await terapkanBersihkanKontrakRolloverDuplikat(groups);
+    kontrakDuplikatPreview = null;
+    showMsg(msg, 'ok', `${nDihapus} kontrak duplikat yang belum pernah terpakai berhasil dihapus.`);
+    renderKontrakDuplikatArea(el, container);
+  });
+  document.getElementById('btnBatalBersihkanDuplikat').addEventListener('click', () => {
+    kontrakDuplikatPreview = null;
+    renderKontrakDuplikatArea(el, container);
+  });
 }
 
 async function runWeeklyImport() {
