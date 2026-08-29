@@ -2298,6 +2298,14 @@ function renderKoreksiTanggalArea(el, container) {
       ${p.adaPayoutTerkait ? `<div class="status-box show err" style="margin-top:10px;">
         <b>⚠ Order ini SUDAH punya ${p.payoutsTerkait.length} payout investor</b> -- tidak bisa diubah tanggalnya dulu spy payout tidak jadi nyasar ke tanggal lama.
         Selesaikan dulu payoutnya (mis. "Batalkan Alokasi" di atas, atau "Hitung Ulang Alokasi" di tanggal lama), baru ulangi koreksi ini.
+        <table class="data compact" style="margin-top:8px; background:#fff;">
+          <thead><tr><th>Tgl Dihitung</th><th>Investor</th><th>Kode Kontrak</th><th class="num">Qty</th><th>Sumber</th><th>Jumlah Order Digabung</th></tr></thead>
+          <tbody>${p.payoutsTerkait.map(po => `<tr>
+            <td>${fmtTanggal(po.tanggalDihitung)}</td><td>${po.namaInvestor||'-'}</td><td>${po.kodeKontrak||'-'}</td>
+            <td class="num">${po.qty}</td><td style="font-size:11px;">${po.sumberData||'import_mingguan (batch normal)'}</td>
+            <td class="num">${(po.orderIds||[]).length}${(po.orderIds||[]).length>1?' order (gabungan batch)':' order (berdiri sendiri)'}</td>
+          </tr>`).join('')}</tbody>
+        </table>
       </div>` : `
       <div style="margin-top:12px; display:flex; gap:8px;">
         <button class="btn btn-primary" id="btnKonfirmasiKoreksiTanggal">Ya, Ubah Tanggal Penarikan</button>
