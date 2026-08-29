@@ -281,16 +281,52 @@ function resolveRolloverIntoAllocations(result, resolutions) {
 
   // Tahap 1: proses PUTAR PENUH / PUTAR MODAL SAJA dulu -- bikin kontrak baru, supaya kontrak2 baru ini
   // ikut kehitung sbg kandidat kalau ada kasus STOP yg perlu redistribusi di tahap 2.
+  const toRemoveTahap1 = [];
   perluList.forEach(a => {
     const key = a.kode2 + '|' + a.produk;
     const res = resolutions[key];
     if (!res || res.tipe === 'stop') return;
+
+    // Sebelum sisa unit ini masuk ke kontrak BARU hasil rollover, coba dulu pakaikan ke kontrak2 AKTIF LAIN
+    // milik investor yg sama utk produk yg sama yg SUDAH ADA lebih dulu (mis. IDO048), urut FIFO dari
+    // tanggalMasuk paling awal. Kontrak yg baru saja habis (a.kodeKontrakLama, mis. IDO047) di-exclude
+    // krn stockAkhir/status-nya di STATE.contracts masih STALE di titik ini (baru benar2
+    // dikurangi/ditutup nanti di applyBatchResult) -- kalau tidak di-exclude bisa keliru dianggap masih ada isi.
+    const siblingContracts = STATE.contracts
+      .filter(c => c.produk === a.produk && c.capitalPartnerId === a.capitalPartnerId
+        && c.status === 'DANA BELUM CAIR' && c.kodeKontrak !== a.kodeKontrakLama)
+      .sort((x, y) => new Date(x.tanggalMasuk) - new Date(y.tanggalMasuk));
+
+    const qtyAwal = a.qty;
+    const orderUnitsAll = a.orderUnits || [];
+    let sisaQty = qtyAwal;
+    let unitCursor = 0;
+    siblingContracts.forEach(sc => {
+      if (sisaQty <= 0) return;
+      const qtyDariSini = Math.min(sisaQty, sc.stockAkhir);
+      if (qtyDariSini <= 0) return;
+      const subUnits = orderUnitsAll.slice(unitCursor, unitCursor + qtyDariSini);
+      unitCursor += qtyDariSini;
+      const skuBreakdown = {};
+      subUnits.forEach(u => { skuBreakdown[u.sku] = (skuBreakdown[u.sku]||0) + 1; });
+      result.allocations.push({
+        produk: a.produk, kode2: a.kode2, namaInvestor: a.namaInvestor, capitalPartnerId: a.capitalPartnerId,
+        kodeKontrak: sc.kodeKontrak, contractId: sc.id, qty: qtyDariSini, rate: sc.nilaiMargin, payout: qtyDariSini*sc.nilaiMargin,
+        catatan: `${qtyDariSini} unit sisa dari ${a.kodeKontrakLama} (habis) dipakaikan dulu ke kontrak aktif ${sc.kodeKontrak} milik ${a.namaInvestor} sebelum ke kontrak baru hasil rollover`,
+        orderUnits: subUnits, skuBreakdown, hargaModalPcs: sc.hargaModalPcs,
+      });
+      sisaQty -= qtyDariSini;
+    });
+    const qtyDariSibling = qtyAwal - sisaQty;
+
+    // Kontrak baru hasil rollover TETAP dibuat (utk jejak/lineage & dipakai batch berikutnya), walau
+    // sisaQty di titik ini sudah 0 (artinya semua sisa unit sudah tertampung kontrak aktif lama di atas).
     const modalLama = a.qtyKontrakLama * a.hargaModalPcsLama;
     const profitLama = a.qtyKontrakLama * a.nilaiMarginLama;
     const modalBaru = res.tipe === 'putar_penuh' ? (modalLama + profitLama) : modalLama;
     const stockAwalBaru = Math.floor(modalBaru / res.hargaBaru);
-    const sisa = modalBaru - (stockAwalBaru * res.hargaBaru);
-    STATE.saldoDiluarKontrak[a.capitalPartnerId] = (STATE.saldoDiluarKontrak[a.capitalPartnerId] || 0) + sisa;
+    const sisaRp = modalBaru - (stockAwalBaru * res.hargaBaru);
+    STATE.saldoDiluarKontrak[a.capitalPartnerId] = (STATE.saldoDiluarKontrak[a.capitalPartnerId] || 0) + sisaRp;
     const kodeBaru = generateNextKodeKontrak(a.kodeKontrakLama);
     const kontrakBaru = {
       id: uid('ct'), produk: a.produk, capitalPartnerId: a.capitalPartnerId, kodeKontrak: kodeBaru,
@@ -299,13 +335,27 @@ function resolveRolloverIntoAllocations(result, resolutions) {
       rolledFromKodeKontrak: a.kodeKontrakLama, rolledTipe: res.tipe,
     };
     STATE.contracts.push(kontrakBaru);
-    const qtyAlokasi = Math.min(a.qty, stockAwalBaru);
+
+    if (sisaQty <= 0) {
+      // Semua sisa unit sudah tertampung kontrak aktif lama -- entri placeholder ini tidak perlu jadi payout lagi.
+      toRemoveTahap1.push(a);
+      delete a.perluKontrakBaru;
+      return;
+    }
+
+    const qtyAlokasi = Math.min(sisaQty, stockAwalBaru);
+    const subUnitsBaru = orderUnitsAll.slice(unitCursor, unitCursor + qtyAlokasi);
+    const skuBreakdownBaru = {};
+    subUnitsBaru.forEach(u => { skuBreakdownBaru[u.sku] = (skuBreakdownBaru[u.sku]||0) + 1; });
     a.kodeKontrak = kodeBaru; a.contractId = kontrakBaru.id; a.qty = qtyAlokasi;
+    a.orderUnits = subUnitsBaru; a.skuBreakdown = skuBreakdownBaru;
     a.rate = a.nilaiMarginLama; a.payout = qtyAlokasi * a.nilaiMarginLama;
     a.catatan = `Rollover (${res.tipe==='putar_penuh'?'putar penuh':'putar modal saja'}) dari ${a.kodeKontrakLama} -> ${kodeBaru}` +
-      (qtyAlokasi < a.qty ? ` -- ⚠ kontrak baru cuma cukup utk ${stockAwalBaru} dari ${a.qty} unit, sisanya perlu ditangani manual` : '');
+      (qtyDariSibling > 0 ? ` -- ${qtyDariSibling} unit sudah dipakaikan dulu ke kontrak aktif lama sebelum ke kontrak baru ini` : '') +
+      (qtyAlokasi < sisaQty ? ` -- ⚠ kontrak baru cuma cukup utk ${stockAwalBaru} dari ${sisaQty} unit, sisanya perlu ditangani manual` : '');
     delete a.perluKontrakBaru;
   });
+  toRemoveTahap1.forEach(a => { const idx = result.allocations.indexOf(a); if (idx >= 0) result.allocations.splice(idx, 1); });
 
   // Tahap 2: proses STOP -- hapus entri ini, redistribusi qty-nya ke investor aktif lain (kontrak baru dari tahap 1 ikut terhitung)
   const toRemove = [];
