@@ -436,6 +436,83 @@ function allocateLargestRemainder(qtyTotal, pctMap) {
   return floors;
 }
 
+// Alokasi FIFO (per investor) + largest remainder (antar investor), dgn pelacakan UNIT (order+SKU) spesifik
+// mana yg masuk ke investor mana -- perlu utk laporan detail per kontrak. Diekstrak dari processWeeklyBatch
+// (isinya PERSIS SAMA, tidak diubah sama sekali) supaya bisa dipakai ulang oleh fitur lain yg perlu
+// menghitung alokasi dgn logika yg IDENTIK -- mis. recomputeAllocationForDate (hitung ulang alokasi per
+// tanggal penarikan), supaya tidak ada 2 implementasi alokasi yg bisa diam2 beda hasil.
+function allocateUnitsToContracts(qtyPerProduk, cairSkuRows) {
+  const allocations = [];
+  Object.entries(qtyPerProduk).forEach(([produk, qtyTotalF]) => {
+    const qtyTotal = Math.round(qtyTotalF);
+    const pct = computePembagiPct(produk);
+
+    // kumpulkan semua UNIT individual (bukan baris -- krn 1 baris bisa qty>1) utk produk ini
+    const productRows = cairSkuRows.filter(r => capitalPartnerProduk(r.produk) === produk);
+    const units = [];
+    productRows.forEach(r => { for (let i = 0; i < r.qty; i++) units.push({ orderId: r.orderId, sku: r.sku }); });
+
+    if (!Object.keys(pct).length) {
+      allocations.push({ produk, kode2:null, namaInvestor:null, kodeKontrak:null, qty:qtyTotal, rate:null, payout:null, catatan:'Tidak ada kontrak aktif utk produk ini', orderUnits: units });
+      return;
+    }
+    const floors = allocateLargestRemainder(qtyTotal, pct);
+    let unitCursor = 0;
+    Object.entries(floors).forEach(([kode2, qty]) => {
+      if (qty <= 0) return;
+      const assignedUnits = units.slice(unitCursor, unitCursor + qty);
+      unitCursor += qty;
+      const partner = findPartnerByKode2(kode2);
+      if (!partner) {
+        allocations.push({ produk, kode2, namaInvestor: kode2, capitalPartnerId: null, kodeKontrak: null, contractId: null,
+          qty, rate: null, payout: null, catatan: 'Investor tidak ditemukan', orderUnits: assignedUnits, skuBreakdown: {}, hargaModalPcs: null });
+        return;
+      }
+      // Ambil SEMUA kontrak aktif investor ini utk produk ini (urut FIFO) -- kalau kontrak pertama habis di tengah,
+      // sisa qty otomatis "meluber" ke kontrak berikutnya yg SUDAH ADA (spt kasus IWO013 -> IWO014 di histori).
+      const activeContractsForPartner = STATE.contracts
+        .filter(c => c.produk === produk && c.capitalPartnerId === partner.id && c.status === 'DANA BELUM CAIR')
+        .sort((a,b) => new Date(a.tanggalMasuk) - new Date(b.tanggalMasuk));
+      let remaining = qty, cursorInAssigned = 0, terbagi = false;
+      for (const kontrak of activeContractsForPartner) {
+        if (remaining <= 0) break;
+        const qtyForThisContract = Math.min(remaining, kontrak.stockAkhir);
+        if (qtyForThisContract <= 0) continue;
+        const subUnits = assignedUnits.slice(cursorInAssigned, cursorInAssigned + qtyForThisContract);
+        cursorInAssigned += qtyForThisContract; remaining -= qtyForThisContract;
+        if (cursorInAssigned < qty) terbagi = true;
+        const skuBreakdown = {};
+        subUnits.forEach(u => { skuBreakdown[u.sku] = (skuBreakdown[u.sku]||0) + 1; });
+        allocations.push({
+          produk, kode2, namaInvestor: partner.nama, capitalPartnerId: partner.id,
+          kodeKontrak: kontrak.kodeKontrak, contractId: kontrak.id,
+          qty: qtyForThisContract, rate: kontrak.nilaiMargin, payout: qtyForThisContract*kontrak.nilaiMargin,
+          catatan: `${(pct[kode2]*100).toFixed(2)}% dari ${qtyTotal} unit ${produk}` + (terbagi||activeContractsForPartner.indexOf(kontrak)>0 ? ' (lanjutan dari kontrak sebelumnya yg sudah habis)' : ''),
+          orderUnits: subUnits, skuBreakdown, hargaModalPcs: kontrak.hargaModalPcs,
+        });
+      }
+      if (remaining > 0) {
+        // TIDAK ADA kontrak aktif yg cukup utk sisa ini -- investor perlu kontrak baru (rollover) atau kontrak dihentikan.
+        // BELUM otomatis dibuatkan -- perlu keputusan manual (lihat notifikasi "Perlu Kontrak Baru" di preview batch).
+        const lastContract = activeContractsForPartner[activeContractsForPartner.length - 1]
+          || STATE.contracts.filter(c => c.produk === produk && c.capitalPartnerId === partner.id)
+               .sort((a,b) => new Date(b.tanggalMasuk) - new Date(a.tanggalMasuk))[0] || null;
+        allocations.push({
+          produk, kode2, namaInvestor: partner.nama, capitalPartnerId: partner.id, kodeKontrak: null, contractId: null,
+          qty: remaining, rate: null, payout: null,
+          catatan: `⚠ ${remaining} unit TIDAK ADA kontrak aktif yg cukup -- kontrak ${partner.nama} utk ${produk} sudah habis, perlu kontrak baru (rollover) atau dihentikan.`,
+          orderUnits: assignedUnits.slice(cursorInAssigned), skuBreakdown: {}, hargaModalPcs: null, perluKontrakBaru: true,
+          kodeKontrakLama: lastContract ? lastContract.kodeKontrak : null,
+          qtyKontrakLama: lastContract ? lastContract.stockAwal : 0,
+          hargaModalPcsLama: lastContract ? lastContract.hargaModalPcs : 0,
+          nilaiMarginLama: lastContract ? lastContract.nilaiMargin : 0,
+        });
+      }
+    });
+  });
+  return allocations;
+}
+
 // Tambah 1 transaksi manual (order yg SKU-nya tdk ketemu otomatis lewat pipeline biasa) --
 // dibuat dgn cara membungkus jadi "baris income palsu" 1 baris, lalu diproses lewat processWeeklyBatch +
 // applyBatchResult YG SAMA PERSIS spt batch normal -- supaya alokasi/stok kontrak/payout/dedup semuanya
@@ -628,75 +705,7 @@ async function processWeeklyBatch(storeImports) {
   });
 
   // ---- Alokasi FIFO (per investor) + largest remainder (antar investor) ----
-  // Sekaligus lacak UNIT (order+SKU) spesifik mana yg masuk ke investor mana -- perlu utk laporan detail per kontrak.
-  const allocations = [];
-  Object.entries(qtyPerProduk).forEach(([produk, qtyTotalF]) => {
-    const qtyTotal = Math.round(qtyTotalF);
-    const pct = computePembagiPct(produk);
-
-    // kumpulkan semua UNIT individual (bukan baris -- krn 1 baris bisa qty>1) utk produk ini
-    const productRows = newCairSkuRows.filter(r => capitalPartnerProduk(r.produk) === produk);
-    const units = [];
-    productRows.forEach(r => { for (let i = 0; i < r.qty; i++) units.push({ orderId: r.orderId, sku: r.sku }); });
-
-    if (!Object.keys(pct).length) {
-      allocations.push({ produk, kode2:null, namaInvestor:null, kodeKontrak:null, qty:qtyTotal, rate:null, payout:null, catatan:'Tidak ada kontrak aktif utk produk ini', orderUnits: units });
-      return;
-    }
-    const floors = allocateLargestRemainder(qtyTotal, pct);
-    let unitCursor = 0;
-    Object.entries(floors).forEach(([kode2, qty]) => {
-      if (qty <= 0) return;
-      const assignedUnits = units.slice(unitCursor, unitCursor + qty);
-      unitCursor += qty;
-      const partner = findPartnerByKode2(kode2);
-      if (!partner) {
-        allocations.push({ produk, kode2, namaInvestor: kode2, capitalPartnerId: null, kodeKontrak: null, contractId: null,
-          qty, rate: null, payout: null, catatan: 'Investor tidak ditemukan', orderUnits: assignedUnits, skuBreakdown: {}, hargaModalPcs: null });
-        return;
-      }
-      // Ambil SEMUA kontrak aktif investor ini utk produk ini (urut FIFO) -- kalau kontrak pertama habis di tengah,
-      // sisa qty otomatis "meluber" ke kontrak berikutnya yg SUDAH ADA (spt kasus IWO013 -> IWO014 di histori).
-      const activeContractsForPartner = STATE.contracts
-        .filter(c => c.produk === produk && c.capitalPartnerId === partner.id && c.status === 'DANA BELUM CAIR')
-        .sort((a,b) => new Date(a.tanggalMasuk) - new Date(b.tanggalMasuk));
-      let remaining = qty, cursorInAssigned = 0, terbagi = false;
-      for (const kontrak of activeContractsForPartner) {
-        if (remaining <= 0) break;
-        const qtyForThisContract = Math.min(remaining, kontrak.stockAkhir);
-        if (qtyForThisContract <= 0) continue;
-        const subUnits = assignedUnits.slice(cursorInAssigned, cursorInAssigned + qtyForThisContract);
-        cursorInAssigned += qtyForThisContract; remaining -= qtyForThisContract;
-        if (cursorInAssigned < qty) terbagi = true;
-        const skuBreakdown = {};
-        subUnits.forEach(u => { skuBreakdown[u.sku] = (skuBreakdown[u.sku]||0) + 1; });
-        allocations.push({
-          produk, kode2, namaInvestor: partner.nama, capitalPartnerId: partner.id,
-          kodeKontrak: kontrak.kodeKontrak, contractId: kontrak.id,
-          qty: qtyForThisContract, rate: kontrak.nilaiMargin, payout: qtyForThisContract*kontrak.nilaiMargin,
-          catatan: `${(pct[kode2]*100).toFixed(2)}% dari ${qtyTotal} unit ${produk}` + (terbagi||activeContractsForPartner.indexOf(kontrak)>0 ? ' (lanjutan dari kontrak sebelumnya yg sudah habis)' : ''),
-          orderUnits: subUnits, skuBreakdown, hargaModalPcs: kontrak.hargaModalPcs,
-        });
-      }
-      if (remaining > 0) {
-        // TIDAK ADA kontrak aktif yg cukup utk sisa ini -- investor perlu kontrak baru (rollover) atau kontrak dihentikan.
-        // BELUM otomatis dibuatkan -- perlu keputusan manual (lihat notifikasi "Perlu Kontrak Baru" di preview batch).
-        const lastContract = activeContractsForPartner[activeContractsForPartner.length - 1]
-          || STATE.contracts.filter(c => c.produk === produk && c.capitalPartnerId === partner.id)
-               .sort((a,b) => new Date(b.tanggalMasuk) - new Date(a.tanggalMasuk))[0] || null;
-        allocations.push({
-          produk, kode2, namaInvestor: partner.nama, capitalPartnerId: partner.id, kodeKontrak: null, contractId: null,
-          qty: remaining, rate: null, payout: null,
-          catatan: `⚠ ${remaining} unit TIDAK ADA kontrak aktif yg cukup -- kontrak ${partner.nama} utk ${produk} sudah habis, perlu kontrak baru (rollover) atau dihentikan.`,
-          orderUnits: assignedUnits.slice(cursorInAssigned), skuBreakdown: {}, hargaModalPcs: null, perluKontrakBaru: true,
-          kodeKontrakLama: lastContract ? lastContract.kodeKontrak : null,
-          qtyKontrakLama: lastContract ? lastContract.stockAwal : 0,
-          hargaModalPcsLama: lastContract ? lastContract.hargaModalPcs : 0,
-          nilaiMarginLama: lastContract ? lastContract.nilaiMargin : 0,
-        });
-      }
-    });
-  });
+  const allocations = allocateUnitsToContracts(qtyPerProduk, newCairSkuRows);
 
   // ---- Surplus per produk (harga investor flat - harga konveksi per SKU) ----
   const surplusRows = Object.entries(qtyPerProduk).map(([produk, qtyTotal]) => {
@@ -1422,6 +1431,11 @@ let lastBatchResult = null;
 let manualPreviewResult = null;
 let manualTanggalCairStr = '';
 let manualRolloverResolutions = {};
+// State khusus panel "Hitung Ulang Alokasi per Tanggal Penarikan" -- dipisah dari rolloverResolutions
+// milik Import Mingguan/manual supaya tidak saling menimpa kalau dipakai berurutan.
+let recomputeSummary = null;       // hasil summarizeRecomputeForDate (tahap konfirmasi awal, blm ada mutasi)
+let recomputePreviewResult = null; // hasil beginRecomputeForDate (SUDAH menghapus payout lama, blm final)
+let recomputeRolloverResolutions = {};
 
 function labelForPlatform(platform) {
   if (platform === 'Shopee') return { order: 'Order All', income: 'Income Sudah Dilepas' };
@@ -1452,50 +1466,121 @@ function reverseContractAllocation(orderId) {
   return { nDibatalkan, nDilewati, totalQtyDikembalikan };
 }
 
-// Kebalikan dari reverseContractAllocation di atas -- utk order yg SUDAH tercatat di Database Penjualan
-// (produk Urban Outdoor) tapi TIDAK punya alokasi investor SAMA SEKALI (mis. baru dibatalkan lewat fungsi
-// di atas, atau dulu diinput manual saat produknya kebetulan tidak punya kontrak aktif -- lihat
-// manualNeedsAttention). TIDAK menyentuh orderDb sama sekali -- cuma membuat payout baru ke kontrak yang
-// dipilih & mengurangi stok kontrak itu. Aman dipanggil berkali-kali: mengecek dulu qty yg SUDAH punya
-// payout utk order+produk ini, supaya tidak dobel alokasi kalau sebagian sudah pernah dialokasikan.
-function alokasikanOrderKeKontrak(orderId, contractId) {
-  const kontrak = STATE.contracts.find(c => c.id === contractId);
-  if (!kontrak) throw new Error('Kontrak tujuan tidak ditemukan.');
-  if (kontrak.status !== 'DANA BELUM CAIR') throw new Error('Kontrak tujuan sudah tidak aktif (DANA SUDAH CAIR).');
-  const produkTarget = capitalPartnerProduk(kontrak.produk);
+// ==========================================================================
+// HITUNG ULANG ALOKASI PER TANGGAL PENARIKAN
+// ==========================================================================
+// Menggantikan pendekatan lama "alokasikanOrderKeKontrak" (pilih 1 kontrak per order) -- ternyata SALAH
+// utk order yg isinya BANYAK produk sekaligus (mis. 585620049046766664: 1 order, 3 SKU beda ukuran, semua
+// produk OSWALD). Pendekatan yg benar (sesuai arahan user): jangan ikat ke 1 kontrak manual, tapi HITUNG ULANG
+// SEMUA alokasi utk 1 Tanggal Penarikan sekaligus -- gabungkan SEMUA order Urban Outdoor yg tercatat di
+// tanggal itu (STATE.orderDb, bukan cuma 1 order yg "hilang" payoutnya), lalu jalankan ulang algoritma
+// FIFO/largest-remainder yg SAMA (allocateUnitsToContracts) spt batch normal. Ini otomatis membetulkan
+// order manapun di tanggal itu yg pernah "nyangkut" tanpa payout (mis. akibat Batalkan Alokasi), TANPA perlu
+// tahu order mana persisnya yg bermasalah.
+//
+// User sudah diberi tahu & MEMILIH SENDIRI opsi paling destruktif: HAPUS SEMUA payout investor di tanggal itu,
+// lalu hitung ulang dari nol (bukan cuma menambal yg kurang) -- supaya tidak ada duplikat/salah hitung kalau
+// sebagian sudah benar & sebagian belum. Konsekuensi yg disadari & diterima: payout yg sudah ditandai
+// "Sudah Dibayar" di tanggal itu HILANG status itu (payout lama dihapus, diganti payout baru blm dibayar) --
+// harus ditandai ulang manual. Krn itu prosesnya dipecah 3 tahap spy ada jaring pengaman:
+//   1. summarizeRecomputeForDate -- READ-ONLY, utk ditampilkan sbg peringatan/konfirmasi SEBELUM apa2 dihapus.
+//   2. beginRecomputeForDate -- MENGHAPUS payout lama & mengembalikan stok kontrak (disimpan snapshotnya di
+//      recomputeUndoSnapshot supaya BISA dibatalkan), lalu menghitung alokasi baru (BELUM ditulis sbg payout).
+//      Kalau ada kasus "Perlu Kontrak Baru" (rollover), user masih harus memutuskan dulu di step ini.
+//   3a. undoRecomputeForDate -- kalau user klik Batal di titik ini: kembalikan PERSIS spt semula.
+//   3b. finalizeRecomputeForDate -- kalau user konfirmasi: terapkan alokasi baru (kurangi stok, buat payout
+//       baru sumberData 'hitung_ulang_tanggal'), lalu saveState(). Setelah ini TIDAK bisa di-undo lagi.
+function summarizeRecomputeForDate(dateStr) {
+  const payoutsForDate = STATE.payouts.filter(p => p.tanggalDihitung && p.tanggalDihitung.slice(0,10) === dateStr);
+  const sudahDibayar = payoutsForDate.filter(p => p.tanggalDibayar);
+  const rowsForDate = STATE.orderDb.filter(r => r.brand === 'URBAN OUTDOOR' && r.tanggalPenarikan && r.tanggalPenarikan.slice(0,10) === dateStr && r.pendapatan != null && r.status !== 'Gagal');
+  return {
+    dateStr,
+    nPayoutLama: payoutsForDate.length,
+    totalQtyPayoutLama: payoutsForDate.reduce((s,p) => s + (p.qty||0), 0),
+    totalRpPayoutLama: payoutsForDate.reduce((s,p) => s + (p.payout||0), 0),
+    sudahDibayarList: sudahDibayar.map(p => ({ namaInvestor: p.namaInvestor, kodeKontrak: p.kodeKontrak, qty: p.qty, payout: p.payout })),
+    nOrderRows: rowsForDate.length,
+    totalQtyOrderRows: rowsForDate.reduce((s,r) => s + (r.qty||1), 0),
+  };
+}
 
-  const rowsOrder = STATE.orderDb.filter(r => r.orderId === orderId && r.brand === 'URBAN OUTDOOR' && capitalPartnerProduk(r.produk) === produkTarget);
-  if (!rowsOrder.length) throw new Error(`Tidak ditemukan baris Database Penjualan utk order ini dgn produk "${produkTarget}" (brand URBAN OUTDOOR).`);
+let recomputeUndoSnapshot = null; // { dateStr, deletedPayouts: [...], contractChanges: [{contractId, stockDelta, statusWasClosedBefore}] }
 
-  const totalQty = rowsOrder.reduce((s,r) => s + (r.qty||1), 0);
-  const sudahDialokasikan = STATE.payouts
-    .filter(p => (p.orderIds||[]).includes(orderId) && capitalPartnerProduk(p.produk) === produkTarget)
-    .reduce((s,p) => s + (p.qty||0), 0);
-  const sisaBelumAlokasi = totalQty - sudahDialokasikan;
-  if (sisaBelumAlokasi <= 0) return { qtyDialokasikan: 0, sudahLengkap: true };
+// MUTASI: hapus semua payout investor di tanggal ini & kembalikan stok kontrak terkait, lalu hitung ulang
+// alokasi dari SEMUA baris Database Penjualan (Urban Outdoor) di tanggal itu. Alokasi hasilnya BELUM
+// dituliskan sbg payout baru -- masih perlu lolos finalizeRecomputeForDate (& keputusan rollover kalau ada).
+function beginRecomputeForDate(dateStr) {
+  if (recomputeUndoSnapshot) throw new Error('Ada proses hitung ulang lain yg belum selesai/dibatalkan -- selesaikan atau batalkan itu dulu.');
+  const payoutsForDate = STATE.payouts.filter(p => p.tanggalDihitung && p.tanggalDihitung.slice(0,10) === dateStr);
+  const snapshot = { dateStr, deletedPayouts: JSON.parse(JSON.stringify(payoutsForDate)), contractChanges: [] };
 
-  const qtyDialokasikan = Math.min(sisaBelumAlokasi, kontrak.stockAkhir);
-  if (qtyDialokasikan <= 0) throw new Error(`Kontrak ${kontrak.kodeKontrak} sudah tidak ada sisa stok (0) -- pilih kontrak lain.`);
-
-  // Ambil unit individual (bukan baris -- krn 1 baris bisa qty>1) utk breakdown SKU yg akurat di laporan
-  const units = [];
-  rowsOrder.forEach(r => { for (let i = 0; i < (r.qty||1); i++) units.push(r.sku); });
-  const unitsDialokasikan = units.slice(0, qtyDialokasikan);
-  const skuBreakdown = {};
-  unitsDialokasikan.forEach(sku => { if (sku) skuBreakdown[sku] = (skuBreakdown[sku]||0) + 1; });
-
-  const partner = findPartnerById(kontrak.capitalPartnerId);
-  kontrak.stockAkhir -= qtyDialokasikan;
-  if (kontrak.stockAkhir === 0) kontrak.status = 'DANA SUDAH CAIR';
-
-  STATE.payouts.push({
-    id: uid('po'), tanggalDihitung: new Date().toISOString(), produk: kontrak.produk,
-    kode2: partner ? partner.kode2 : null, namaInvestor: partner ? partner.nama : null, capitalPartnerId: kontrak.capitalPartnerId,
-    kodeKontrak: kontrak.kodeKontrak, qty: qtyDialokasikan, rate: kontrak.nilaiMargin, payout: qtyDialokasikan * kontrak.nilaiMargin,
-    tanggalDibayar: null, hargaModalPcs: kontrak.hargaModalPcs, skuBreakdown, orderIds: [orderId], sumberData: 'alokasi_manual_susulan',
+  payoutsForDate.forEach(p => {
+    const kontrak = STATE.contracts.find(c => c.kodeKontrak === p.kodeKontrak);
+    if (kontrak) {
+      snapshot.contractChanges.push({ contractId: kontrak.id, stockDelta: p.qty, statusWasClosedBefore: kontrak.status === 'DANA SUDAH CAIR' });
+      kontrak.stockAkhir += p.qty;
+      if (kontrak.status !== 'DANA BELUM CAIR') kontrak.status = 'DANA BELUM CAIR';
+    }
+    const idx = STATE.payouts.indexOf(p);
+    if (idx >= 0) STATE.payouts.splice(idx, 1);
   });
+  recomputeUndoSnapshot = snapshot;
 
-  return { qtyDialokasikan, sisaTidakTertampung: sisaBelumAlokasi - qtyDialokasikan, kodeKontrak: kontrak.kodeKontrak };
+  const rowsForDate = STATE.orderDb.filter(r => r.brand === 'URBAN OUTDOOR' && r.tanggalPenarikan && r.tanggalPenarikan.slice(0,10) === dateStr && r.pendapatan != null && r.status !== 'Gagal');
+  const qtyPerProduk = {};
+  rowsForDate.forEach(r => { const cp = capitalPartnerProduk(r.produk); qtyPerProduk[cp] = (qtyPerProduk[cp]||0) + (r.qty||1); });
+  const cairSkuRowsForDate = rowsForDate.map(r => ({ orderId: r.orderId, sku: r.sku, qty: r.qty||1, produk: r.produk }));
+  const allocations = allocateUnitsToContracts(qtyPerProduk, cairSkuRowsForDate);
+
+  return { dateStr, allocations, qtyPerProduk, rowsForDate, nPayoutLamaDihapus: payoutsForDate.length };
+}
+
+// Batalkan proses hitung ulang yg SEDANG preview (setelah beginRecomputeForDate, SEBELUM finalizeRecomputeForDate)
+// -- kembalikan payout lama & stok kontrak PERSIS spt sebelum beginRecomputeForDate dipanggil.
+function undoRecomputeForDate() {
+  if (!recomputeUndoSnapshot) return;
+  const snap = recomputeUndoSnapshot;
+  snap.contractChanges.forEach(cc => {
+    const kontrak = STATE.contracts.find(c => c.id === cc.contractId);
+    if (kontrak) {
+      kontrak.stockAkhir -= cc.stockDelta;
+      if (cc.statusWasClosedBefore && kontrak.stockAkhir <= 0) kontrak.status = 'DANA SUDAH CAIR';
+    }
+  });
+  snap.deletedPayouts.forEach(p => STATE.payouts.push(p));
+  recomputeUndoSnapshot = null;
+}
+
+// FINALISASI: dipanggil setelah keputusan rollover (kalau ada, lewat resolveRolloverIntoAllocations) sudah
+// selesai. Menulis alokasi baru sbg payout baru (sumberData 'hitung_ulang_tanggal') + mengurangi stok kontrak
+// sesuai hasil akhir, lalu saveState(). Setelah ini recomputeUndoSnapshot dibuang -- tidak bisa di-undo lagi.
+async function finalizeRecomputeForDate(result, rolloverResolutions) {
+  if (rolloverResolutions && Object.keys(rolloverResolutions).length) {
+    resolveRolloverIntoAllocations(result, rolloverResolutions);
+  }
+  const tglIso = new Date(result.dateStr + 'T00:00:00.000Z').toISOString();
+  result.allocations.forEach(a => {
+    if (!a.contractId) return;
+    const c = STATE.contracts.find(x => x.id === a.contractId);
+    if (!c) return;
+    c.stockAkhir = Math.max(0, (c.stockAkhir||0) - a.qty);
+    if (c.stockAkhir === 0) c.status = 'DANA SUDAH CAIR';
+  });
+  let nPayoutBaru = 0;
+  result.allocations.forEach(a => {
+    if (!a.capitalPartnerId) return;
+    STATE.payouts.push({
+      id: uid('po'), tanggalDihitung: tglIso, produk: a.produk, kode2: a.kode2, namaInvestor: a.namaInvestor,
+      capitalPartnerId: a.capitalPartnerId, kodeKontrak: a.kodeKontrak, qty: a.qty, rate: a.rate, payout: a.payout,
+      tanggalDibayar: null, hargaModalPcs: a.hargaModalPcs||null, skuBreakdown: a.skuBreakdown||{},
+      orderIds: [...new Set((a.orderUnits||[]).map(u=>u.orderId))], sumberData: 'hitung_ulang_tanggal',
+    });
+    nPayoutBaru++;
+  });
+  recomputeUndoSnapshot = null;
+  await saveState();
+  return { nPayoutBaru };
 }
 
 function cleanupPendingAlreadySettled() {
@@ -1599,16 +1684,12 @@ function renderImport(container) {
     </div>
 
     <div class="panel">
-      <h2>Alokasikan Order ke Kontrak</h2>
-      <div class="desc">Kebalikan dari "Batalkan Alokasi" -- utk order yang SUDAH tercatat sbg penjualan di Database Penjualan (produk Urban Outdoor) tapi TIDAK punya alokasi investor sama sekali (mis. habis dibatalkan lewat panel di atas, atau dulu diinput manual saat produknya kebetulan tidak punya kontrak aktif). Order TIDAK disentuh, cuma dibuatkan payout baru ke kontrak yang kamu pilih &amp; stok kontrak itu dikurangi.</div>
-      <div class="grid2">
-        <div class="field"><label>Order ID</label><input type="text" id="aok_orderId" placeholder="mis. 585620049046766664"></div>
-        <div class="field"><label>Kontrak Tujuan (harus aktif/DANA BELUM CAIR)</label>
-          <select id="aok_kontrak"><option value="">Pilih kontrak</option>${STATE.contracts.filter(c=>c.status==='DANA BELUM CAIR').map(c=>{const partner=findPartnerById(c.capitalPartnerId);return `<option value="${c.id}">${c.kodeKontrak} -- ${c.produk} -- ${partner?partner.nama:'?'} (sisa ${c.stockAkhir})</option>`;}).join('')}</select>
-        </div>
-      </div>
-      <button class="btn btn-ghost" id="btnAlokasikanOrderKeKontrak" style="margin-top:8px;">Cek &amp; Alokasikan</button>
-      <div class="status-box" id="alokasikanOrderMsg"></div>
+      <h2>Hitung Ulang Alokasi per Tanggal Penarikan</h2>
+      <div class="desc">Utk order yang SUDAH tercatat sbg penjualan di Database Penjualan (produk Urban Outdoor) tapi TIDAK punya alokasi investor sama sekali di suatu Tanggal Penarikan (mis. habis dibatalkan lewat panel "Batalkan Alokasi" di atas) -- terutama order isi BANYAK produk sekaligus, yg tidak bisa dibetulkan dgn memilih 1 kontrak saja. Fitur ini menghapus SEMUA payout investor di tanggal yg dipilih, lalu menghitung ulang dari nol dari SEMUA order Urban Outdoor yang tercatat di tanggal tsb (persentase &amp; FIFO antar kontrak dihitung otomatis, sama seperti Import Mingguan biasa). ⚠ Payout yang sudah ditandai "Sudah Dibayar" di tanggal ini akan HILANG status itu &amp; perlu ditandai ulang manual setelah hitung ulang.</div>
+      <div class="field" style="max-width:260px;"><label>Tanggal Penarikan</label><input type="date" id="rc_tanggal"></div>
+      <button class="btn btn-ghost" id="btnCekRecompute" style="margin-top:8px;">Cek Tanggal Ini</button>
+      <div class="status-box" id="recomputeMsg"></div>
+      <div id="recomputeArea" style="margin-top:10px;"></div>
     </div>
 
     <div class="panel">
@@ -1721,26 +1802,21 @@ function renderImport(container) {
       }
     });
 
-    const btnAlokasikan = document.getElementById('btnAlokasikanOrderKeKontrak');
-    if (btnAlokasikan) btnAlokasikan.addEventListener('click', async () => {
-      const msg = document.getElementById('alokasikanOrderMsg');
-      const orderId = document.getElementById('aok_orderId').value.trim();
-      const contractId = document.getElementById('aok_kontrak').value;
-      if (!orderId || !contractId) { showMsg(msg, 'err', 'Isi Order ID dan pilih kontrak tujuan dulu.'); return; }
-      showMsg(msg, 'info', 'Memproses...');
-      try {
-        const r = alokasikanOrderKeKontrak(orderId, contractId);
-        if (r.sudahLengkap) {
-          showMsg(msg, 'info', 'Tidak ada yang dialokasikan -- order ini utk produk kontrak tsb sepertinya sudah punya payout lengkap.');
-        } else {
-          await saveState();
-          showMsg(msg, 'ok', `${r.qtyDialokasikan} unit dialokasikan ke kontrak ${r.kodeKontrak}.` + (r.sisaTidakTertampung > 0 ? ` ⚠ ${r.sisaTidakTertampung} unit lagi belum tertampung (stok kontrak ini tidak cukup) -- pilih kontrak lain utk sisanya.` : ''));
-          document.getElementById('aok_orderId').value = '';
-          renderImport(container);
-        }
-      } catch (e) {
-        showMsg(msg, 'err', 'Gagal: ' + e.message);
+    const btnCekRecompute = document.getElementById('btnCekRecompute');
+    if (btnCekRecompute) btnCekRecompute.addEventListener('click', () => {
+      const msg = document.getElementById('recomputeMsg');
+      const dateStr = document.getElementById('rc_tanggal').value;
+      if (!dateStr) { showMsg(msg, 'err', 'Pilih tanggal penarikan dulu.'); return; }
+      const summary = summarizeRecomputeForDate(dateStr);
+      if (summary.nPayoutLama === 0 && summary.nOrderRows === 0) {
+        showMsg(msg, 'err', `Tidak ada payout investor maupun baris penjualan Urban Outdoor di tanggal ${dateStr}.`);
+        recomputeSummary = null;
+        renderRecomputeArea(document.getElementById('recomputeArea'), container);
+        return;
       }
+      recomputeSummary = summary; recomputePreviewResult = null; recomputeRolloverResolutions = {};
+      showMsg(msg, 'info', 'Cek ringkasan di bawah sebelum konfirmasi.');
+      renderRecomputeArea(document.getElementById('recomputeArea'), container);
     });
 
     const storeSelect = document.getElementById('imp_store');
@@ -1768,6 +1844,7 @@ function renderImport(container) {
   if (btnRun) btnRun.addEventListener('click', runWeeklyImport);
   if (lastBatchResult) renderImportPreview(document.getElementById('importPreview'), lastBatchResult);
   if (manualPreviewResult) renderManualPreview(document.getElementById('manualPreviewArea'), container);
+  if (recomputeSummary || recomputePreviewResult) renderRecomputeArea(document.getElementById('recomputeArea'), container);
 }
 
 async function runWeeklyImport() {
@@ -1998,7 +2075,7 @@ function renderManualPreview(el, container) {
         kalau disimpan sekarang, unit ini TIDAK akan terikat ke investor manapun (persis kasus yg pernah ditemukan sebelumnya).
         Sebaiknya tambah/aktifkan kontrak dulu di tab <b>Produk &amp; Kontrak</b>, lalu ulangi "Cek &amp; Proses" di atas.
         Kalau tetap mau disimpan sekarang, pakai tombol "Simpan Tanpa Investor" di bawah, lalu alokasikan belakangan lewat
-        panel <b>"Alokasikan Order ke Kontrak"</b> begitu kontraknya sudah ada.
+        panel <b>"Hitung Ulang Alokasi per Tanggal Penarikan"</b> begitu kontraknya sudah ada.
       </div>` : ''}
       ${perluKontrakBaru.length ? `<div class="status-box show err" style="margin-top:10px;">
         <b>⚠ PERLU KEPUTUSAN -- Kontrak Habis (wajib diputuskan sebelum simpan):</b>
@@ -2042,6 +2119,103 @@ async function confirmManualTransaction(container) {
   } catch (e) {
     showMsg(msg, 'err', 'Gagal simpan: ' + e.message);
   }
+}
+
+// Panel "Hitung Ulang Alokasi per Tanggal Penarikan" -- 2 tampilan tergantung state:
+//   1. recomputeSummary ada, recomputePreviewResult belum -- tahap konfirmasi (READ-ONLY, blm ada yg dihapus).
+//   2. recomputePreviewResult ada -- payout lama SUDAH dihapus (lewat beginRecomputeForDate), tampilkan
+//      alokasi baru utk dicek/diputuskan (termasuk rollover kalau ada) sebelum final -- "Batal" di sini
+//      memanggil undoRecomputeForDate() supaya payout lama kembali PERSIS spt semula.
+function renderRecomputeArea(el, container) {
+  if (recomputePreviewResult) { renderRecomputePreview(el, container); return; }
+  if (!recomputeSummary) { el.innerHTML = ''; return; }
+  const s = recomputeSummary;
+  el.innerHTML = `
+    <div style="border:1px solid var(--line); border-radius:6px; padding:14px; background:#F8F7F3;">
+      <div style="font-weight:600; margin-bottom:8px;">Konfirmasi Hitung Ulang -- ${s.dateStr}</div>
+      <table class="data compact">
+        <tbody>
+          <tr><td>Payout investor saat ini di tanggal ini (akan DIHAPUS)</td><td class="num">${s.nPayoutLama} payout / ${s.totalQtyPayoutLama} unit</td></tr>
+          <tr><td>Total nilai payout yang akan dihapus</td><td class="num">${fmtRp(s.totalRpPayoutLama)}</td></tr>
+          <tr><td>Baris Database Penjualan Urban Outdoor di tanggal ini (dasar hitung ulang)</td><td class="num">${s.nOrderRows} baris / ${s.totalQtyOrderRows} unit</td></tr>
+        </tbody>
+      </table>
+      ${s.sudahDibayarList.length ? `<div class="status-box show err" style="margin-top:10px;">
+        <b>⚠ ${s.sudahDibayarList.length} payout di tanggal ini SUDAH ditandai "Sudah Dibayar"</b> -- status itu akan HILANG (payout lama dihapus, diganti payout baru yang belum dibayar) &amp; perlu ditandai ulang manual setelah hitung ulang selesai:
+        <div style="font-size:11px; margin-top:6px; line-height:1.8;">
+          ${s.sudahDibayarList.map(p => `${p.namaInvestor||'-'} &middot; ${p.kodeKontrak||'-'} &middot; ${p.qty} unit &middot; ${fmtRp(p.payout||0)}`).join('<br>')}
+        </div>
+      </div>` : ''}
+      <div style="margin-top:12px; display:flex; gap:8px;">
+        <button class="btn btn-primary" id="btnMulaiRecompute">Ya, Hapus &amp; Hitung Ulang</button>
+        <button class="btn btn-ghost" id="btnBatalRecomputeSummary">Batal</button>
+      </div>
+    </div>
+  `;
+  document.getElementById('btnMulaiRecompute').addEventListener('click', () => {
+    try {
+      recomputePreviewResult = beginRecomputeForDate(s.dateStr);
+      recomputeRolloverResolutions = {};
+      renderRecomputeArea(el, container);
+    } catch (e) {
+      showMsg(document.getElementById('recomputeMsg'), 'err', 'Gagal: ' + e.message);
+    }
+  });
+  document.getElementById('btnBatalRecomputeSummary').addEventListener('click', () => {
+    recomputeSummary = null;
+    renderRecomputeArea(el, container);
+  });
+}
+
+function renderRecomputePreview(el, container) {
+  const result = recomputePreviewResult;
+  const perluKontrakBaru = result.allocations.filter(a => a.perluKontrakBaru);
+  const semuaTerselesaikan = perluKontrakBaru.every(a => recomputeRolloverResolutions[a.kode2 + '|' + a.produk]);
+  const rerender = () => renderRecomputePreview(el, container);
+  const totalPayoutBaru = result.allocations.reduce((s,a) => s + (a.payout||0), 0);
+  el.innerHTML = `
+    <div style="border:1px solid var(--line); border-radius:6px; padding:14px; background:#F8F7F3;">
+      <div style="font-weight:600; margin-bottom:8px;">Preview Alokasi Baru -- ${result.dateStr} <span style="font-weight:400; color:var(--ink-soft);">(${result.nPayoutLamaDihapus} payout lama sudah dihapus, BELUM final -- klik Batal utk kembalikan)</span></div>
+      <table class="data compact">
+        <thead><tr><th>Produk</th><th>Investor</th><th>Kode Kontrak</th><th class="num">Qty</th><th class="num">Payout</th><th>Catatan</th></tr></thead>
+        <tbody>${result.allocations.map(a => `<tr>
+          <td>${a.produk}</td><td>${a.namaInvestor||'-'}</td><td>${a.kodeKontrak||'-'}</td>
+          <td class="num">${a.qty}</td><td class="num">${a.payout?fmtRpCompact(a.payout):'-'}</td>
+          <td style="font-size:11px;color:var(--ink-soft);white-space:normal;">${a.catatan||'-'}</td>
+        </tr>`).join('')}</tbody>
+      </table>
+      <div style="margin-top:8px; font-size:12px;">Total payout baru: <b>${fmtRp(totalPayoutBaru)}</b></div>
+      ${perluKontrakBaru.length ? `<div class="status-box show err" style="margin-top:10px;">
+        <b>⚠ PERLU KEPUTUSAN -- Kontrak Habis (wajib diputuskan sebelum simpan):</b>
+        ${perluKontrakBaru.map(a => renderRolloverCase(a, a.kode2 + '|' + a.produk, recomputeRolloverResolutions)).join('')}
+      </div>` : ''}
+      <div style="margin-top:12px; display:flex; gap:8px;">
+        <button class="btn btn-primary" id="btnKonfirmasiRecompute" ${!semuaTerselesaikan?'disabled':''}>Konfirmasi &amp; Simpan Alokasi Baru</button>
+        <button class="btn btn-ghost" id="btnBatalRecomputePreview">Batal (kembalikan payout lama)</button>
+      </div>
+      <div class="status-box" id="recomputeConfirmMsg"></div>
+    </div>
+  `;
+  wireRolloverHandlers(el, recomputeRolloverResolutions, rerender);
+  document.getElementById('btnBatalRecomputePreview').addEventListener('click', () => {
+    undoRecomputeForDate();
+    recomputePreviewResult = null; recomputeSummary = null; recomputeRolloverResolutions = {};
+    renderImport(container);
+  });
+  const btnKonfirmasi = document.getElementById('btnKonfirmasiRecompute');
+  if (btnKonfirmasi) btnKonfirmasi.addEventListener('click', async () => {
+    const msg = document.getElementById('recomputeConfirmMsg');
+    showMsg(msg, 'info', 'Menyimpan...');
+    try {
+      const { nPayoutBaru } = await finalizeRecomputeForDate(result, recomputeRolloverResolutions);
+      recomputePreviewResult = null; recomputeSummary = null; recomputeRolloverResolutions = {};
+      const rcTanggal = document.getElementById('rc_tanggal'); if (rcTanggal) rcTanggal.value = '';
+      showMsg(document.getElementById('recomputeMsg'), 'ok', `Hitung ulang selesai -- ${nPayoutBaru} payout baru dibuat utk ${result.dateStr}. Cek Laporan Penarikan &amp; tandai ulang "Sudah Dibayar" kalau ada yang perlu.`);
+      renderImport(container);
+    } catch (e) {
+      showMsg(msg, 'err', 'Gagal simpan: ' + e.message);
+    }
+  });
 }
 
 let expandedProduk = null;
