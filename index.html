@@ -1567,6 +1567,10 @@ function summarizeRecomputeForDate(dateStr) {
     totalQtyPayoutLama: payoutsForDate.reduce((s,p) => s + (p.qty||0), 0),
     totalRpPayoutLama: payoutsForDate.reduce((s,p) => s + (p.payout||0), 0),
     sudahDibayarList: sudahDibayar.map(p => ({ namaInvestor: p.namaInvestor, kodeKontrak: p.kodeKontrak, qty: p.qty, payout: p.payout })),
+    // Rincian SEMUA payout yg ada saat ini (bukan cuma yg sudah dibayar) -- supaya kalau ada yg kelihatan
+    // ganjil (mis. lebih dari 1 baris utk kode kontrak yg sama di tanggal yg sama, sisa dari proses lama
+    // yg belum bersih), langsung kelihatan di sini SEBELUM diputuskan hitung ulang lagi, bukan ketebak2an.
+    rincianPayoutLama: payoutsForDate.map(p => ({ namaInvestor: p.namaInvestor, kodeKontrak: p.kodeKontrak, produk: p.produk, qty: p.qty, payout: p.payout, sumberData: p.sumberData||'-', sudahDibayar: !!p.tanggalDibayar })),
     nOrderRows: rowsForDate.length,
     totalQtyOrderRows: rowsForDate.reduce((s,r) => s + (r.qty||1), 0),
   };
@@ -2344,6 +2348,17 @@ function renderRecomputeArea(el, container) {
           <tr><td>Baris Database Penjualan Urban Outdoor di tanggal ini (dasar hitung ulang)</td><td class="num">${s.nOrderRows} baris / ${s.totalQtyOrderRows} unit</td></tr>
         </tbody>
       </table>
+      ${s.rincianPayoutLama.length ? `<details style="margin-top:10px;">
+        <summary style="cursor:pointer; font-size:12px; color:var(--ink-soft);">Lihat rincian ${s.rincianPayoutLama.length} payout lama yang akan dihapus (per investor/kontrak)</summary>
+        <table class="data compact" style="margin-top:6px;">
+          <thead><tr><th>Investor</th><th>Kode Kontrak</th><th>Produk</th><th class="num">Qty</th><th class="num">Payout</th><th>Sumber</th><th>Status</th></tr></thead>
+          <tbody>${s.rincianPayoutLama.map(p => `<tr>
+            <td>${p.namaInvestor||'-'}</td><td>${p.kodeKontrak||'-'}</td><td>${p.produk||'-'}</td>
+            <td class="num">${p.qty}</td><td class="num">${fmtRpCompact(p.payout||0)}</td>
+            <td style="font-size:11px;">${p.sumberData}</td><td style="font-size:11px;">${p.sudahDibayar?'Sudah Dibayar':'-'}</td>
+          </tr>`).join('')}</tbody>
+        </table>
+      </details>` : ''}
       ${s.sudahDibayarList.length ? `<div class="status-box show err" style="margin-top:10px;">
         <b>⚠ ${s.sudahDibayarList.length} payout di tanggal ini SUDAH ditandai "Sudah Dibayar"</b> -- status itu akan HILANG (payout lama dihapus, diganti payout baru yang belum dibayar) &amp; perlu ditandai ulang manual setelah hitung ulang selesai:
         <div style="font-size:11px; margin-top:6px; line-height:1.8;">
