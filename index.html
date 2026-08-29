@@ -1437,6 +1437,7 @@ let recomputeSummary = null;       // hasil summarizeRecomputeForDate (tahap kon
 let recomputePreviewResult = null; // hasil beginRecomputeForDate (SUDAH menghapus payout lama, blm final)
 let recomputeRolloverResolutions = {};
 let koreksiTanggalPreview = null; // hasil previewKoreksiTanggalPenarikan (tahap konfirmasi, blm ada mutasi)
+let vendorOrphanFollowup = null; // { tanggalBaru, orphansByDate: {tanggalLama: [...vendorPayouts]} } -- muncul SETELAH koreksi tanggal orderDb sukses
 
 function labelForPlatform(platform) {
   if (platform === 'Shopee') return { order: 'Order All', income: 'Income Sudah Dilepas' };
@@ -1609,6 +1610,27 @@ function terapkanKoreksiTanggalPenarikan(orderIds, tanggalBaruStr) {
   const tglIso = new Date(tanggalBaruStr + 'T00:00:00.000Z').toISOString();
   let nUpdated = 0;
   STATE.orderDb.forEach(r => { if (orderIds.includes(r.orderId)) { r.tanggalPenarikan = tglIso; nUpdated++; } });
+  return { nUpdated };
+}
+
+// Pembayaran Konveksi/Supplier (STATE.vendorPayouts) TIDAK menyimpan orderIds sama sekali -- cuma agregat
+// per [tanggalDihitung, brand] (lihat applyBatchResult: 1 entri vendorPayouts bisa mewakili BANYAK order
+// sekaligus dari 1 batch). Krn itu koreksi tanggal di atas SENGAJA tidak ikut memindahkan vendorPayouts --
+// beresiko salah kalau entrinya ternyata gabungan bbrp order. Fungsi ini HANYA menganggap suatu entri
+// vendorPayouts "aman dipindah" kalau, SETELAH koreksi orderDb di atas, sudah TIDAK ADA SATU PUN baris
+// orderDb (brand apapun) yg masih mengacu ke tanggal lama itu -- artinya tanggal lama itu memang sudah
+// "kosong" & entri vendorPayouts yg nyangkut di sana pasti murni milik order yg baru saja dipindah, bukan
+// tercampur order lain yg TIDAK ikut dipindah.
+function cariVendorPayoutYatimSetelahKoreksi(tanggalLamaStr) {
+  const masihAdaOrderDb = STATE.orderDb.some(r => r.tanggalPenarikan && r.tanggalPenarikan.slice(0,10) === tanggalLamaStr);
+  if (masihAdaOrderDb) return []; // tanggal lama masih dipakai order lain -- jangan sentuh, tidak aman dipisah
+  return STATE.vendorPayouts.filter(v => v.tanggalDihitung && v.tanggalDihitung.slice(0,10) === tanggalLamaStr);
+}
+
+function pindahkanVendorPayoutKeTanggalBaru(vendorPayoutIds, tanggalBaruStr) {
+  const tglIso = new Date(tanggalBaruStr + 'T00:00:00.000Z').toISOString();
+  let nUpdated = 0;
+  STATE.vendorPayouts.forEach(v => { if (vendorPayoutIds.includes(v.id)) { v.tanggalDihitung = tglIso; nUpdated++; } });
   return { nUpdated };
 }
 
@@ -1905,6 +1927,7 @@ function renderImport(container) {
   if (manualPreviewResult) renderManualPreview(document.getElementById('manualPreviewArea'), container);
   if (recomputeSummary || recomputePreviewResult) renderRecomputeArea(document.getElementById('recomputeArea'), container);
   if (koreksiTanggalPreview) renderKoreksiTanggalArea(document.getElementById('koreksiTanggalArea'), container);
+  if (vendorOrphanFollowup) renderVendorOrphanFollowup(document.getElementById('koreksiTanggalArea'), container);
 }
 
 async function runWeeklyImport() {
@@ -2320,10 +2343,21 @@ function renderKoreksiTanggalArea(el, container) {
     try {
       const { nUpdated } = terapkanKoreksiTanggalPenarikan(p.orderIds, p.tanggalBaru);
       await saveState();
+      // Cek apakah ada Pembayaran Konveksi/Supplier yg "ketinggalan" di tanggal lama -- vendorPayouts TIDAK
+      // menyimpan orderIds, jadi ini cuma ditawarkan kalau tanggal lama itu SUDAH benar2 kosong dari orderDb
+      // (lihat catatan di cariVendorPayoutYatimSetelahKoreksi).
+      const orphansByDate = {};
+      p.tanggalLamaSet.filter(Boolean).forEach(tglLama => {
+        const orphans = cariVendorPayoutYatimSetelahKoreksi(tglLama);
+        if (orphans.length) orphansByDate[tglLama] = orphans;
+      });
       koreksiTanggalPreview = null;
       const ktOrderIds = document.getElementById('kt_orderIds'); if (ktOrderIds) ktOrderIds.value = '';
       const ktTanggalBaru = document.getElementById('kt_tanggalBaru'); if (ktTanggalBaru) ktTanggalBaru.value = '';
       showMsg(document.getElementById('koreksiTanggalMsg'), 'ok', `${nUpdated} baris Database Penjualan diperbarui ke tanggal ${fmtTanggal(p.tanggalBaru)}.`);
+      if (Object.keys(orphansByDate).length) {
+        vendorOrphanFollowup = { tanggalBaru: p.tanggalBaru, orphansByDate };
+      }
       renderImport(container);
     } catch (e) {
       showMsg(msg, 'err', 'Gagal: ' + e.message);
@@ -2331,6 +2365,53 @@ function renderKoreksiTanggalArea(el, container) {
   });
   const btnBatal = document.getElementById('btnBatalKoreksiTanggal');
   if (btnBatal) btnBatal.addEventListener('click', () => { koreksiTanggalPreview = null; renderKoreksiTanggalArea(el, container); });
+}
+
+// Muncul SETELAH koreksi tanggal orderDb berhasil, HANYA kalau ditemukan entri Pembayaran Konveksi/Supplier
+// yg "ketinggalan" di tanggal lama & sudah terbukti aman dipindah (lihat cariVendorPayoutYatimSetelahKoreksi
+// -- tanggal lama itu sudah benar2 kosong dari orderDb apapun, jadi entri ini pasti murni milik order yg
+// baru saja dikoreksi). Opsional -- boleh diabaikan (klik Lewati) kalau user mau urus manual sendiri.
+function renderVendorOrphanFollowup(el, container) {
+  if (!vendorOrphanFollowup) { el.innerHTML = ''; return; }
+  const f = vendorOrphanFollowup;
+  const allOrphans = Object.values(f.orphansByDate).flat();
+  const totalRp = allOrphans.reduce((s,v) => s + (v.total||0), 0);
+  el.innerHTML = `
+    <div style="border:1px solid var(--line); border-radius:6px; padding:14px; background:#F8F7F3; margin-top:10px;">
+      <div style="font-weight:600; margin-bottom:8px;">⚠ Ditemukan Pembayaran Konveksi/Supplier yang Ketinggalan di Tanggal Lama</div>
+      <div class="desc">Tanggal Penjualan sudah dikoreksi, tapi Pembayaran Konveksi/Supplier (biaya ke pembuat barang) utk order ini TIDAK ikut pindah otomatis -- fitur ini tidak menyimpan Order ID per entri, cuma agregat per tanggal+brand. Entri di bawah ini AMAN dipindah krn tanggal lamanya sudah tidak dipakai order manapun lagi (dipastikan sblm ditawarkan), jadi pasti murni milik order yang baru dikoreksi.</div>
+      <table class="data compact" style="margin-top:8px;">
+        <thead><tr><th>Tgl Lama</th><th>Brand</th><th>Produk</th><th class="num">Qty</th><th class="num">Total</th></tr></thead>
+        <tbody>${Object.entries(f.orphansByDate).map(([tglLama, orphans]) => orphans.map(v => `<tr>
+          <td>${fmtTanggal(tglLama)}</td><td>${v.brand}</td><td>${v.produk}</td><td class="num">${v.qty}</td><td class="num">${fmtRp(v.total)}</td>
+        </tr>`).join('')).join('')}</tbody>
+      </table>
+      <div style="margin-top:8px; font-size:12px;">Total: <b>${fmtRp(totalRp)}</b> -- akan dipindah ke tanggal <b>${fmtTanggal(f.tanggalBaru)}</b></div>
+      <div style="margin-top:12px; display:flex; gap:8px;">
+        <button class="btn btn-primary" id="btnPindahkanVendorOrphan">Ya, Pindahkan Juga</button>
+        <button class="btn btn-ghost" id="btnLewatiVendorOrphan">Lewati (urus manual sendiri)</button>
+      </div>
+      <div class="status-box" id="vendorOrphanMsg"></div>
+    </div>
+  `;
+  document.getElementById('btnPindahkanVendorOrphan').addEventListener('click', async () => {
+    const msg = document.getElementById('vendorOrphanMsg');
+    showMsg(msg, 'info', 'Menyimpan...');
+    try {
+      const ids = allOrphans.map(v => v.id);
+      const { nUpdated } = pindahkanVendorPayoutKeTanggalBaru(ids, f.tanggalBaru);
+      await saveState();
+      vendorOrphanFollowup = null;
+      showMsg(document.getElementById('koreksiTanggalMsg'), 'ok', `${nUpdated} entri Pembayaran Konveksi/Supplier juga dipindah ke tanggal ${fmtTanggal(f.tanggalBaru)}.`);
+      renderImport(container);
+    } catch (e) {
+      showMsg(msg, 'err', 'Gagal: ' + e.message);
+    }
+  });
+  document.getElementById('btnLewatiVendorOrphan').addEventListener('click', () => {
+    vendorOrphanFollowup = null;
+    renderVendorOrphanFollowup(el, container);
+  });
 }
 
 let expandedProduk = null;
