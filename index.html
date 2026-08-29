@@ -468,40 +468,49 @@ function allocateUnitsToContracts(qtyPerProduk, cairSkuRows) {
           qty, rate: null, payout: null, catatan: 'Investor tidak ditemukan', orderUnits: assignedUnits, skuBreakdown: {}, hargaModalPcs: null });
         return;
       }
-      // Ambil SEMUA kontrak aktif investor ini utk produk ini (urut FIFO) -- kalau kontrak pertama habis di tengah,
-      // sisa qty otomatis "meluber" ke kontrak berikutnya yg SUDAH ADA (spt kasus IWO013 -> IWO014 di histori).
+      // Ambil kontrak aktif investor ini utk produk ini, urut FIFO (paling awal tanggalMasuk duluan) -- HANYA
+      // kontrak yg PALING AWAL yg dipakai. Kalau kontrak itu habis di tengah, sisanya TIDAK BOLEH diam2
+      // "meluber" ke kontrak aktif LAIN milik investor yg sama (mis. investor ID py IDO047 & IDO048 -- IDO047
+      // habis TIDAK otomatis lanjut ke IDO048) -- tiap kontrak adalah siklus modal investor yg terpisah, jadi
+      // begitu kontrak yg sedang jalan habis, itu HARUS langsung jadi keputusan rollover (Putar Penuh/Modal
+      // Saja/Stop), bukan diam2 dianggap "masih ada kontrak aktif lain jadi lanjut aja". (Sebelumnya sistem
+      // otomatis lanjut ke kontrak aktif berikutnya -- diubah krn investor bisa py >1 kontrak aktif utk 1
+      // produk yg sengaja dikelola sbg siklus modal terpisah, bukan 1 pool gabungan.)
       const activeContractsForPartner = STATE.contracts
         .filter(c => c.produk === produk && c.capitalPartnerId === partner.id && c.status === 'DANA BELUM CAIR')
         .sort((a,b) => new Date(a.tanggalMasuk) - new Date(b.tanggalMasuk));
-      let remaining = qty, cursorInAssigned = 0, terbagi = false;
-      for (const kontrak of activeContractsForPartner) {
-        if (remaining <= 0) break;
-        const qtyForThisContract = Math.min(remaining, kontrak.stockAkhir);
-        if (qtyForThisContract <= 0) continue;
-        const subUnits = assignedUnits.slice(cursorInAssigned, cursorInAssigned + qtyForThisContract);
-        cursorInAssigned += qtyForThisContract; remaining -= qtyForThisContract;
-        if (cursorInAssigned < qty) terbagi = true;
-        const skuBreakdown = {};
-        subUnits.forEach(u => { skuBreakdown[u.sku] = (skuBreakdown[u.sku]||0) + 1; });
-        allocations.push({
-          produk, kode2, namaInvestor: partner.nama, capitalPartnerId: partner.id,
-          kodeKontrak: kontrak.kodeKontrak, contractId: kontrak.id,
-          qty: qtyForThisContract, rate: kontrak.nilaiMargin, payout: qtyForThisContract*kontrak.nilaiMargin,
-          catatan: `${(pct[kode2]*100).toFixed(2)}% dari ${qtyTotal} unit ${produk}` + (terbagi||activeContractsForPartner.indexOf(kontrak)>0 ? ' (lanjutan dari kontrak sebelumnya yg sudah habis)' : ''),
-          orderUnits: subUnits, skuBreakdown, hargaModalPcs: kontrak.hargaModalPcs,
-        });
+      const kontrak = activeContractsForPartner[0] || null;
+      let remaining = qty;
+      if (kontrak) {
+        const qtyForThisContract = Math.min(qty, kontrak.stockAkhir);
+        remaining = qty - qtyForThisContract;
+        if (qtyForThisContract > 0) {
+          const subUnits = assignedUnits.slice(0, qtyForThisContract);
+          const skuBreakdown = {};
+          subUnits.forEach(u => { skuBreakdown[u.sku] = (skuBreakdown[u.sku]||0) + 1; });
+          allocations.push({
+            produk, kode2, namaInvestor: partner.nama, capitalPartnerId: partner.id,
+            kodeKontrak: kontrak.kodeKontrak, contractId: kontrak.id,
+            qty: qtyForThisContract, rate: kontrak.nilaiMargin, payout: qtyForThisContract*kontrak.nilaiMargin,
+            catatan: `${(pct[kode2]*100).toFixed(2)}% dari ${qtyTotal} unit ${produk}`,
+            orderUnits: subUnits, skuBreakdown, hargaModalPcs: kontrak.hargaModalPcs,
+          });
+        }
       }
       if (remaining > 0) {
-        // TIDAK ADA kontrak aktif yg cukup utk sisa ini -- investor perlu kontrak baru (rollover) atau kontrak dihentikan.
-        // BELUM otomatis dibuatkan -- perlu keputusan manual (lihat notifikasi "Perlu Kontrak Baru" di preview batch).
-        const lastContract = activeContractsForPartner[activeContractsForPartner.length - 1]
+        // Kontrak (paling awal/sedang jalan) sudah habis -- investor perlu kontrak baru (rollover) atau
+        // dihentikan, WALAU investor ini kebetulan py kontrak aktif LAIN utk produk yg sama (lihat komentar
+        // di atas -- itu sengaja TIDAK dipakai otomatis). BELUM otomatis dibuatkan -- perlu keputusan manual
+        // (lihat notifikasi "Perlu Kontrak Baru" di preview batch).
+        const lastContract = kontrak
           || STATE.contracts.filter(c => c.produk === produk && c.capitalPartnerId === partner.id)
                .sort((a,b) => new Date(b.tanggalMasuk) - new Date(a.tanggalMasuk))[0] || null;
+        const sisaUnits = kontrak ? assignedUnits.slice(Math.min(qty, kontrak.stockAkhir)) : assignedUnits;
         allocations.push({
           produk, kode2, namaInvestor: partner.nama, capitalPartnerId: partner.id, kodeKontrak: null, contractId: null,
           qty: remaining, rate: null, payout: null,
           catatan: `⚠ ${remaining} unit TIDAK ADA kontrak aktif yg cukup -- kontrak ${partner.nama} utk ${produk} sudah habis, perlu kontrak baru (rollover) atau dihentikan.`,
-          orderUnits: assignedUnits.slice(cursorInAssigned), skuBreakdown: {}, hargaModalPcs: null, perluKontrakBaru: true,
+          orderUnits: sisaUnits, skuBreakdown: {}, hargaModalPcs: null, perluKontrakBaru: true,
           kodeKontrakLama: lastContract ? lastContract.kodeKontrak : null,
           qtyKontrakLama: lastContract ? lastContract.stockAwal : 0,
           hargaModalPcsLama: lastContract ? lastContract.hargaModalPcs : 0,
