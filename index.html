@@ -4171,6 +4171,38 @@ function renderPnl(container) {
    ========================================================================= */
 let dashFilter = { dari: '', sampai: '', preset: 'bulan_ini' };
 
+// Rincian biaya utk 1 toko/platform (dipakai Dashboard, panel "Omzet per Toko/Platform") -- SEMUA komponen di sini
+// tertelusur (traceable) sampai baris order/entri aslinya yg punya nama toko sbg field (r.sumber / a.storeName /
+// r.toko), jadi akurat per toko -- BEDA dgn Payout Capital Partner (investor) yg SENGAJA tidak dipecah di sini,
+// krn payout dihitung per kontrak+tanggal (bukan per toko/order), sehingga tdk bisa dipecah per toko scr pasti
+// tanpa mengira-ngira. Makanya angka "Margin Kotor" di sini adalah SEBELUM payout investor -- utk profit
+// perusahaan setelah payout investor (yg memang company-wide, bukan per toko), lihat tab PNL.
+function computeTokoBreakdown(namaToko, rowsForToko, dari, sampai) {
+  const overlaps = (dariStr, sampaiStr) => {
+    if (!dariStr || !sampaiStr) return false;
+    const a1 = dariStr.slice(0,10), a2 = sampaiStr.slice(0,10);
+    return (!sampai || a1 <= sampai) && (!dari || a2 >= dari);
+  };
+  const omzet = rowsForToko.reduce((s,r) => s + (r.pendapatan||0), 0);
+  const qty = rowsForToko.reduce((s,r) => s + (r.qty||1), 0);
+  const rowsWithModal = rowsForToko.filter(r => r.hargaKonveksi != null);
+  const modal = rowsWithModal.reduce((s,r) => s + (r.qty||1) * r.hargaKonveksi, 0);
+  const qtyTanpaHargaKonveksi = qty - rowsWithModal.reduce((s,r) => s + (r.qty||1), 0);
+  const komisiPlatform = rowsForToko.reduce((s,r) => s + (r.komisiPlatform||0), 0);
+  const biayaLayanan = rowsForToko.reduce((s,r) => s + (r.biayaLayanan||0), 0);
+  const biayaPembayaran = rowsForToko.reduce((s,r) => s + (r.biayaPembayaran||0), 0);
+  const komisiAfiliasi = rowsForToko.reduce((s,r) => s + (r.komisiAfiliasi||0), 0);
+  const komisiDinamis = rowsForToko.reduce((s,r) => s + (r.komisiDinamis||0), 0);
+  const pajak = rowsForToko.reduce((s,r) => s + (r.pajak||0), 0);
+  const adsRows = STATE.adsMingguan.filter(a => a.storeName === namaToko && overlaps(a.tanggalDari, a.tanggalSampai));
+  const biayaIklan = adsRows.reduce((s,a) => s + (a.biaya||0), 0);
+  const returRows = STATE.biayaRetur.filter(r => r.toko === namaToko && r.tanggalDihitung && (() => { const d = r.tanggalDihitung.slice(0,10); return (!dari || d >= dari) && (!sampai || d <= sampai); })());
+  const biayaRetur = returRows.reduce((s,r) => s + (r.jumlah||0), 0);
+  const bebanPenjualan = komisiPlatform + biayaLayanan + biayaPembayaran + komisiAfiliasi + komisiDinamis + pajak + biayaIklan + biayaRetur;
+  const marginKotor = omzet - modal - bebanPenjualan;
+  const marginPct = omzet > 0 ? (marginKotor / omzet * 100) : null;
+  return { omzet, qty, modal, qtyTanpaHargaKonveksi, komisiPlatform, biayaLayanan, biayaPembayaran, komisiAfiliasi, komisiDinamis, pajak, biayaIklan, biayaRetur, bebanPenjualan, marginKotor, marginPct };
+}
 function renderDashboard(container) {
   if (dashFilter.preset !== 'custom' && (!dashFilter.dari || !dashFilter.sampai)) {
     Object.assign(dashFilter, pnlDateRangeFromPreset(dashFilter.preset));
@@ -4182,8 +4214,10 @@ function renderDashboard(container) {
   const totalQty = rows.reduce((s,r) => s + (r.qty||1), 0);
   const totalProfit = rows.reduce((s,r) => s + (r.profit||0), 0);
 
+  const rowsBySumber = {};
+  rows.forEach(r => { const k = r.sumber || 'Tidak diketahui'; rowsBySumber[k] = rowsBySumber[k] || []; rowsBySumber[k].push(r); });
   const bySumber = {};
-  rows.forEach(r => { const k = r.sumber || 'Tidak diketahui'; bySumber[k] = bySumber[k] || {omzet:0,qty:0}; bySumber[k].omzet += r.pendapatan||0; bySumber[k].qty += r.qty||1; });
+  Object.entries(rowsBySumber).forEach(([k, rowsToko]) => { bySumber[k] = computeTokoBreakdown(k, rowsToko, dashFilter.dari, dashFilter.sampai); });
   const sumberList = Object.entries(bySumber).sort((a,b) => b[1].omzet - a[1].omzet);
   const maxOmzetSumber = Math.max(1, ...sumberList.map(([,v]) => v.omzet));
 
@@ -4227,6 +4261,44 @@ function renderDashboard(container) {
     `;
   }
 
+  function renderTokoBreakdown(nama, v) {
+    const baris = (label, rp, opts) => {
+      opts = opts || {};
+      const pct = v.omzet > 0 ? (rp / v.omzet * 100) : null;
+      return `<tr style="${opts.topBorder?'border-top:1px solid var(--ink);':''}">
+        <td style="${opts.bold?'font-weight:600;':''} ${opts.indent?'padding-left:20px; color:var(--ink-soft);':''}">${label}</td>
+        <td class="num" style="${opts.bold?'font-weight:600;':''}">${opts.negative && rp ? '(' + fmtRp(rp) + ')' : fmtRp(rp)}</td>
+        <td class="num" style="color:var(--ink-soft); font-size:11px;">${pct!=null?pct.toFixed(1)+'%':'-'}</td>
+      </tr>`;
+    };
+    return `
+      <div style="background:#F4EFE2; border:1px solid var(--line); border-radius:3px; padding:14px; margin:6px 0 4px;">
+        <table class="data compact">
+          <thead><tr><th>Komponen</th><th class="num">Rp</th><th class="num">% dari Omzet</th></tr></thead>
+          <tbody>
+            ${baris('Omzet', v.omzet, {bold:true})}
+            ${baris('Modal (Konveksi/Supplier)', v.modal, {indent:true, negative:true})}
+            ${v.qtyTanpaHargaKonveksi > 0 ? `<tr><td colspan="3" style="font-size:10.5px; color:var(--err); padding-left:20px;">&#9888; ${v.qtyTanpaHargaKonveksi} unit belum ada data harga konveksi -- Modal di atas KEMUNGKINAN kurang dari yg sebenarnya.</td></tr>` : ''}
+            ${baris('Komisi Platform', v.komisiPlatform, {indent:true, negative:true})}
+            ${baris('Biaya Layanan', v.biayaLayanan, {indent:true, negative:true})}
+            ${baris('Biaya Pembayaran', v.biayaPembayaran, {indent:true, negative:true})}
+            ${baris('Komisi Afiliasi', v.komisiAfiliasi, {indent:true, negative:true})}
+            ${baris('Komisi Dinamis', v.komisiDinamis, {indent:true, negative:true})}
+            ${baris('Pajak', v.pajak, {indent:true, negative:true})}
+            ${baris('Biaya Iklan (Ads Mingguan)', v.biayaIklan, {indent:true, negative:true})}
+            ${baris('Biaya Retur/Refund', v.biayaRetur, {indent:true, negative:true})}
+            ${baris('Total Beban Penjualan', v.bebanPenjualan, {bold:true, topBorder:true})}
+            <tr style="border-top:2px solid var(--ink); font-size:13px;">
+              <td style="font-weight:700; padding-top:8px;">Margin Kotor</td>
+              <td class="num" style="font-weight:700; padding-top:8px; color:${v.marginKotor>=0?'var(--ok)':'var(--err)'};">${fmtRp(v.marginKotor)}</td>
+              <td class="num" style="font-weight:700; padding-top:8px; color:${v.marginKotor>=0?'var(--ok)':'var(--err)'};">${v.marginPct!=null?v.marginPct.toFixed(1)+'%':'-'}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    `;
+  }
+
   container.innerHTML = `
     <div class="panel">
       <h2>Periode</h2>
@@ -4252,12 +4324,20 @@ function renderDashboard(container) {
 
     <div class="panel">
       <h2>Omzet per Toko/Platform</h2>
+      <div class="desc">Margin Kotor = Omzet - Modal (Konveksi) - Beban Penjualan (komisi+biaya+pajak+iklan+retur), SEBELUM Payout Capital Partner (investor) -- payout investor sengaja tidak dipecah per toko krn dihitung per kontrak+tanggal, bukan per toko/order (lihat tab PNL utk profit akhir perusahaan). Klik nama toko utk rincian biaya lengkap.</div>
       ${!sumberList.length ? '<div class="empty-note">Tidak ada data di periode ini.</div>' : sumberList.map(([nama,v]) => `
-        <div style="margin-bottom:10px;">
-          <div style="display:flex; justify-content:space-between; font-size:12px; margin-bottom:3px;">
-            <span>${platformDot(nama)}${nama}</span><span>${fmtRp(v.omzet)} &middot; ${v.qty} unit</span>
+        <div style="margin-bottom:14px; padding-bottom:12px; border-bottom:1px solid var(--line);">
+          <div class="toko-dash-toggle" data-toko-dash="${nama}" style="cursor:pointer;">
+            <div style="display:flex; justify-content:space-between; font-size:12px; margin-bottom:3px;">
+              <span style="text-decoration:underline; color:var(--accent);">${platformDot(nama)}${nama}</span><span>${fmtRp(v.omzet)} &middot; ${v.qty} unit</span>
+            </div>
+            <div style="background:var(--line); border-radius:2px; height:10px;"><div style="background:var(--accent); height:100%; border-radius:2px; width:${(v.omzet/maxOmzetSumber*100).toFixed(1)}%;"></div></div>
+            <div style="display:flex; justify-content:space-between; font-size:11px; margin-top:4px; color:var(--ink-soft);">
+              <span>Modal: ${fmtRpCompact(v.modal)} &middot; Beban Penjualan: ${fmtRpCompact(v.bebanPenjualan)}</span>
+              <span style="font-weight:600; color:${v.marginKotor>=0?'var(--ok)':'var(--err)'};">Margin Kotor: ${fmtRpCompact(v.marginKotor)}${v.marginPct!=null?` (${v.marginPct.toFixed(1)}%)`:''}</span>
+            </div>
           </div>
-          <div style="background:var(--line); border-radius:2px; height:10px;"><div style="background:var(--accent); height:100%; border-radius:2px; width:${(v.omzet/maxOmzetSumber*100).toFixed(1)}%;"></div></div>
+          <div id="tokoDash_${nama}" style="display:none;">${renderTokoBreakdown(nama, v)}</div>
         </div>
       `).join('')}
     </div>
@@ -4288,6 +4368,12 @@ function renderDashboard(container) {
   container.querySelectorAll('[data-produk-dash]').forEach(el => {
     el.addEventListener('click', () => {
       const target = document.getElementById('produkDash_' + el.dataset.produkDash);
+      if (target) target.style.display = target.style.display === 'none' ? 'block' : 'none';
+    });
+  });
+  container.querySelectorAll('[data-toko-dash]').forEach(el => {
+    el.addEventListener('click', () => {
+      const target = document.getElementById('tokoDash_' + el.dataset.tokoDash);
       if (target) target.style.display = target.style.display === 'none' ? 'block' : 'none';
     });
   });
