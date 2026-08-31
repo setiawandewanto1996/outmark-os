@@ -264,6 +264,19 @@ function activeContractFor(produkAsli, capitalPartnerId) {
   return list[0] || null;
 }
 
+// Hitung berapa Stock Awal (unit UTUH) yg bisa "dibeli" dari gabungan Dana Tunai Baru + (opsional) Saldo Luar
+// Kontrak yg sudah ada, dibagi Harga Modal/Pcs -- sisa pecahannya (blm cukup utk 1 unit lagi) dikembalikan
+// terpisah supaya bisa disimpan lagi sbg Saldo Luar Kontrak yg baru. Dipakai oleh kalkulator "Hitung Stock
+// Awal dari Dana" (tombol preview) DAN submit handler form Tambah Kontrak Baru (harus 1 sumber logika yg
+// sama persis, supaya preview yg ditampilkan ke user selalu cocok dgn apa yg beneran disimpan).
+function hitungStockAwalDariDanaSaldo(danaBaru, pakaiSaldo, saldoLama, hargaModalPcs) {
+  const saldoDipakai = pakaiSaldo ? (saldoLama||0) : 0;
+  const totalDana = (danaBaru||0) + saldoDipakai;
+  const stockAwal = hargaModalPcs > 0 ? Math.floor(totalDana / hargaModalPcs) : 0;
+  const sisa = totalDana - stockAwal * (hargaModalPcs||0);
+  return { totalDana, stockAwal, sisa, saldoDipakai };
+}
+
 // Generate kode kontrak berikutnya, meniru pola kode kontrak LAMA yg sedang di-rollover (mis. "IMO021" -> "IMO022"),
 // tapi dicari nomor TERTINGGI yg sudah dipakai utk kombinasi [investor][huruf produk] itu (bukan cuma +1 dari kode lama),
 // supaya tidak tabrakan kalau ada gap/kontrak lain sudah dibuat duluan.
@@ -1372,7 +1385,7 @@ function renderMaster(container) {
       showMsg(msg, 'err', `Kode "${kode2}" sudah dipakai oleh ${STATE.capitalPartners.find(p=>p.kode2===kode2).nama} -- pakai kode lain.`);
       return;
     }
-    STATE.capitalPartners.push({ id: uid('cp'), nama, kode2, kontak, tanggalBergabung, status: 'Aktif', kelompok });
+    STATE.capitalPartners.push({ id: uid('cp'), nama, kode2, kontak, tanggalBergabung, status: 'Aktif', kelompok, saldoLuarKontrak: 0 });
     await withSaving(msg, 'Capital Partner ditambahkan.', async () => {
       await saveState();
       document.getElementById('formPartner').reset();
@@ -1428,7 +1441,7 @@ function renderPartnerList(el) {
   if (!STATE.capitalPartners.length) { el.innerHTML = '<div class="empty-note">Belum ada Capital Partner terdaftar.</div>'; return; }
   el.innerHTML = `
     <table class="data">
-      <thead><tr><th>Kode</th><th>Nama</th><th>Kontak</th><th>Bergabung</th><th>Status</th><th>Kelompok</th><th></th></tr></thead>
+      <thead><tr><th>Kode</th><th>Nama</th><th>Kontak</th><th>Bergabung</th><th>Status</th><th>Kelompok</th><th>Saldo Luar Kontrak</th><th></th></tr></thead>
       <tbody>
         ${STATE.capitalPartners.map(p => `<tr>
           <td><b>${p.kode2}</b></td><td>${p.nama}</td><td>${p.kontak || '-'}</td>
@@ -1438,6 +1451,7 @@ function renderPartnerList(el) {
             <option value="1" ${(p.kelompok||1)==1?'selected':''}>Kelompok 1</option>
             <option value="2" ${(p.kelompok||1)==2?'selected':''}>Kelompok 2</option>
           </select></td>
+          <td><input type="number" class="p-saldo-input" data-partner-id="${p.id}" value="${p.saldoLuarKontrak||0}" min="0" style="width:100px; padding:2px 4px; font-size:12px;"></td>
           <td><button class="icon-del" data-del-partner="${p.id}" title="Hapus">✕</button></td>
         </tr>`).join('')}
       </tbody>
@@ -1455,6 +1469,16 @@ function renderPartnerList(el) {
     sel.addEventListener('change', async () => {
       const partner = STATE.capitalPartners.find(p => p.id === sel.dataset.partnerId);
       if (partner) { partner.kelompok = Number(sel.value); await saveState(); }
+    });
+  });
+  // Saldo Luar Kontrak: dana investor yg SUDAH masuk tapi BELUM terikat ke kontrak/stock manapun (mis. sisa
+  // pecahan dana yg blm cukup utk beli 1 unit lagi). Murni field saldo yg bisa diedit langsung -- TIDAK ikut
+  // dihitung sbg modal aktif di computePembagiPct/Total per Capital Partner (baru dihitung setelah beneran
+  // masuk jadi kontrak lewat kalkulator "Hitung Stock Awal dari Dana" di panel Tambah Kontrak Baru).
+  el.querySelectorAll('.p-saldo-input').forEach(inp => {
+    inp.addEventListener('change', async () => {
+      const partner = STATE.capitalPartners.find(p => p.id === inp.dataset.partnerId);
+      if (partner) { partner.saldoLuarKontrak = Number(inp.value) || 0; await saveState(); }
     });
   });
 }
@@ -3194,14 +3218,24 @@ function renderKontrak(container) {
             <select id="k_partner" required><option value="">Pilih partner</option>${STATE.capitalPartners.map(p=>`<option value="${p.id}">${p.kode2} - ${p.nama}</option>`).join('')}</select>
           </div>
         </div>
+        <div id="k_saldoInfo" style="display:none; font-size:11.5px; color:var(--ink-soft); margin:2px 0 10px;"></div>
         <div class="grid2">
           <div class="field"><label>Kode Kontrak</label><input type="text" id="k_kode" required placeholder="mis. IDO049" style="text-transform:uppercase;"></div>
           <div class="field"><label>Tanggal Masuk</label><input type="date" id="k_tanggal" required></div>
         </div>
-        <div class="grid2">
-          <div class="field"><label>Stock Awal (qty)</label><input type="number" id="k_stock" required min="1"></div>
-          <div class="field"><label>Harga Modal/Pcs (Rp)</label><input type="number" id="k_harga" required min="0"></div>
+        <div class="field"><label>Harga Modal/Pcs (Rp)</label><input type="number" id="k_harga" required min="0"></div>
+        <div style="background:#F4EFE2; border:1px solid var(--line); border-radius:3px; padding:10px; margin:10px 0;">
+          <div style="font-size:11.5px; font-weight:600; margin-bottom:6px;">Opsional: Hitung Stock Awal dari Dana Tunai Masuk (bisa digabung dgn Saldo Luar Kontrak partner ini)</div>
+          <div class="grid2">
+            <div class="field"><label>Dana Tunai Baru Masuk (Rp)</label><input type="number" id="k_danaBaru" min="0" placeholder="0"></div>
+            <div class="field" style="display:flex; align-items:flex-end; padding-bottom:8px;">
+              <label style="display:flex; align-items:center; gap:6px; font-size:12px; font-weight:400; cursor:pointer;"><input type="checkbox" id="k_pakaiSaldo"> Gabungkan dgn Saldo Luar Kontrak</label>
+            </div>
+          </div>
+          <button type="button" class="btn btn-ghost" id="btnHitungStockDariDana" style="margin-top:2px;">Hitung Stock Awal</button>
+          <div id="k_hitungPreview" style="font-size:11.5px; margin-top:8px; color:var(--ink-soft);"></div>
         </div>
+        <div class="field"><label>Stock Awal (qty)</label><input type="number" id="k_stock" required min="1"></div>
         <div class="field"><label>Nilai Margin per Unit (Rp)</label><input type="number" id="k_margin" required min="0" value="5000"></div>
         <button type="submit" class="btn btn-primary">+ Tambah Kontrak</button>
         <div class="status-box" id="kontrakMsg"></div>
@@ -3282,6 +3316,36 @@ function renderKontrak(container) {
     });
   }
 
+  // ---- Handlers: info Saldo Luar Kontrak + kalkulator "Hitung Stock Awal dari Dana" (Tambah Kontrak Baru) ----
+  const kPartnerSelect = document.getElementById('k_partner');
+  if (kPartnerSelect) kPartnerSelect.addEventListener('change', () => {
+    const infoEl = document.getElementById('k_saldoInfo');
+    const partner = STATE.capitalPartners.find(p => p.id === kPartnerSelect.value);
+    const saldo = partner ? (partner.saldoLuarKontrak||0) : 0;
+    if (partner && saldo > 0) {
+      infoEl.style.display = 'block';
+      infoEl.innerHTML = `${partner.nama} punya Saldo Luar Kontrak: <b>${fmtRp(saldo)}</b> -- bisa digabung lewat kalkulator di bawah.`;
+    } else {
+      infoEl.style.display = 'none';
+      infoEl.innerHTML = '';
+    }
+    document.getElementById('k_hitungPreview').innerHTML = '';
+  });
+  const btnHitungStockDariDana = document.getElementById('btnHitungStockDariDana');
+  if (btnHitungStockDariDana) btnHitungStockDariDana.addEventListener('click', () => {
+    const preview = document.getElementById('k_hitungPreview');
+    const harga = Number(document.getElementById('k_harga').value);
+    const danaBaru = Number(document.getElementById('k_danaBaru').value) || 0;
+    const pakaiSaldo = document.getElementById('k_pakaiSaldo').checked;
+    const partner = STATE.capitalPartners.find(p => p.id === kPartnerSelect.value);
+    if (!partner) { preview.innerHTML = '<span style="color:var(--err);">Pilih Capital Partner dulu.</span>'; return; }
+    if (!harga || harga <= 0) { preview.innerHTML = '<span style="color:var(--err);">Isi Harga Modal/Pcs dulu.</span>'; return; }
+    const saldoLama = partner.saldoLuarKontrak||0;
+    const { totalDana, stockAwal: stockAwalHitung, sisa } = hitungStockAwalDariDanaSaldo(danaBaru, pakaiSaldo, saldoLama, harga);
+    document.getElementById('k_stock').value = stockAwalHitung;
+    preview.innerHTML = `Total dana ${fmtRp(totalDana)} (tunai ${fmtRp(danaBaru)}${pakaiSaldo?` + saldo ${fmtRp(saldoLama)}`:''}) &divide; ${fmtRp(harga)}/pcs = <b>${stockAwalHitung} unit</b>. Sisa ${fmtRp(sisa)} akan ${pakaiSaldo ? 'MENGGANTIKAN' : 'ditambahkan ke'} Saldo Luar Kontrak ${partner.kode2} begitu kontrak ini disimpan.`;
+  });
+
   // ---- Handlers: Tambah Kontrak ----
   document.getElementById('formKontrak').addEventListener('submit', async (ev) => {
     ev.preventDefault();
@@ -3293,9 +3357,31 @@ function renderKontrak(container) {
     const stockAwal = Number(document.getElementById('k_stock').value);
     const hargaModalPcs = Number(document.getElementById('k_harga').value);
     const nilaiMargin = Number(document.getElementById('k_margin').value);
+    const danaBaru = Number(document.getElementById('k_danaBaru').value) || 0;
+    const pakaiSaldo = document.getElementById('k_pakaiSaldo').checked;
     if (STATE.contracts.some(c => c.kodeKontrak === kodeKontrak)) { showMsg(msg, 'err', `Kode kontrak "${kodeKontrak}" sudah ada.`); return; }
+
+    // Kalau kalkulator "Hitung Stock Awal dari Dana Tunai/Saldo Luar Kontrak" dipakai (ditandai dgn Dana
+    // Tunai Baru diisi dan/atau checkbox "gabung saldo" dicentang), terapkan hasilnya ke Saldo Luar Kontrak
+    // partner -- TAPI cuma kalau Stock Awal yg mau disimpan PERSIS sama dgn hasil hitungannya, supaya
+    // saldo tidak ikut berubah diam2 kalau user belum klik "Hitung Stock Awal" atau sudah mengubah Stock
+    // Awal secara manual belakangan (kalau beda, tanya dulu lewat confirm sebelum lanjut TANPA update saldo).
+    const partner = STATE.capitalPartners.find(p => p.id === capitalPartnerId);
+    let saldoUpdateMsg = '';
+    if (danaBaru > 0 || pakaiSaldo) {
+      if (!hargaModalPcs || hargaModalPcs <= 0) { showMsg(msg, 'err', 'Isi Harga Modal/Pcs dulu utk memakai Dana Tunai Baru/Saldo Luar Kontrak.'); return; }
+      const saldoLama = partner ? (partner.saldoLuarKontrak||0) : 0;
+      const { stockAwal: stockAwalHitung, sisa } = hitungStockAwalDariDanaSaldo(danaBaru, pakaiSaldo, saldoLama, hargaModalPcs);
+      if (stockAwal !== stockAwalHitung) {
+        if (!confirm(`Stock Awal yg mau disimpan (${stockAwal}) beda dgn hasil hitung dari Dana Tunai Baru/Saldo (${stockAwalHitung} unit, sisa ${fmtRp(sisa)}). Kemungkinan belum klik "Hitung Stock Awal" atau Stock Awal sudah diubah manual belakangan. Lanjutkan simpan Stock Awal ${stockAwal} TANPA mengubah Saldo Luar Kontrak?`)) return;
+      } else if (partner) {
+        partner.saldoLuarKontrak = pakaiSaldo ? sisa : (saldoLama + sisa);
+        saldoUpdateMsg = ` Saldo Luar Kontrak ${partner.kode2} diperbarui jadi ${fmtRp(partner.saldoLuarKontrak)}.`;
+      }
+    }
+
     STATE.contracts.push({ id: uid('ct'), produk, capitalPartnerId, kodeKontrak, tanggalMasuk, stockAwal, stockAkhir: stockAwal, hargaModalPcs, nilaiMargin, status: 'DANA BELUM CAIR' });
-    await withSaving(msg, `Kontrak ${kodeKontrak} ditambahkan.`, async () => { await saveState(); });
+    await withSaving(msg, `Kontrak ${kodeKontrak} ditambahkan.${saldoUpdateMsg}`, async () => { await saveState(); });
     setTimeout(() => renderKontrak(container), 800);
   });
 
