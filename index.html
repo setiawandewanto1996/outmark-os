@@ -460,6 +460,22 @@ function lookupHargaKonveksiBySku(sku) {
   if (p && ukuran) return getCurrentHarga(p.nama, ukuran);
   return null;
 }
+// Jelaskan KENAPA lookupHargaKonveksiBySku(sku) gagal (null) utk 1 SKU tertentu -- dipakai di Dashboard
+// (panel Omzet per Toko/Platform) supaya user langsung tahu SKU mana yg perlu dibenerin di Data Master,
+// bukan cuma "ada yg kurang" tanpa rincian.
+function diagnoseMissingHargaKonveksi(sku) {
+  if (!sku) return 'SKU kosong pada baris order (data import tidak lengkap)';
+  const skuUpper = String(sku).toUpperCase();
+  const prefix = skuUpper.slice(0,3);
+  const sizeCode = skuUpper.slice(-2);
+  const p = STATE.products.find(pr => pr.prefix === prefix);
+  const ukuran = SIZE_CODE_MAP[sizeCode];
+  if (!p) return `Prefix SKU "${prefix}" belum terdaftar ke produk manapun (Data Master > Produk)`;
+  if (!ukuran) return `2 digit akhir SKU ("${sizeCode}") bukan kode ukuran yg dikenali`;
+  const h = getCurrentHarga(p.nama, ukuran);
+  if (h == null) return `Harga konveksi ${p.nama} ukuran ${ukuran} belum pernah diisi`;
+  return 'Sebab tidak diketahui -- cek manual';
+}
 
 /* =========================================================================
    IMPORT MINGGUAN -- helper baca Excel & kategorisasi biaya (tervalidasi Fase 1)
@@ -4188,6 +4204,15 @@ function computeTokoBreakdown(namaToko, rowsForToko, dari, sampai) {
   const rowsWithModal = rowsForToko.filter(r => r.hargaKonveksi != null);
   const modal = rowsWithModal.reduce((s,r) => s + (r.qty||1) * r.hargaKonveksi, 0);
   const qtyTanpaHargaKonveksi = qty - rowsWithModal.reduce((s,r) => s + (r.qty||1), 0);
+  // Rincian per-SKU knp harga konveksi kosong, supaya user bisa langsung ke Data Master benerin data yg tepat
+  // (bukan cuma dikasih tau ada yg kurang tanpa tau yg mana)
+  const missingBySku = {};
+  rowsForToko.filter(r => r.hargaKonveksi == null).forEach(r => {
+    const key = r.sku || '(tanpa SKU)';
+    if (!missingBySku[key]) missingBySku[key] = { sku: key, produk: r.produk || '-', qty: 0, reason: diagnoseMissingHargaKonveksi(r.sku) };
+    missingBySku[key].qty += (r.qty||1);
+  });
+  const missingDetail = Object.values(missingBySku).sort((a,b) => b.qty - a.qty);
   const komisiPlatform = rowsForToko.reduce((s,r) => s + (r.komisiPlatform||0), 0);
   const biayaLayanan = rowsForToko.reduce((s,r) => s + (r.biayaLayanan||0), 0);
   const biayaPembayaran = rowsForToko.reduce((s,r) => s + (r.biayaPembayaran||0), 0);
@@ -4201,7 +4226,7 @@ function computeTokoBreakdown(namaToko, rowsForToko, dari, sampai) {
   const bebanPenjualan = komisiPlatform + biayaLayanan + biayaPembayaran + komisiAfiliasi + komisiDinamis + pajak + biayaIklan + biayaRetur;
   const marginKotor = omzet - modal - bebanPenjualan;
   const marginPct = omzet > 0 ? (marginKotor / omzet * 100) : null;
-  return { omzet, qty, modal, qtyTanpaHargaKonveksi, komisiPlatform, biayaLayanan, biayaPembayaran, komisiAfiliasi, komisiDinamis, pajak, biayaIklan, biayaRetur, bebanPenjualan, marginKotor, marginPct };
+  return { omzet, qty, modal, qtyTanpaHargaKonveksi, missingDetail, komisiPlatform, biayaLayanan, biayaPembayaran, komisiAfiliasi, komisiDinamis, pajak, biayaIklan, biayaRetur, bebanPenjualan, marginKotor, marginPct };
 }
 function renderDashboard(container) {
   if (dashFilter.preset !== 'custom' && (!dashFilter.dari || !dashFilter.sampai)) {
@@ -4212,7 +4237,13 @@ function renderDashboard(container) {
 
   const totalOmzet = rows.reduce((s,r) => s + (r.pendapatan||0), 0);
   const totalQty = rows.reduce((s,r) => s + (r.qty||1), 0);
-  const totalProfit = rows.reduce((s,r) => s + (r.profit||0), 0);
+  // DULU: totalProfit = rows.reduce((s,r) => s + (r.profit||0), 0) -- SALAH, krn field `profit` di tiap baris
+  // order cuma pernah keisi utk data lama hasil migrasi Excel (migrasi_penjualan). Baris hasil Import Mingguan
+  // (cara kerja normal sekarang) TIDAK PERNAH punya field `profit`, jadi KPI ini diam2 kurang akurat (0 atau
+  // understated) utk data terbaru. Diperbaiki dgn pakai computePNL() yg sama persis dgn tab PNL -- 1 sumber
+  // kebenaran, dan otomatis ikut akurat/konsisten kalau formula PNL diubah lagi nanti.
+  const pnlForDash = computePNL(dashFilter.dari, dashFilter.sampai);
+  const totalProfit = pnlForDash.profitAkhir;
 
   const rowsBySumber = {};
   rows.forEach(r => { const k = r.sumber || 'Tidak diketahui'; rowsBySumber[k] = rowsBySumber[k] || []; rowsBySumber[k].push(r); });
@@ -4278,7 +4309,15 @@ function renderDashboard(container) {
           <tbody>
             ${baris('Omzet', v.omzet, {bold:true})}
             ${baris('Modal (Konveksi/Supplier)', v.modal, {indent:true, negative:true})}
-            ${v.qtyTanpaHargaKonveksi > 0 ? `<tr><td colspan="3" style="font-size:10.5px; color:var(--err); padding-left:20px;">&#9888; ${v.qtyTanpaHargaKonveksi} unit belum ada data harga konveksi -- Modal di atas KEMUNGKINAN kurang dari yg sebenarnya.</td></tr>` : ''}
+            ${v.qtyTanpaHargaKonveksi > 0 ? `<tr><td colspan="3" style="padding:6px 0 8px 20px;">
+              <div style="font-size:10.5px; color:var(--err); margin-bottom:4px;">&#9888; ${v.qtyTanpaHargaKonveksi} unit belum ada data harga konveksi -- Modal di atas KEMUNGKINAN kurang dari yg sebenarnya. Rincian per SKU:</div>
+              <table style="width:100%; border-collapse:collapse; font-size:10.5px;">
+                <thead><tr style="color:var(--ink-soft);"><th style="text-align:left; font-weight:600; padding:2px 6px 2px 0;">SKU</th><th style="text-align:left; font-weight:600; padding:2px 6px;">Produk</th><th style="text-align:right; font-weight:600; padding:2px 6px;">Qty</th><th style="text-align:left; font-weight:600; padding:2px 0 2px 6px;">Kemungkinan Sebab</th></tr></thead>
+                <tbody>
+                  ${v.missingDetail.map(m => `<tr><td style="padding:2px 6px 2px 0;">${m.sku}</td><td style="padding:2px 6px;">${m.produk}</td><td class="num" style="padding:2px 6px;">${m.qty}</td><td style="padding:2px 0 2px 6px; color:var(--err);">${m.reason}</td></tr>`).join('')}
+                </tbody>
+              </table>
+            </td></tr>` : ''}
             ${baris('Komisi Platform', v.komisiPlatform, {indent:true, negative:true})}
             ${baris('Biaya Layanan', v.biayaLayanan, {indent:true, negative:true})}
             ${baris('Biaya Pembayaran', v.biayaPembayaran, {indent:true, negative:true})}
