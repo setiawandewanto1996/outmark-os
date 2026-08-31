@@ -4611,6 +4611,89 @@ function renderDashboard(container) {
 const NAMA_BULAN_ID = ['Januari','Februari','Maret','April','Mei','Juni','Juli','Agustus','September','Oktober','November','Desember'];
 function namaBulanID(n) { return NAMA_BULAN_ID[(n - 1 + 12) % 12] || '-'; }
 
+// Cocokkan teks periode di kop tiap sheet slip lama (mis. "November 2025", "NOVEMBER 2025", "Agustus 2026")
+// dgn nama bulan Indonesia scr case-insensitive, ambil 4 digit tahun dari teks yg sama.
+function parsePeriodeSlipGaji(text) {
+  if (!text) return null;
+  const t = String(text).trim();
+  const yearMatch = t.match(/(\d{4})/);
+  if (!yearMatch) return null;
+  const tahun = Number(yearMatch[1]);
+  const lower = t.toLowerCase();
+  for (let i = 0; i < NAMA_BULAN_ID.length; i++) {
+    if (lower.includes(NAMA_BULAN_ID[i].toLowerCase())) return { bulan: i + 1, tahun };
+  }
+  return null;
+}
+
+// Baca 1 sheet slip gaji individual dari file Excel Slip Gaji lama (dibaca via XLSX.utils.sheet_to_json(ws,{header:1}),
+// jadi array-of-array 0-indexed per baris/kolom sheet). Formatnya TETAP: NIK di baris 6, Nama Karyawan baris 7,
+// header PENDAPATAN/POTONGAN baris 9, baris "JUMLAH ..." dicari otomatis krn jumlah barisnya beda2 tiap bulan/karyawan
+// (kadang 5 komponen, kadang cuma 3). Return null kalau sheet ini BUKAN slip individual yg valid (mis. sheet rekap
+// bulanan yg formatnya beda total, atau sheet kosong/generik) -- supaya proses migrasi otomatis melewati sheet2 itu.
+function parseSlipGajiSheet(rows) {
+  if (!rows || rows.length < 10) return null;
+  const rowAt = (i) => rows[i] || [];
+  if (String(rowAt(5)[0] || '').trim() !== 'NIK') return null;
+  if (String(rowAt(6)[0] || '').trim() !== 'Nama Karyawan') return null;
+  if (String(rowAt(8)[0] || '').trim() !== 'PENDAPATAN') return null;
+  const nik = String(rowAt(5)[1] || '').trim();
+  const nama = String(rowAt(6)[1] || '').trim();
+  if (!nama) return null;
+  const periode = parsePeriodeSlipGaji(rowAt(1)[6]);
+  if (!periode) return null;
+
+  let jIdx = -1;
+  for (let i = 9; i < rows.length; i++) {
+    if (String(rowAt(i)[0] || '').trim() === 'JUMLAH PENDAPATAN') { jIdx = i; break; }
+  }
+  if (jIdx === -1) return null;
+
+  const pendapatan = [], potongan = [];
+  for (let i = 9; i < jIdx; i++) {
+    const r = rowAt(i);
+    const labelP = String(r[0] || '').trim();
+    if (labelP && labelP !== '-') pendapatan.push({ label: labelP, jumlah: Number(r[2]) || 0 });
+    const labelK = String(r[4] || '').trim();
+    if (labelK && labelK !== '-') potongan.push({ label: labelK, jumlah: Number(r[6]) || 0 });
+  }
+  return { nik, nama, bulan: periode.bulan, tahun: periode.tahun, pendapatan, potongan };
+}
+
+// Baca SEMUA sheet dlm 1 workbook Excel Slip Gaji lama -- sheet yg bukan slip individual (kosong/generik, atau
+// rekap bulanan yg layoutnya beda) otomatis dilewati lewat parseSlipGajiSheet, jadi tidak perlu cocokkan nama sheet.
+function parseSlipGajiWorkbook(wb) {
+  const XU = XLSX.utils;
+  const hasil = [];
+  wb.SheetNames.forEach(namaSheet => {
+    const rows = XU.sheet_to_json(wb.Sheets[namaSheet], { header: 1 });
+    const parsed = parseSlipGajiSheet(rows);
+    if (parsed) hasil.push(Object.assign({ sheetName: namaSheet }, parsed));
+  });
+  return hasil;
+}
+
+// Terapkan hasil parse ke STATE: cocokkan/bikin Karyawan (by NIK, fallback by nama kalau NIK kosong di salah satu
+// sisi), lalu tambahkan slip gaji utk tiap periode yg BELUM ADA -- idempotent, aman dijalankan berkali2 (mis. kalau
+// file Excel lama nanti nambah bulan baru lagi sebelum akhirnya pindah total ke sistem ini).
+function terapkanMigrasiSlipGaji(parsedRecords) {
+  let nKaryawanBaru = 0, nSlipBaru = 0, nSlipDilewati = 0;
+  const now = new Date().toISOString();
+  parsedRecords.forEach(rec => {
+    let karyawan = STATE.karyawan.find(k => (rec.nik && k.nik === rec.nik) || (k.nama && rec.nama && k.nama.toUpperCase() === rec.nama.toUpperCase()));
+    if (!karyawan) {
+      karyawan = { id: uid('ky'), nik: rec.nik || null, nama: rec.nama, status: 'Aktif' };
+      STATE.karyawan.push(karyawan);
+      nKaryawanBaru++;
+    }
+    const sudahAda = STATE.slipGaji.some(s => s.karyawanId === karyawan.id && s.bulan === rec.bulan && s.tahun === rec.tahun);
+    if (sudahAda) { nSlipDilewati++; return; }
+    STATE.slipGaji.push({ id: uid('sg'), karyawanId: karyawan.id, bulan: rec.bulan, tahun: rec.tahun, pendapatan: rec.pendapatan, potongan: rec.potongan, createdAt: now, updatedAt: now });
+    nSlipBaru++;
+  });
+  return { nKaryawanBaru, nSlipBaru, nSlipDilewati };
+}
+
 // terbilang: ubah angka jadi teks bahasa Indonesia (dipakai utk baris terbilang di bawah GAJI BERSIH pada slip)
 const TERBILANG_SATUAN = ['', 'Satu', 'Dua', 'Tiga', 'Empat', 'Lima', 'Enam', 'Tujuh', 'Delapan', 'Sembilan', 'Sepuluh', 'Sebelas'];
 function terbilang(n) {
@@ -4759,6 +4842,16 @@ function renderGaji(container) {
 
   container.innerHTML = `
     <div class="panel">
+      <h2>Migrasi Riwayat Slip Gaji dari Excel <span class="pill">opsional</span></h2>
+      <div class="desc">Import otomatis semua slip gaji lama dari file Excel Slip Gaji (satu sheet per karyawan per bulan) -- karyawan baru otomatis terdaftar, dan periode yang sudah ada di sini TIDAK ditimpa/dobel, jadi aman diulang kalau nanti file lama itu masih ditambah bulan baru.</div>
+      <input type="file" id="fileMigrasiGaji" accept=".xlsx" style="display:none">
+      <button class="btn btn-ghost" id="btnPickFileGaji">Pilih File Excel Slip Gaji</button>
+      <span id="fileMigrasiGajiLabel" style="font-size:12px; color:var(--ink-soft); margin-left:8px;">Belum ada file dipilih</span>
+      <br><button class="btn btn-primary" id="btnMigrasiGaji" style="margin-top:10px;" disabled>Proses Migrasi</button>
+      <div class="status-box" id="migrasiGajiMsg"></div>
+    </div>
+
+    <div class="panel">
       <h2>Karyawan</h2>
       <div class="desc">Daftar karyawan yang bisa dibuatkan slip gaji.</div>
       <form id="formKaryawan">
@@ -4874,6 +4967,32 @@ function renderGaji(container) {
       </div>
     </div>
   `;
+
+  document.getElementById('btnPickFileGaji').addEventListener('click', () => document.getElementById('fileMigrasiGaji').click());
+  let pendingMigrasiGajiFile = null;
+  document.getElementById('fileMigrasiGaji').addEventListener('change', (e) => {
+    if (e.target.files[0]) {
+      pendingMigrasiGajiFile = e.target.files[0];
+      document.getElementById('fileMigrasiGajiLabel').textContent = pendingMigrasiGajiFile.name;
+      document.getElementById('btnMigrasiGaji').disabled = false;
+    }
+  });
+  document.getElementById('btnMigrasiGaji').addEventListener('click', async () => {
+    const msg = document.getElementById('migrasiGajiMsg');
+    if (!pendingMigrasiGajiFile) return;
+    showMsg(msg, 'info', 'Membaca file...');
+    try {
+      const buf = await pendingMigrasiGajiFile.arrayBuffer();
+      const wb = XLSX.read(buf, { type: 'array' });
+      const parsed = parseSlipGajiWorkbook(wb);
+      if (!parsed.length) { showMsg(msg, 'err', 'Tidak ditemukan sheet slip gaji individual yang cocok di file ini.'); return; }
+      const result = terapkanMigrasiSlipGaji(parsed);
+      await withSaving(msg, `Migrasi selesai: ${parsed.length} slip ditemukan -- ${result.nKaryawanBaru} karyawan baru terdaftar, ${result.nSlipBaru} slip gaji baru ditambahkan, ${result.nSlipDilewati} periode dilewati (sudah ada sebelumnya).`, async () => { await saveState(); });
+      setTimeout(() => renderGaji(container), 1200);
+    } catch (e) {
+      showMsg(msg, 'err', 'Gagal migrasi: ' + e.message);
+    }
+  });
 
   document.getElementById('formKaryawan').addEventListener('submit', async (ev) => {
     ev.preventDefault();
