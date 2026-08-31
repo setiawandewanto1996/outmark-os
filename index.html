@@ -232,7 +232,16 @@ function addHargaHistory(produkNama, size, harga, sumber) {
 function computePembagiPct(produkAsli) {
   const produk = capitalPartnerProduk(produkAsli);
   if (STATE.pembagiPctManual[produk]) return STATE.pembagiPctManual[produk]; // manual override menang
-  const active = STATE.contracts.filter(c => capitalPartnerProduk(c.produk) === produk && c.status === 'DANA BELUM CAIR');
+  // Kontrak yg SUDAH punya penerus (ada kontrak lain dgn rolledFromKodeKontrak == kode kontrak ini) di-exclude dari
+  // perhitungan persentase, TERLEPAS dari status live-nya saat ini. Kenapa: kontrak spt ini sudah "pensiun" --
+  // modalnya sudah "diwariskan" ke penerusnya (mis. IDO047 -> IDO049), jadi kalau tetap ikut dihitung di sini
+  // JUGA, modal yg SAMA jadi dihitung DUA KALI (sekali lewat kontrak lama, sekali lewat penerusnya) dan
+  // menggelembungkan persentase investor itu secara keliru. Ini penting terutama saat "Hitung Ulang Alokasi per
+  // Tanggal Penarikan" meng-undo payout lama & mengaktifkan-ulang status kontrak lama (mis. IDO047 dibalikin ke
+  // DANA BELUM CAIR) supaya sisa stocknya bisa dipakai FIFO lagi utk reproduksi histori -- reaktivasi status itu
+  // TIDAK BOLEH bikin modalnya ikut dihitung lagi di sini kalau penerusnya (mis. IDO049) sudah nyata ada.
+  const punyaPenerus = new Set(STATE.contracts.filter(c => c.rolledFromKodeKontrak).map(c => c.rolledFromKodeKontrak));
+  const active = STATE.contracts.filter(c => capitalPartnerProduk(c.produk) === produk && c.status === 'DANA BELUM CAIR' && !punyaPenerus.has(c.kodeKontrak));
   const capitalByPartner = {};
   active.forEach(c => {
     const partner = findPartnerById(c.capitalPartnerId);
@@ -3239,8 +3248,12 @@ function renderKontrak(container) {
   const pctEl = document.getElementById('pctView');
   if (!produkList.length) { pctEl.innerHTML = '<div class="empty-note">Belum ada kontrak.</div>'; }
   else {
+    // Sama spt computePembagiPct: kontrak yg sudah punya penerus (rolledFromKodeKontrak menunjuk ke kontrak ini)
+    // di-exclude, terlepas dari status live-nya -- supaya tampilan ini tetap konsisten dgn perhitungan alokasi
+    // yg sebenarnya, termasuk saat sedang ada proses "Hitung Ulang" yg belum dikonfirmasi/dibatalkan.
+    const punyaPenerusView = new Set(STATE.contracts.filter(c => c.rolledFromKodeKontrak).map(c => c.rolledFromKodeKontrak));
     pctEl.innerHTML = produkList.map(produk => {
-      const activeForProduk = STATE.contracts.filter(c => c.produk === produk && c.status === 'DANA BELUM CAIR');
+      const activeForProduk = STATE.contracts.filter(c => c.produk === produk && c.status === 'DANA BELUM CAIR' && !punyaPenerusView.has(c.kodeKontrak));
       const byKode2 = {};
       activeForProduk.forEach(c => {
         const partner = findPartnerById(c.capitalPartnerId);
