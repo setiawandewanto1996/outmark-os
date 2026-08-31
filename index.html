@@ -1575,6 +1575,7 @@ let koreksiTanggalPreview = null; // hasil previewKoreksiTanggalPenarikan (tahap
 let vendorOrphanFollowup = null; // { tanggalBaru, orphansByDate: {tanggalLama: [...vendorPayouts]} } -- muncul SETELAH koreksi tanggal orderDb sukses
 let vendorOrphanManualPreview = null; // { tanggalLama, tanggalBaru, orphans } -- versi manual, independen dari alur Koreksi Tanggal di atas
 let kontrakDuplikatPreview = null; // hasil cariKontrakRolloverDuplikatKosong() -- tahap konfirmasi, blm ada mutasi
+let hargaKonveksiRefreshPreview = null; // hasil cariOrderTanpaHargaKonveksiYangBisaDiperbaiki() -- tahap konfirmasi, blm ada mutasi
 
 function labelForPlatform(platform) {
   if (platform === 'Shopee') return { order: 'Order All', income: 'Income Sudah Dilepas' };
@@ -1827,6 +1828,38 @@ async function terapkanBersihkanKontrakRolloverDuplikat(groups) {
   return { nDihapus };
 }
 
+// Cari baris orderDb yg hargaKonveksi-nya null krn KETIKA di-import dulu harganya belum diisi di Data Master,
+// TAPI SEKARANG (di Data Master saat ini) harganya sudah ada -- kasus umum: user import dulu, baru belakangan
+// isi harga konveksinya di Data Master, sehingga baris2 order yg sudah lama tercatat tidak otomatis ikut
+// ke-update (field hargaKonveksi di-cache sekali sewaktu import, bukan dihitung ulang tiap saat).
+// TIDAK termasuk baris yg SEKARANG PUN masih tidak bisa ditemukan harganya (itu tetap genuine data kosong --
+// lihat diagnoseMissingHargaKonveksi() di Dashboard utk rincian sebabnya per SKU).
+function cariOrderTanpaHargaKonveksiYangBisaDiperbaiki() {
+  const bySku = {};
+  STATE.orderDb.forEach(r => {
+    if (r.hargaKonveksi != null || !r.sku) return;
+    const hargaBaru = lookupHargaKonveksiBySku(r.sku);
+    if (hargaBaru == null) return; // masih genuine kosong, bukan kandidat perbaikan
+    const key = r.sku;
+    if (!bySku[key]) bySku[key] = { sku: r.sku, produk: r.produk || '-', qty: 0, hargaBaru, rows: [] };
+    bySku[key].qty += (r.qty||1);
+    bySku[key].rows.push(r);
+  });
+  return Object.values(bySku).sort((a,b) => b.qty - a.qty);
+}
+
+// MUTASI: isi ulang r.hargaKonveksi utk semua baris pada grup2 hasil cariOrderTanpaHargaKonveksiYangBisaDiperbaiki()
+// dgn harga yg SEKARANG berlaku di Data Master utk SKU tsb. Aman krn hanya menyentuh baris yg field-nya
+// SEBELUMNYA kosong (null) -- tidak pernah menimpa harga yg sudah ada, meski harga di Data Master berubah lagi nanti.
+async function terapkanPerbaruiHargaKonveksiKosong(groups) {
+  let nBarisDiperbarui = 0, totalUnit = 0;
+  groups.forEach(g => {
+    g.rows.forEach(r => { r.hargaKonveksi = g.hargaBaru; nBarisDiperbarui++; totalUnit += (r.qty||1); });
+  });
+  await saveState();
+  return { nBarisDiperbarui, totalUnit };
+}
+
 function cleanupPendingAlreadySettled() {
   const settledKeys = new Set(STATE.orderDb.map(r => r.orderId + '|' + r.sku));
   let nRemoved = 0, nOrdersAffected = 0;
@@ -1966,6 +1999,14 @@ function renderImport(container) {
       <button class="btn btn-ghost" id="btnCekKontrakDuplikat">Cek Sekarang</button>
       <div class="status-box" id="kontrakDuplikatMsg"></div>
       <div id="kontrakDuplikatArea" style="margin-top:10px;"></div>
+    </div>
+
+    <div class="panel">
+      <h2>Perbarui Harga Konveksi yang Kosong dari Data Master</h2>
+      <div class="desc">Kalau sebuah order pernah tercatat (Import Mingguan) SEBELUM harga konveksi SKU-nya diisi di Data Master, baris itu permanen tersimpan tanpa harga konveksi (Modal jadi kurang tercatat di Dashboard/PNL) walaupun harganya sudah diisi belakangan -- field ini dihitung sekali sewaktu import, tidak otomatis ikut update. Alat ini mencari baris2 seperti itu yang SEKARANG sudah bisa ditemukan harganya di Data Master, lalu mengisinya. Baris yang harganya memang masih genuinely belum ada di Data Master TIDAK akan disentuh (tetap tampil di rincian Dashboard).</div>
+      <button class="btn btn-ghost" id="btnCekHargaKonveksiKosong">Cek Sekarang</button>
+      <div class="status-box" id="hargaKonveksiRefreshMsg"></div>
+      <div id="hargaKonveksiRefreshArea" style="margin-top:10px;"></div>
     </div>
 
     <div class="panel">
@@ -2146,6 +2187,21 @@ function renderImport(container) {
       renderKontrakDuplikatArea(document.getElementById('kontrakDuplikatArea'), container);
     });
 
+    const btnCekHargaKonveksiKosong = document.getElementById('btnCekHargaKonveksiKosong');
+    if (btnCekHargaKonveksiKosong) btnCekHargaKonveksiKosong.addEventListener('click', () => {
+      const msg = document.getElementById('hargaKonveksiRefreshMsg');
+      const groups = cariOrderTanpaHargaKonveksiYangBisaDiperbaiki();
+      if (!groups.length) {
+        showMsg(msg, 'ok', 'Tidak ada baris yang bisa diperbarui saat ini -- semua baris yang harga konveksinya kosong memang belum ada datanya di Data Master (lihat rincian sebab per SKU di Dashboard).');
+        hargaKonveksiRefreshPreview = null;
+        renderHargaKonveksiRefreshArea(document.getElementById('hargaKonveksiRefreshArea'), container);
+        return;
+      }
+      hargaKonveksiRefreshPreview = groups;
+      showMsg(msg, 'info', 'Cek rincian di bawah sebelum konfirmasi.');
+      renderHargaKonveksiRefreshArea(document.getElementById('hargaKonveksiRefreshArea'), container);
+    });
+
     const storeSelect = document.getElementById('imp_store');
     storeSelect.addEventListener('change', () => {
       const store = activeStores.find(s => s.id === storeSelect.value);
@@ -2176,6 +2232,39 @@ function renderImport(container) {
   if (vendorOrphanFollowup) renderVendorOrphanFollowup(document.getElementById('koreksiTanggalArea'), container);
   if (vendorOrphanManualPreview) renderVendorOrphanManualArea(document.getElementById('vendorOrphanManualArea'), container);
   if (kontrakDuplikatPreview) renderKontrakDuplikatArea(document.getElementById('kontrakDuplikatArea'), container);
+  if (hargaKonveksiRefreshPreview) renderHargaKonveksiRefreshArea(document.getElementById('hargaKonveksiRefreshArea'), container);
+}
+
+function renderHargaKonveksiRefreshArea(el, container) {
+  const groups = hargaKonveksiRefreshPreview;
+  if (!groups || !groups.length) { el.innerHTML = ''; return; }
+  const totalUnit = groups.reduce((s,g) => s+g.qty, 0);
+  el.innerHTML = `
+    <div style="border:1px solid var(--line); border-radius:6px; padding:14px; background:#F8F7F3;">
+      <div style="font-weight:600; margin-bottom:8px;">Ditemukan ${groups.length} SKU (${totalUnit} unit) yang sekarang sudah bisa diisi harga konveksinya</div>
+      <table class="data compact">
+        <thead><tr><th>SKU</th><th>Produk</th><th class="num">Qty</th><th class="num">Harga Konveksi Baru</th></tr></thead>
+        <tbody>${groups.map(g => `<tr>
+          <td>${g.sku}</td><td>${g.produk}</td><td class="num">${g.qty}</td><td class="num">${fmtRp(g.hargaBaru)}</td>
+        </tr>`).join('')}</tbody>
+      </table>
+      <div style="margin-top:12px; display:flex; gap:8px;">
+        <button class="btn btn-primary" id="btnTerapkanHargaKonveksiRefresh">Ya, Isi Harga Konveksi (${totalUnit} unit)</button>
+        <button class="btn btn-ghost" id="btnBatalHargaKonveksiRefresh">Batal</button>
+      </div>
+    </div>
+  `;
+  document.getElementById('btnTerapkanHargaKonveksiRefresh').addEventListener('click', async () => {
+    const msg = document.getElementById('hargaKonveksiRefreshMsg');
+    const { nBarisDiperbarui, totalUnit } = await terapkanPerbaruiHargaKonveksiKosong(groups);
+    hargaKonveksiRefreshPreview = null;
+    showMsg(msg, 'ok', `${nBarisDiperbarui} baris order (${totalUnit} unit) berhasil diisi harga konveksinya. Modal di Dashboard akan otomatis ikut lebih akurat.`);
+    renderHargaKonveksiRefreshArea(el, container);
+  });
+  document.getElementById('btnBatalHargaKonveksiRefresh').addEventListener('click', () => {
+    hargaKonveksiRefreshPreview = null;
+    renderHargaKonveksiRefreshArea(el, container);
+  });
 }
 
 function renderKontrakDuplikatArea(el, container) {
