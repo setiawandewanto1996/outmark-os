@@ -4290,13 +4290,22 @@ function computeTokoBreakdown(namaToko, rowsForToko, dari, sampai) {
   };
   const omzet = rowsForToko.reduce((s,r) => s + (r.pendapatan||0), 0);
   const qty = rowsForToko.reduce((s,r) => s + (r.qty||1), 0);
-  const rowsWithModal = rowsForToko.filter(r => r.hargaKonveksi != null);
-  const modal = rowsWithModal.reduce((s,r) => s + (r.qty||1) * r.hargaKonveksi, 0);
-  const qtyTanpaHargaKonveksi = qty - rowsWithModal.reduce((s,r) => s + (r.qty||1), 0);
+  // PENTING: r.hargaKonveksi di orderDb di-cache SEKALI sewaktu Import Mingguan & tidak pernah dihitung ulang
+  // otomatis -- kalau harga konveksinya baru diisi ke Data Master BELAKANGAN (alur normal user: import dulu,
+  // lengkapi Data Master belakangan), baris lama akan tetap keliatan "kosong" selamanya walau harganya sudah
+  // ada. Supaya Dashboard SELALU akurat tanpa user harus jalankan alat "Perbarui Harga Konveksi" dulu, di sini
+  // pakai fallback: kalau field cache-nya null, coba cari live ke Data Master SEKARANG lewat
+  // lookupHargaKonveksiBySku -- baris dianggap "masih kosong" (missingDetail) HANYA kalau live lookup ini pun
+  // masih gagal (genuine belum ada datanya). Alat "Perbarui Harga Konveksi yang Kosong dari Data Master" di tab
+  // Import Mingguan tetap berguna utk menyimpan hasilnya permanen ke orderDb, tapi Dashboard tidak lagi
+  // bergantung padanya utk tampil benar.
+  const effectiveHarga = (r) => r.hargaKonveksi != null ? r.hargaKonveksi : lookupHargaKonveksiBySku(r.sku);
+  const modal = rowsForToko.reduce((s,r) => { const h = effectiveHarga(r); return h != null ? s + (r.qty||1) * h : s; }, 0);
+  const qtyTanpaHargaKonveksi = rowsForToko.reduce((s,r) => effectiveHarga(r) == null ? s + (r.qty||1) : s, 0);
   // Rincian per-SKU knp harga konveksi kosong, supaya user bisa langsung ke Data Master benerin data yg tepat
   // (bukan cuma dikasih tau ada yg kurang tanpa tau yg mana)
   const missingBySku = {};
-  rowsForToko.filter(r => r.hargaKonveksi == null).forEach(r => {
+  rowsForToko.filter(r => effectiveHarga(r) == null).forEach(r => {
     const key = r.sku || '(tanpa SKU)';
     if (!missingBySku[key]) missingBySku[key] = { sku: key, produk: r.produk || '-', qty: 0, reason: diagnoseMissingHargaKonveksi(r.sku) };
     missingBySku[key].qty += (r.qty||1);
