@@ -1028,6 +1028,9 @@ function renderMaster(container) {
           <div class="field"><label>Kontak (WA/Telpon)</label><input type="text" id="p_kontak" placeholder="mis. 0812xxxxxxx"></div>
           <div class="field"><label>Tanggal Bergabung</label><input type="date" id="p_tanggal"></div>
         </div>
+        <div class="field"><label>Kelompok Investor (utk rekap terpisah)</label>
+          <select id="p_kelompok"><option value="1">Kelompok 1</option><option value="2">Kelompok 2</option></select>
+        </div>
         <button type="submit" class="btn btn-primary">+ Tambah Capital Partner</button>
         <div class="status-box" id="partnerMsg"></div>
       </form>
@@ -1346,13 +1349,14 @@ function renderMaster(container) {
     const kode2 = document.getElementById('p_kode').value.trim().toUpperCase();
     const kontak = document.getElementById('p_kontak').value.trim();
     const tanggalBergabung = document.getElementById('p_tanggal').value || null;
+    const kelompok = Number(document.getElementById('p_kelompok').value) || 1;
 
     if (kode2.length !== 2) { showMsg(msg, 'err', 'Kode harus persis 2 huruf.'); return; }
     if (STATE.capitalPartners.some(p => p.kode2 === kode2)) {
       showMsg(msg, 'err', `Kode "${kode2}" sudah dipakai oleh ${STATE.capitalPartners.find(p=>p.kode2===kode2).nama} -- pakai kode lain.`);
       return;
     }
-    STATE.capitalPartners.push({ id: uid('cp'), nama, kode2, kontak, tanggalBergabung, status: 'Aktif' });
+    STATE.capitalPartners.push({ id: uid('cp'), nama, kode2, kontak, tanggalBergabung, status: 'Aktif', kelompok });
     await withSaving(msg, 'Capital Partner ditambahkan.', async () => {
       await saveState();
       document.getElementById('formPartner').reset();
@@ -1408,12 +1412,16 @@ function renderPartnerList(el) {
   if (!STATE.capitalPartners.length) { el.innerHTML = '<div class="empty-note">Belum ada Capital Partner terdaftar.</div>'; return; }
   el.innerHTML = `
     <table class="data">
-      <thead><tr><th>Kode</th><th>Nama</th><th>Kontak</th><th>Bergabung</th><th>Status</th><th></th></tr></thead>
+      <thead><tr><th>Kode</th><th>Nama</th><th>Kontak</th><th>Bergabung</th><th>Status</th><th>Kelompok</th><th></th></tr></thead>
       <tbody>
         ${STATE.capitalPartners.map(p => `<tr>
           <td><b>${p.kode2}</b></td><td>${p.nama}</td><td>${p.kontak || '-'}</td>
           <td>${fmtTanggal(p.tanggalBergabung)}</td>
           <td><span class="pill ${p.status==='Aktif'?'ok':'off'}">${p.status}</span></td>
+          <td><select class="p-kelompok-select" data-partner-id="${p.id}" style="padding:2px 4px; font-size:12px;">
+            <option value="1" ${(p.kelompok||1)==1?'selected':''}>Kelompok 1</option>
+            <option value="2" ${(p.kelompok||1)==2?'selected':''}>Kelompok 2</option>
+          </select></td>
           <td><button class="icon-del" data-del-partner="${p.id}" title="Hapus">✕</button></td>
         </tr>`).join('')}
       </tbody>
@@ -1425,6 +1433,12 @@ function renderPartnerList(el) {
       STATE.capitalPartners = STATE.capitalPartners.filter(p => p.id !== btn.dataset.delPartner);
       await saveState();
       renderPartnerList(el);
+    });
+  });
+  el.querySelectorAll('.p-kelompok-select').forEach(sel => {
+    sel.addEventListener('change', async () => {
+      const partner = STATE.capitalPartners.find(p => p.id === sel.dataset.partnerId);
+      if (partner) { partner.kelompok = Number(sel.value); await saveState(); }
     });
   });
 }
@@ -2722,6 +2736,7 @@ function renderVendorOrphanManualArea(el, container) {
 }
 
 let expandedProduk = null;
+let kontrakAktifFilters = { produk: '', capitalPartnerId: '' };
 
 function renderProdukDetailHtml(p) {
   return `
@@ -2945,8 +2960,14 @@ function wirePendingHandlers(container) {
 }
 
 function renderKontrak(container) {
-  const activeContracts = STATE.contracts.filter(c => c.status === 'DANA BELUM CAIR')
+  const allActiveContracts = STATE.contracts.filter(c => c.status === 'DANA BELUM CAIR')
     .sort((a,b) => (a.produk||'').localeCompare(b.produk||'') || new Date(a.tanggalMasuk) - new Date(b.tanggalMasuk));
+  const produkFilterOptions = [...new Set(allActiveContracts.map(c => c.produk))].sort();
+  const partnerFilterOptions = STATE.capitalPartners.filter(p => allActiveContracts.some(c => c.capitalPartnerId === p.id)).sort((a,b) => a.nama.localeCompare(b.nama));
+  const activeContracts = allActiveContracts.filter(c =>
+    (!kontrakAktifFilters.produk || c.produk === kontrakAktifFilters.produk) &&
+    (!kontrakAktifFilters.capitalPartnerId || c.capitalPartnerId === kontrakAktifFilters.capitalPartnerId)
+  );
 
   container.innerHTML = `
     <div class="panel">
@@ -2988,9 +3009,24 @@ function renderKontrak(container) {
     </div>
 
     <div class="panel">
-      <h2>Kontrak Aktif (DANA BELUM CAIR) <span class="pill">${activeContracts.length}</span></h2>
+      <h2>Kontrak Aktif (DANA BELUM CAIR) <span class="pill">${activeContracts.length}${activeContracts.length !== allActiveContracts.length ? ' / ' + allActiveContracts.length : ''}</span></h2>
       <div class="desc">Modal, Terjual, dan Profit dihitung otomatis dari Stock Awal/Akhir &times; Harga/Nilai Margin. Kode kontrak dgan tanda <span class="pill" style="font-size:9px;">rollover</span> punya riwayat kontrak sebelumnya -- klik utk lihat.</div>
-      ${!activeContracts.length ? '<div class="empty-note">Belum ada kontrak aktif.</div>' : `
+      <div class="grid2" style="margin-bottom:10px;">
+        <div class="field"><label>Filter Produk</label>
+          <select id="ka_filterProduk">
+            <option value="">Semua Produk</option>
+            ${produkFilterOptions.map(p => `<option value="${p}" ${kontrakAktifFilters.produk===p?'selected':''}>${p}</option>`).join('')}
+          </select>
+        </div>
+        <div class="field"><label>Filter Capital Partner</label>
+          <select id="ka_filterPartner">
+            <option value="">Semua Capital Partner</option>
+            ${partnerFilterOptions.map(p => `<option value="${p.id}" ${kontrakAktifFilters.capitalPartnerId===p.id?'selected':''}>${p.kode2} -- ${p.nama}</option>`).join('')}
+          </select>
+        </div>
+      </div>
+      ${(kontrakAktifFilters.produk || kontrakAktifFilters.capitalPartnerId) ? `<button class="btn btn-ghost" id="ka_filterClear" style="margin-bottom:10px;">Bersihkan Filter</button>` : ''}
+      ${!activeContracts.length ? '<div class="empty-note">Belum ada kontrak aktif yg cocok dgn filter ini.</div>' : `
       <div style="overflow-x:auto;">
       <table class="data compact">
         <thead><tr>
@@ -3100,6 +3136,14 @@ function renderKontrak(container) {
     setTimeout(() => renderKontrak(container), 800);
   });
 
+  // ---- Handlers: Filter Kontrak Aktif ----
+  const kaFilterProduk = document.getElementById('ka_filterProduk');
+  if (kaFilterProduk) kaFilterProduk.addEventListener('change', (e) => { kontrakAktifFilters.produk = e.target.value; renderKontrak(container); });
+  const kaFilterPartner = document.getElementById('ka_filterPartner');
+  if (kaFilterPartner) kaFilterPartner.addEventListener('change', (e) => { kontrakAktifFilters.capitalPartnerId = e.target.value; renderKontrak(container); });
+  const kaFilterClear = document.getElementById('ka_filterClear');
+  if (kaFilterClear) kaFilterClear.addEventListener('click', () => { kontrakAktifFilters = { produk: '', capitalPartnerId: '' }; renderKontrak(container); });
+
   // ---- Handlers: klik nama produk -> expand editor harga ----
   container.querySelectorAll('.produk-link').forEach(el => {
     el.addEventListener('click', () => {
@@ -3197,9 +3241,10 @@ function renderKontrak(container) {
     setTimeout(() => renderColorCodeList(document.getElementById('colorCodeList')), 700);
   });
 
-  // ---- Total per Capital Partner (dana aktif dikelola, lintas produk) ----
+  // ---- Total per Capital Partner (dana aktif dikelola, lintas produk) -- SELALU pakai daftar lengkap
+  // (allActiveContracts), TIDAK ikut filter Kontrak Aktif di atas, supaya totalnya tetap akurat lintas produk. ----
   const totalByPartner = {};
-  activeContracts.forEach(c => {
+  allActiveContracts.forEach(c => {
     const partner = findPartnerById(c.capitalPartnerId);
     if (!partner) return;
     const modal = (c.stockAwal||0) * (c.hargaModalPcs||0);
@@ -3512,29 +3557,35 @@ function renderLaporanDetailPanel(container) {
   }
   if (matchingPayouts.length) {
     detailHtml = matchingPayouts.map(p => renderKontrakDetailTable(p)).join('');
-    // Grand summary: total keseluruhan + profit per investor (kode2)
-    const grandTotalQty = matchingPayouts.reduce((s,p) => s + p.qty, 0);
-    const grandTotalRp = matchingPayouts.reduce((s,p) => s + (p.qty * (p.hargaModalPcs||0)), 0);
-    const profitByKode2 = {};
-    matchingPayouts.forEach(p => { profitByKode2[p.kode2] = profitByKode2[p.kode2] || { qty:0, total:0 }; profitByKode2[p.kode2].qty += p.qty; profitByKode2[p.kode2].total += p.payout||0; });
-    const totalProfitQty = Object.values(profitByKode2).reduce((s,v)=>s+v.qty,0);
-    const totalProfitRp = Object.values(profitByKode2).reduce((s,v)=>s+v.total,0);
-    detailHtml += `
-      <div style="border:2px solid var(--ink); border-radius:3px; padding:12px; margin-top:6px;">
-        <table class="data compact">
-          <tbody>
-            <tr style="font-weight:600;"><td colspan="3">TOTAL MILIK INVESTOR</td><td class="num">${grandTotalQty}</td><td class="num">${fmtRp(grandTotalRp)}</td></tr>
-          </tbody>
-        </table>
-        <table class="data compact" style="margin-top:10px;">
-          <thead><tr><th>Kode</th><th class="num">Qty</th><th class="num">Profit</th></tr></thead>
-          <tbody>
-            ${Object.entries(profitByKode2).sort((a,b)=>b[1].total-a[1].total).map(([kode2,v]) => `<tr><td>PROFIT ${kode2}</td><td class="num">${v.qty}</td><td class="num">${fmtRp(v.total)}</td></tr>`).join('')}
-            <tr style="font-weight:600; border-top:2px solid var(--ink);"><td>TOTAL PROFIT</td><td class="num">${totalProfitQty}</td><td class="num">${fmtRp(totalProfitRp)}</td></tr>
-          </tbody>
-        </table>
-      </div>
-    `;
+    // Rekap dipecah per Kelompok Investor (1/2, diatur di Data Master > Capital Partner) -- bukan lagi 1 total
+    // gabungan, supaya 2 kongsi/kelompok investor yg berbeda bisa dilihat terpisah.
+    const kelompokOfKode2 = (kode2) => { const p = findPartnerByKode2(kode2); return (p && p.kelompok) || 1; };
+    [1, 2].forEach(kelompokNum => {
+      const payoutsKelompok = matchingPayouts.filter(p => kelompokOfKode2(p.kode2) === kelompokNum);
+      if (!payoutsKelompok.length) return;
+      const grandTotalQty = payoutsKelompok.reduce((s,p) => s + p.qty, 0);
+      const grandTotalRp = payoutsKelompok.reduce((s,p) => s + (p.qty * (p.hargaModalPcs||0)), 0);
+      const profitByKode2 = {};
+      payoutsKelompok.forEach(p => { profitByKode2[p.kode2] = profitByKode2[p.kode2] || { qty:0, total:0 }; profitByKode2[p.kode2].qty += p.qty; profitByKode2[p.kode2].total += p.payout||0; });
+      const totalProfitQty = Object.values(profitByKode2).reduce((s,v)=>s+v.qty,0);
+      const totalProfitRp = Object.values(profitByKode2).reduce((s,v)=>s+v.total,0);
+      detailHtml += `
+        <div style="border:2px solid var(--ink); border-radius:3px; padding:12px; margin-top:6px;">
+          <table class="data compact">
+            <tbody>
+              <tr style="font-weight:600;"><td colspan="3">TOTAL MILIK INVESTOR ${kelompokNum}</td><td class="num">${grandTotalQty}</td><td class="num">${fmtRp(grandTotalRp)}</td></tr>
+            </tbody>
+          </table>
+          <table class="data compact" style="margin-top:10px;">
+            <thead><tr><th>Kode</th><th class="num">Qty</th><th class="num">Profit</th></tr></thead>
+            <tbody>
+              ${Object.entries(profitByKode2).sort((a,b)=>b[1].total-a[1].total).map(([kode2,v]) => `<tr><td>PROFIT ${kode2}</td><td class="num">${v.qty}</td><td class="num">${fmtRp(v.total)}</td></tr>`).join('')}
+              <tr style="font-weight:600; border-top:2px solid var(--ink);"><td>TOTAL PROFIT</td><td class="num">${totalProfitQty}</td><td class="num">${fmtRp(totalProfitRp)}</td></tr>
+            </tbody>
+          </table>
+        </div>
+      `;
+    });
   }
 
   container.innerHTML = `
