@@ -137,6 +137,8 @@
       <button data-tab="ads">Ads Mingguan</button>
       <button data-tab="opex">Biaya Operasional</button>
       <button data-tab="pnl">PNL</button>
+      <div class="sidebar-group-label">Karyawan</div>
+      <button data-tab="gaji">Slip Gaji</button>
       <div class="sidebar-group-label">Pengaturan</div>
       <button data-tab="kontrak">Produk &amp; Kontrak</button>
       <button data-tab="master">Data Master</button>
@@ -176,6 +178,9 @@ let STATE = {
   biayaOperasional: [],            // biaya operasional periodik: {id, tanggalDari, tanggalSampai, kategori, jumlah, catatan}
   saldoDiluarKontrak: {},          // {capitalPartnerId: jumlahRp} -- sisa pembulatan dari rollover kontrak, lintas produk per investor
   biayaRetur: [],                  // biaya retur/refund dari order lama yg ditolak/dikembalikan: {id, tanggalDihitung, orderId, toko, jumlah, catatan}
+  karyawan: [],                    // {id, nik, nama, status}
+  slipGaji: [],                    // riwayat slip gaji per bulan: {id, karyawanId, bulan(1-12), tahun, pendapatan:[{label,jumlah}], potongan:[{label,jumlah}], createdAt, updatedAt}
+  slipGajiSettings: { namaPerusahaan: 'UJUSO', alamatBaris: ['Jl. Permana Timur Blok D7 No. 28', 'Kel. Citeureup, Kec. Cimahi Utara', 'Kota Cimahi'] }, // letterhead slip gaji
 };
 let stateFileId = null;
 let accessToken = null;
@@ -915,7 +920,7 @@ async function loadState() {
   const loaded = text ? JSON.parse(text) : {};
   // DEFAULT_STATE mencakup SEMUA field yg pernah ada -- supaya file lama (dari sebelum field baru ditambahkan)
   // tidak jadi undefined pas dimuat. Tiap kali nambah field baru ke STATE, tambahkan juga di sini.
-  const DEFAULT_STATE = { capitalPartners: [], stores: [], products: [], contracts: [], colorCodeMap: {}, pembagiPctManual: {}, orderDb: [], pendingOrderSku: {}, payouts: [], vendorPayouts: [], adsMingguan: [], biayaOperasional: [], saldoDiluarKontrak: {}, biayaRetur: [] };
+  const DEFAULT_STATE = { capitalPartners: [], stores: [], products: [], contracts: [], colorCodeMap: {}, pembagiPctManual: {}, orderDb: [], pendingOrderSku: {}, payouts: [], vendorPayouts: [], adsMingguan: [], biayaOperasional: [], saldoDiluarKontrak: {}, biayaRetur: [], karyawan: [], slipGaji: [], slipGajiSettings: { namaPerusahaan: 'UJUSO', alamatBaris: ['Jl. Permana Timur Blok D7 No. 28', 'Kel. Citeureup, Kec. Cimahi Utara', 'Kota Cimahi'] } };
   STATE = Object.assign({}, DEFAULT_STATE, loaded);
 }
 
@@ -4600,7 +4605,410 @@ function renderDashboard(container) {
   });
 }
 
-const renderers = { master: renderMaster, kontrak: renderKontrak, import: renderImport, database: renderDatabase, laporan: renderLaporan, ads: renderAds, opex: renderOpex, pnl: renderPnl, dashboard: renderDashboard };
+/* =========================================================================
+   TAB: GAJI (SLIP GAJI KARYAWAN)
+   ========================================================================= */
+const NAMA_BULAN_ID = ['Januari','Februari','Maret','April','Mei','Juni','Juli','Agustus','September','Oktober','November','Desember'];
+function namaBulanID(n) { return NAMA_BULAN_ID[(n - 1 + 12) % 12] || '-'; }
+
+// terbilang: ubah angka jadi teks bahasa Indonesia (dipakai utk baris terbilang di bawah GAJI BERSIH pada slip)
+const TERBILANG_SATUAN = ['', 'Satu', 'Dua', 'Tiga', 'Empat', 'Lima', 'Enam', 'Tujuh', 'Delapan', 'Sembilan', 'Sepuluh', 'Sebelas'];
+function terbilang(n) {
+  n = Math.floor(Math.abs(n || 0));
+  if (n < 12) return TERBILANG_SATUAN[n];
+  if (n < 20) return terbilang(n - 10) + ' Belas';
+  if (n < 100) return terbilang(Math.floor(n / 10)) + ' Puluh' + (n % 10 ? ' ' + terbilang(n % 10) : '');
+  if (n < 200) return 'Seratus' + (n % 100 ? ' ' + terbilang(n % 100) : '');
+  if (n < 1000) return terbilang(Math.floor(n / 100)) + ' Ratus' + (n % 100 ? ' ' + terbilang(n % 100) : '');
+  if (n < 2000) return 'Seribu' + (n % 1000 ? ' ' + terbilang(n % 1000) : '');
+  if (n < 1000000) return terbilang(Math.floor(n / 1000)) + ' Ribu' + (n % 1000 ? ' ' + terbilang(n % 1000) : '');
+  if (n < 1000000000) return terbilang(Math.floor(n / 1000000)) + ' Juta' + (n % 1000000 ? ' ' + terbilang(n % 1000000) : '');
+  if (n < 1000000000000) return terbilang(Math.floor(n / 1000000000)) + ' Miliar' + (n % 1000000000 ? ' ' + terbilang(n % 1000000000) : '');
+  return terbilang(Math.floor(n / 1000000000000)) + ' Triliun' + (n % 1000000000000 ? ' ' + terbilang(n % 1000000000000) : '');
+}
+function terbilangRupiah(n) {
+  n = Math.round(n || 0);
+  if (n === 0) return 'Nol Rupiah';
+  return (n < 0 ? 'Minus ' : '') + terbilang(n) + ' Rupiah';
+}
+
+// Format "LABEL,JUMLAH" per baris (sama spt pola textarea "Tambah Transaksi Manual") -- dipisah pakai koma TERAKHIR
+// di baris itu supaya label boleh mengandung koma (jarang, tapi jaga-jaga).
+function parseSlipLines(text) {
+  return (text || '').split('\n').map(s => s.trim()).filter(Boolean).map(line => {
+    const idx = line.lastIndexOf(',');
+    if (idx === -1) return { label: line, jumlah: 0 };
+    const label = line.slice(0, idx).trim();
+    const jumlahRaw = line.slice(idx + 1).trim().replace(/[^\d.-]/g, '');
+    return { label, jumlah: Number(jumlahRaw) || 0 };
+  });
+}
+function formatSlipLines(items) {
+  return (items || []).map(it => `${it.label},${it.jumlah}`).join('\n');
+}
+function computeSlipTotals(slip) {
+  const jumlahPendapatan = (slip.pendapatan || []).reduce((s, it) => s + (it.jumlah || 0), 0);
+  const jumlahPotongan = (slip.potongan || []).reduce((s, it) => s + (it.jumlah || 0), 0);
+  return { jumlahPendapatan, jumlahPotongan, gajiBersih: jumlahPendapatan - jumlahPotongan };
+}
+// Gabungkan 1 record slipGaji + data karyawan + pengaturan kop surat jadi 1 objek siap-tampil/siap-cetak.
+function buildSlipView(slip) {
+  const karyawan = STATE.karyawan.find(k => k.id === slip.karyawanId);
+  const totals = computeSlipTotals(slip);
+  return {
+    id: slip.id,
+    nik: karyawan ? (karyawan.nik || '-') : '-',
+    nama: karyawan ? karyawan.nama : '(karyawan sudah dihapus)',
+    bulan: slip.bulan, tahun: slip.tahun,
+    bulanTahun: namaBulanID(slip.bulan) + ' ' + slip.tahun,
+    pendapatan: slip.pendapatan || [], potongan: slip.potongan || [],
+    jumlahPendapatan: totals.jumlahPendapatan, jumlahPotongan: totals.jumlahPotongan, gajiBersih: totals.gajiBersih,
+    terbilang: terbilangRupiah(totals.gajiBersih),
+    namaPerusahaan: STATE.slipGajiSettings.namaPerusahaan, alamatBaris: STATE.slipGajiSettings.alamatBaris,
+  };
+}
+
+// Pure HTML-string builder utk jendela cetak -- 1 <div class="slip-page"> per slip, page-break antar slip,
+// supaya "Cetak" (1 slip) & "Cetak yang Dicentang" (banyak slip sekaligus) pakai fungsi yang sama persis.
+function buildSlipPrintHtml(views) {
+  const css = `<style>
+    * { box-sizing: border-box; }
+    body { font-family: Arial, Helvetica, sans-serif; margin: 0; padding: 0; color: #111; }
+    .slip-page { padding: 24px 32px; page-break-after: always; }
+    .slip-page:last-child { page-break-after: auto; }
+    .kop { display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 2px solid #111; padding-bottom: 8px; margin-bottom: 14px; }
+    .kop .perusahaan { font-size: 20px; font-weight: bold; }
+    .kop .alamat { font-size: 11px; line-height: 1.4; margin-top: 2px; }
+    .kop .judul { text-align: right; }
+    .kop .judul .t { font-size: 18px; font-weight: bold; }
+    .kop .judul .p { font-size: 12px; }
+    .identitas { margin-bottom: 14px; font-size: 13px; }
+    .identitas div { margin-bottom: 2px; }
+    table.slip-tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
+    table.slip-tbl th { text-align: left; border-bottom: 1.5px solid #111; padding: 4px 6px; font-size: 12px; }
+    table.slip-tbl td { padding: 3px 6px; }
+    table.slip-tbl td.num { text-align: right; }
+    table.slip-tbl tr.jumlah td { border-top: 1px solid #111; font-weight: bold; }
+    .kolom-wrap { display: flex; gap: 16px; }
+    .kolom-wrap table.slip-tbl { flex: 1; }
+    .gaji-bersih { margin-top: 14px; display: flex; justify-content: space-between; font-size: 15px; font-weight: bold; border-top: 2px solid #111; padding-top: 8px; }
+    .terbilang { margin-top: 10px; font-size: 12px; font-style: italic; }
+    @media print { .slip-page { padding: 10mm 14mm; } }
+  </style>`;
+  const rowsHtml = (items) => items.length ? items.map(it => `<tr><td>${it.label}</td><td class="num">${fmtRp(it.jumlah)}</td></tr>`).join('') : `<tr><td colspan="2" style="color:#888;">Tidak ada</td></tr>`;
+  const pages = views.map(v => `
+    <div class="slip-page">
+      <div class="kop">
+        <div>
+          <div class="perusahaan">${v.namaPerusahaan}</div>
+          <div class="alamat">${(v.alamatBaris || []).filter(Boolean).join('<br>')}</div>
+        </div>
+        <div class="judul">
+          <div class="t">SLIP GAJI</div>
+          <div class="p">${v.bulanTahun}</div>
+        </div>
+      </div>
+      <div class="identitas">
+        <div><b>NIK</b> : ${v.nik}</div>
+        <div><b>Nama Karyawan</b> : ${v.nama}</div>
+      </div>
+      <div class="kolom-wrap">
+        <table class="slip-tbl">
+          <thead><tr><th colspan="2">PENDAPATAN</th></tr></thead>
+          <tbody>${rowsHtml(v.pendapatan)}<tr class="jumlah"><td>JUMLAH PENDAPATAN</td><td class="num">${fmtRp(v.jumlahPendapatan)}</td></tr></tbody>
+        </table>
+        <table class="slip-tbl">
+          <thead><tr><th colspan="2">POTONGAN</th></tr></thead>
+          <tbody>${rowsHtml(v.potongan)}<tr class="jumlah"><td>JUMLAH POTONGAN</td><td class="num">${fmtRp(v.jumlahPotongan)}</td></tr></tbody>
+        </table>
+      </div>
+      <div class="gaji-bersih"><div>GAJI BERSIH</div><div>${fmtRp(v.gajiBersih)}</div></div>
+      <div class="terbilang">"${v.terbilang}"</div>
+    </div>
+  `).join('');
+  return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Slip Gaji</title>${css}</head><body>${pages}</body></html>`;
+}
+
+// Buka jendela baru berisi 1 atau banyak slip (dipisah per halaman via CSS page-break), lalu panggil print() --
+// mengandalkan "Save as PDF" bawaan browser, jadi tidak perlu tambah library PDF baru di aplikasi ini.
+function bukaCetakSlip(slipIds) {
+  const views = slipIds.map(id => STATE.slipGaji.find(s => s.id === id)).filter(Boolean).map(buildSlipView);
+  if (!views.length) { alert('Tidak ada slip gaji yang bisa dicetak.'); return; }
+  const html = buildSlipPrintHtml(views);
+  const w = window.open('', '_blank');
+  if (!w) { alert('Popup diblokir browser. Izinkan popup utk situs ini agar bisa cetak slip gaji.'); return; }
+  w.document.open(); w.document.write(html); w.document.close();
+  setTimeout(() => { w.focus(); w.print(); }, 300);
+}
+
+let editingSlipGajiId = null;
+let gajiRiwayatFilter = { karyawanId: '', tahun: '', bulan: '' };
+let gajiSelectedSlipIds = new Set();
+
+function renderGaji(container) {
+  const now = new Date();
+  const defBulan = now.getUTCMonth() + 1, defTahun = now.getUTCFullYear();
+  const editingSlip = editingSlipGajiId ? STATE.slipGaji.find(s => s.id === editingSlipGajiId) : null;
+
+  let riwayat = STATE.slipGaji.slice();
+  if (gajiRiwayatFilter.karyawanId) riwayat = riwayat.filter(s => s.karyawanId === gajiRiwayatFilter.karyawanId);
+  if (gajiRiwayatFilter.tahun) riwayat = riwayat.filter(s => String(s.tahun) === String(gajiRiwayatFilter.tahun));
+  if (gajiRiwayatFilter.bulan) riwayat = riwayat.filter(s => String(s.bulan) === String(gajiRiwayatFilter.bulan));
+  riwayat.sort((a, b) => (b.tahun - a.tahun) || (b.bulan - a.bulan));
+  const tahunList = [...new Set(STATE.slipGaji.map(s => s.tahun))].sort((a, b) => b - a);
+
+  container.innerHTML = `
+    <div class="panel">
+      <h2>Karyawan</h2>
+      <div class="desc">Daftar karyawan yang bisa dibuatkan slip gaji.</div>
+      <form id="formKaryawan">
+        <div class="grid2">
+          <div class="field"><label>NIK</label><input type="text" id="ky_nik" placeholder="mis. 001"></div>
+          <div class="field"><label>Nama Karyawan</label><input type="text" id="ky_nama" required></div>
+        </div>
+        <button type="submit" class="btn btn-primary">+ Tambah Karyawan</button>
+        <div class="status-box" id="karyawanMsg"></div>
+      </form>
+      <div style="overflow-x:auto; margin-top:12px;">
+        ${!STATE.karyawan.length ? '<div class="empty-note">Belum ada karyawan.</div>' : `
+        <table class="data compact">
+          <thead><tr><th>NIK</th><th>Nama</th><th>Status</th><th></th></tr></thead>
+          <tbody>
+            ${STATE.karyawan.map(k => `<tr>
+              <td>${k.nik || '-'}</td><td>${k.nama}</td>
+              <td><select data-status-karyawan="${k.id}" style="font-size:11px; padding:2px 4px;">
+                <option value="Aktif" ${k.status !== 'Nonaktif' ? 'selected' : ''}>Aktif</option>
+                <option value="Nonaktif" ${k.status === 'Nonaktif' ? 'selected' : ''}>Nonaktif</option>
+              </select></td>
+              <td><button class="icon-del" data-del-karyawan="${k.id}">✕</button></td>
+            </tr>`).join('')}
+          </tbody>
+        </table>`}
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>Pengaturan Slip Gaji</h2>
+      <div class="desc">Kop surat yang tampil di setiap slip gaji.</div>
+      <div class="field"><label>Nama Perusahaan</label><input type="text" id="gs_namaPerusahaan" value="${STATE.slipGajiSettings.namaPerusahaan}"></div>
+      <div class="field"><label>Alamat Baris 1</label><input type="text" id="gs_alamat1" value="${STATE.slipGajiSettings.alamatBaris[0] || ''}"></div>
+      <div class="field"><label>Alamat Baris 2</label><input type="text" id="gs_alamat2" value="${STATE.slipGajiSettings.alamatBaris[1] || ''}"></div>
+      <div class="field"><label>Alamat Baris 3</label><input type="text" id="gs_alamat3" value="${STATE.slipGajiSettings.alamatBaris[2] || ''}"></div>
+      <button class="btn btn-ghost" id="btnSimpanSettingsGaji" style="margin-top:8px;">Simpan Pengaturan</button>
+      <div class="status-box" id="settingsGajiMsg"></div>
+    </div>
+
+    <div class="panel">
+      <h2>${editingSlip ? 'Edit Slip Gaji' : 'Buat Slip Gaji'}</h2>
+      <div class="desc">Isi PENDAPATAN &amp; POTONGAN, 1 baris per komponen, format <code>LABEL,JUMLAH</code>. Total &amp; terbilang dihitung otomatis.</div>
+      ${!STATE.karyawan.length ? '<div class="empty-note">Tambah karyawan dulu di atas.</div>' : `
+      <form id="formSlipGaji">
+        <div class="grid2">
+          <div class="field"><label>Karyawan</label>
+            <select id="sg_karyawanId" required>
+              <option value="">Pilih karyawan</option>
+              ${STATE.karyawan.map(k => `<option value="${k.id}" ${editingSlip && editingSlip.karyawanId === k.id ? 'selected' : ''}>${k.nama}${k.status === 'Nonaktif' ? ' (Nonaktif)' : ''}</option>`).join('')}
+            </select>
+          </div>
+          <div class="field">
+            <label>Periode</label>
+            <div style="display:flex; gap:6px;">
+              <select id="sg_bulan" style="flex:1;">${NAMA_BULAN_ID.map((b, i) => `<option value="${i + 1}" ${(editingSlip ? editingSlip.bulan : defBulan) === i + 1 ? 'selected' : ''}>${b}</option>`).join('')}</select>
+              <input type="number" id="sg_tahun" value="${editingSlip ? editingSlip.tahun : defTahun}" style="width:90px;">
+            </div>
+          </div>
+        </div>
+        <button type="button" class="btn btn-ghost" id="btnSalinBulanLalu" style="margin-bottom:10px;">Salin dari Slip Bulan Sebelumnya</button>
+        <div class="grid2">
+          <div class="field"><label>PENDAPATAN (LABEL,JUMLAH per baris)</label>
+            <textarea id="sg_pendapatan" rows="6" placeholder="GAJI POKOK,2500000&#10;TUNJANGAN TRANSPORT,300000">${editingSlip ? formatSlipLines(editingSlip.pendapatan) : ''}</textarea>
+          </div>
+          <div class="field"><label>POTONGAN (LABEL,JUMLAH per baris)</label>
+            <textarea id="sg_potongan" rows="6" placeholder="TIDAK MASUK,50000&#10;TERLAMBAT,0">${editingSlip ? formatSlipLines(editingSlip.potongan) : ''}</textarea>
+          </div>
+        </div>
+        <div class="desc" id="sg_preview" style="margin-top:6px; font-size:13px;"></div>
+        <button type="submit" class="btn btn-primary" style="margin-top:8px;">${editingSlip ? 'Simpan Perubahan' : '+ Simpan Slip Gaji'}</button>
+        ${editingSlip ? `<button type="button" class="btn btn-ghost" id="btnBatalEditSlip" style="margin-top:8px;">Batal Edit</button>` : ''}
+        <div class="status-box" id="slipGajiMsg"></div>
+      </form>
+      `}
+    </div>
+
+    <div class="panel">
+      <h2>Riwayat Slip Gaji</h2>
+      <div class="grid2">
+        <div class="field"><label>Karyawan</label>
+          <select id="rg_filterKaryawan"><option value="">Semua Karyawan</option>${STATE.karyawan.map(k => `<option value="${k.id}" ${gajiRiwayatFilter.karyawanId === k.id ? 'selected' : ''}>${k.nama}</option>`).join('')}</select>
+        </div>
+        <div class="field"><label>Tahun</label>
+          <select id="rg_filterTahun"><option value="">Semua Tahun</option>${tahunList.map(t => `<option value="${t}" ${String(gajiRiwayatFilter.tahun) === String(t) ? 'selected' : ''}>${t}</option>`).join('')}</select>
+        </div>
+      </div>
+      <div class="field"><label>Bulan</label>
+        <select id="rg_filterBulan"><option value="">Semua Bulan</option>${NAMA_BULAN_ID.map((b, i) => `<option value="${i + 1}" ${String(gajiRiwayatFilter.bulan) === String(i + 1) ? 'selected' : ''}>${b}</option>`).join('')}</select>
+      </div>
+      ${riwayat.length ? `<button class="btn btn-primary" id="btnCetakTerpilih" style="margin-top:8px;">Cetak yang Dicentang</button>
+      <button class="btn btn-ghost" id="btnCentangSemua" style="margin-top:8px;">Centang/Batal Semua</button>` : ''}
+      <div style="overflow-x:auto; margin-top:10px;">
+        ${!riwayat.length ? '<div class="empty-note">Belum ada slip gaji sesuai filter ini.</div>' : `
+        <table class="data compact">
+          <thead><tr><th></th><th>Karyawan</th><th>Periode</th><th class="num">Pendapatan</th><th class="num">Potongan</th><th class="num">Gaji Bersih</th><th></th></tr></thead>
+          <tbody>
+            ${riwayat.map(s => {
+              const v = buildSlipView(s);
+              return `<tr>
+                <td><input type="checkbox" class="sg-check" data-check-slip="${s.id}" ${gajiSelectedSlipIds.has(s.id) ? 'checked' : ''}></td>
+                <td>${v.nama}</td><td>${v.bulanTahun}</td>
+                <td class="num">${fmtRp(v.jumlahPendapatan)}</td><td class="num">${fmtRp(v.jumlahPotongan)}</td>
+                <td class="num"><b>${fmtRp(v.gajiBersih)}</b></td>
+                <td style="white-space:nowrap;">
+                  <button class="btn btn-ghost" data-edit-slip="${s.id}" style="padding:3px 8px; font-size:11px;">Edit</button>
+                  <button class="btn btn-ghost" data-cetak-slip="${s.id}" style="padding:3px 8px; font-size:11px;">Cetak</button>
+                  <button class="icon-del" data-del-slip="${s.id}">✕</button>
+                </td>
+              </tr>`;
+            }).join('')}
+          </tbody>
+        </table>`}
+      </div>
+    </div>
+  `;
+
+  document.getElementById('formKaryawan').addEventListener('submit', async (ev) => {
+    ev.preventDefault();
+    const msg = document.getElementById('karyawanMsg');
+    const nik = document.getElementById('ky_nik').value.trim();
+    const nama = document.getElementById('ky_nama').value.trim();
+    if (!nama) { showMsg(msg, 'err', 'Nama karyawan wajib diisi.'); return; }
+    STATE.karyawan.push({ id: uid('ky'), nik: nik || null, nama, status: 'Aktif' });
+    await withSaving(msg, 'Karyawan ditambahkan.', async () => { await saveState(); });
+    setTimeout(() => renderGaji(container), 800);
+  });
+  container.querySelectorAll('[data-status-karyawan]').forEach(sel => {
+    sel.addEventListener('change', async () => {
+      const k = STATE.karyawan.find(x => x.id === sel.dataset.statusKaryawan);
+      if (k) { k.status = sel.value; await saveState(); }
+    });
+  });
+  container.querySelectorAll('[data-del-karyawan]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      if (!confirm('Hapus karyawan ini? Slip gaji yang sudah ada tetap tersimpan sbg riwayat.')) return;
+      STATE.karyawan = STATE.karyawan.filter(k => k.id !== btn.dataset.delKaryawan);
+      await saveState();
+      renderGaji(container);
+    });
+  });
+
+  document.getElementById('btnSimpanSettingsGaji').addEventListener('click', async () => {
+    const msg = document.getElementById('settingsGajiMsg');
+    STATE.slipGajiSettings = {
+      namaPerusahaan: document.getElementById('gs_namaPerusahaan').value.trim() || 'UJUSO',
+      alamatBaris: [
+        document.getElementById('gs_alamat1').value.trim(),
+        document.getElementById('gs_alamat2').value.trim(),
+        document.getElementById('gs_alamat3').value.trim(),
+      ],
+    };
+    await withSaving(msg, 'Pengaturan slip gaji disimpan.', async () => { await saveState(); });
+  });
+
+  const formSlip = document.getElementById('formSlipGaji');
+  if (formSlip) {
+    const updatePreview = () => {
+      const pendapatan = parseSlipLines(document.getElementById('sg_pendapatan').value);
+      const potongan = parseSlipLines(document.getElementById('sg_potongan').value);
+      const totals = computeSlipTotals({ pendapatan, potongan });
+      document.getElementById('sg_preview').innerHTML =
+        `Jumlah Pendapatan: <b>${fmtRp(totals.jumlahPendapatan)}</b> &middot; Jumlah Potongan: <b>${fmtRp(totals.jumlahPotongan)}</b> &middot; Gaji Bersih: <b>${fmtRp(totals.gajiBersih)}</b><br>
+         <i>"${terbilangRupiah(totals.gajiBersih)}"</i>`;
+    };
+    document.getElementById('sg_pendapatan').addEventListener('input', updatePreview);
+    document.getElementById('sg_potongan').addEventListener('input', updatePreview);
+    updatePreview();
+
+    document.getElementById('btnSalinBulanLalu').addEventListener('click', () => {
+      const karyawanId = document.getElementById('sg_karyawanId').value;
+      const bulan = Number(document.getElementById('sg_bulan').value);
+      const tahun = Number(document.getElementById('sg_tahun').value);
+      if (!karyawanId) { alert('Pilih karyawan dulu.'); return; }
+      const bulanLalu = bulan === 1 ? 12 : bulan - 1;
+      const tahunLalu = bulan === 1 ? tahun - 1 : tahun;
+      const slipLalu = STATE.slipGaji.find(s => s.karyawanId === karyawanId && s.bulan === bulanLalu && s.tahun === tahunLalu);
+      if (!slipLalu) { alert('Belum ada slip gaji karyawan ini utk bulan sebelumnya (' + namaBulanID(bulanLalu) + ' ' + tahunLalu + ').'); return; }
+      document.getElementById('sg_pendapatan').value = formatSlipLines(slipLalu.pendapatan);
+      document.getElementById('sg_potongan').value = formatSlipLines(slipLalu.potongan);
+      updatePreview();
+    });
+
+    formSlip.addEventListener('submit', async (ev) => {
+      ev.preventDefault();
+      const msg = document.getElementById('slipGajiMsg');
+      const karyawanId = document.getElementById('sg_karyawanId').value;
+      const bulan = Number(document.getElementById('sg_bulan').value);
+      const tahun = Number(document.getElementById('sg_tahun').value);
+      if (!karyawanId) { showMsg(msg, 'err', 'Pilih karyawan dulu.'); return; }
+      const dup = STATE.slipGaji.find(s => s.karyawanId === karyawanId && s.bulan === bulan && s.tahun === tahun && s.id !== editingSlipGajiId);
+      if (dup) { showMsg(msg, 'err', 'Slip gaji karyawan ini utk periode ' + namaBulanID(bulan) + ' ' + tahun + ' sudah ada. Edit yang sudah ada saja.'); return; }
+      const pendapatan = parseSlipLines(document.getElementById('sg_pendapatan').value);
+      const potongan = parseSlipLines(document.getElementById('sg_potongan').value);
+      const now2 = new Date().toISOString();
+      if (editingSlipGajiId) {
+        const s = STATE.slipGaji.find(x => x.id === editingSlipGajiId);
+        Object.assign(s, { karyawanId, bulan, tahun, pendapatan, potongan, updatedAt: now2 });
+      } else {
+        STATE.slipGaji.push({ id: uid('sg'), karyawanId, bulan, tahun, pendapatan, potongan, createdAt: now2, updatedAt: now2 });
+      }
+      const wasEditing = !!editingSlipGajiId;
+      editingSlipGajiId = null;
+      await withSaving(msg, wasEditing ? 'Slip gaji diperbarui.' : 'Slip gaji disimpan.', async () => { await saveState(); });
+      setTimeout(() => renderGaji(container), 800);
+    });
+
+    const btnBatal = document.getElementById('btnBatalEditSlip');
+    if (btnBatal) btnBatal.addEventListener('click', () => { editingSlipGajiId = null; renderGaji(container); });
+  }
+
+  document.getElementById('rg_filterKaryawan').addEventListener('change', (e) => { gajiRiwayatFilter.karyawanId = e.target.value; renderGaji(container); });
+  document.getElementById('rg_filterTahun').addEventListener('change', (e) => { gajiRiwayatFilter.tahun = e.target.value; renderGaji(container); });
+  document.getElementById('rg_filterBulan').addEventListener('change', (e) => { gajiRiwayatFilter.bulan = e.target.value; renderGaji(container); });
+
+  container.querySelectorAll('[data-check-slip]').forEach(chk => {
+    chk.addEventListener('change', () => {
+      if (chk.checked) gajiSelectedSlipIds.add(chk.dataset.checkSlip);
+      else gajiSelectedSlipIds.delete(chk.dataset.checkSlip);
+    });
+  });
+  const btnCentangSemua = document.getElementById('btnCentangSemua');
+  if (btnCentangSemua) btnCentangSemua.addEventListener('click', () => {
+    const semuaTercentang = riwayat.every(s => gajiSelectedSlipIds.has(s.id));
+    riwayat.forEach(s => { if (semuaTercentang) gajiSelectedSlipIds.delete(s.id); else gajiSelectedSlipIds.add(s.id); });
+    renderGaji(container);
+  });
+  const btnCetakTerpilih = document.getElementById('btnCetakTerpilih');
+  if (btnCetakTerpilih) btnCetakTerpilih.addEventListener('click', () => {
+    const ids = riwayat.map(s => s.id).filter(id => gajiSelectedSlipIds.has(id));
+    if (!ids.length) { alert('Centang dulu slip gaji yang mau dicetak.'); return; }
+    bukaCetakSlip(ids);
+  });
+  container.querySelectorAll('[data-cetak-slip]').forEach(btn => {
+    btn.addEventListener('click', () => bukaCetakSlip([btn.dataset.cetakSlip]));
+  });
+  container.querySelectorAll('[data-edit-slip]').forEach(btn => {
+    btn.addEventListener('click', () => { editingSlipGajiId = btn.dataset.editSlip; renderGaji(container); });
+  });
+  container.querySelectorAll('[data-del-slip]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      if (!confirm('Hapus slip gaji ini? Data historis ini tidak bisa dikembalikan.')) return;
+      STATE.slipGaji = STATE.slipGaji.filter(s => s.id !== btn.dataset.delSlip);
+      gajiSelectedSlipIds.delete(btn.dataset.delSlip);
+      await saveState();
+      renderGaji(container);
+    });
+  });
+}
+
+const renderers = { master: renderMaster, kontrak: renderKontrak, import: renderImport, database: renderDatabase, laporan: renderLaporan, ads: renderAds, opex: renderOpex, pnl: renderPnl, dashboard: renderDashboard, gaji: renderGaji };
 function switchTab(tab) {
   document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
   renderers[tab](document.getElementById('app'));
