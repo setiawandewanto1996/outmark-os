@@ -1385,7 +1385,7 @@ function renderMaster(container) {
       showMsg(msg, 'err', `Kode "${kode2}" sudah dipakai oleh ${STATE.capitalPartners.find(p=>p.kode2===kode2).nama} -- pakai kode lain.`);
       return;
     }
-    STATE.capitalPartners.push({ id: uid('cp'), nama, kode2, kontak, tanggalBergabung, status: 'Aktif', kelompok, saldoLuarKontrak: 0 });
+    STATE.capitalPartners.push({ id: uid('cp'), nama, kode2, kontak, tanggalBergabung, status: 'Aktif', kelompok });
     await withSaving(msg, 'Capital Partner ditambahkan.', async () => {
       await saveState();
       document.getElementById('formPartner').reset();
@@ -1441,7 +1441,7 @@ function renderPartnerList(el) {
   if (!STATE.capitalPartners.length) { el.innerHTML = '<div class="empty-note">Belum ada Capital Partner terdaftar.</div>'; return; }
   el.innerHTML = `
     <table class="data">
-      <thead><tr><th>Kode</th><th>Nama</th><th>Kontak</th><th>Bergabung</th><th>Status</th><th>Kelompok</th><th>Saldo Luar Kontrak</th><th></th></tr></thead>
+      <thead><tr><th>Kode</th><th>Nama</th><th>Kontak</th><th>Bergabung</th><th>Status</th><th>Kelompok</th><th></th></tr></thead>
       <tbody>
         ${STATE.capitalPartners.map(p => `<tr>
           <td><b>${p.kode2}</b></td><td>${p.nama}</td><td>${p.kontak || '-'}</td>
@@ -1451,7 +1451,6 @@ function renderPartnerList(el) {
             <option value="1" ${(p.kelompok||1)==1?'selected':''}>Kelompok 1</option>
             <option value="2" ${(p.kelompok||1)==2?'selected':''}>Kelompok 2</option>
           </select></td>
-          <td><input type="number" class="p-saldo-input" data-partner-id="${p.id}" value="${p.saldoLuarKontrak||0}" min="0" style="width:100px; padding:2px 4px; font-size:12px;"></td>
           <td><button class="icon-del" data-del-partner="${p.id}" title="Hapus">✕</button></td>
         </tr>`).join('')}
       </tbody>
@@ -1469,16 +1468,6 @@ function renderPartnerList(el) {
     sel.addEventListener('change', async () => {
       const partner = STATE.capitalPartners.find(p => p.id === sel.dataset.partnerId);
       if (partner) { partner.kelompok = Number(sel.value); await saveState(); }
-    });
-  });
-  // Saldo Luar Kontrak: dana investor yg SUDAH masuk tapi BELUM terikat ke kontrak/stock manapun (mis. sisa
-  // pecahan dana yg blm cukup utk beli 1 unit lagi). Murni field saldo yg bisa diedit langsung -- TIDAK ikut
-  // dihitung sbg modal aktif di computePembagiPct/Total per Capital Partner (baru dihitung setelah beneran
-  // masuk jadi kontrak lewat kalkulator "Hitung Stock Awal dari Dana" di panel Tambah Kontrak Baru).
-  el.querySelectorAll('.p-saldo-input').forEach(inp => {
-    inp.addEventListener('change', async () => {
-      const partner = STATE.capitalPartners.find(p => p.id === inp.dataset.partnerId);
-      if (partner) { partner.saldoLuarKontrak = Number(inp.value) || 0; await saveState(); }
     });
   });
 }
@@ -3196,7 +3185,7 @@ function renderKontrak(container) {
 
     <div class="panel">
       <h2>Saldo di Luar Kontrak</h2>
-      <div class="desc">Sisa pembulatan dari rollover kontrak (Putar Penuh/Putar Modal Saja) yang belum genap jadi 1 unit produk apa pun. Terkumpul lintas produk per investor. Murni informasi -- dipakainya kapan &amp; ke produk apa, kamu putuskan manual.</div>
+      <div class="desc">Dana investor yang sudah masuk tapi belum genap jadi 1 unit produk apa pun -- otomatis nambah dari sisa pembulatan tiap Rollover (Putar Penuh/Putar Modal Saja), atau bisa diisi/dikoreksi manual langsung di sini (mis. saldo dari sebelum pakai sistem ini). Terkumpul lintas produk per investor. Dipakainya kapan &amp; ke produk apa, kamu putuskan manual lewat kalkulator "Hitung Stock Awal dari Dana" di panel Tambah Kontrak Baru di bawah.</div>
       <div id="saldoDiluarView"></div>
     </div>
 
@@ -3321,7 +3310,7 @@ function renderKontrak(container) {
   if (kPartnerSelect) kPartnerSelect.addEventListener('change', () => {
     const infoEl = document.getElementById('k_saldoInfo');
     const partner = STATE.capitalPartners.find(p => p.id === kPartnerSelect.value);
-    const saldo = partner ? (partner.saldoLuarKontrak||0) : 0;
+    const saldo = partner ? (STATE.saldoDiluarKontrak[partner.id]||0) : 0;
     if (partner && saldo > 0) {
       infoEl.style.display = 'block';
       infoEl.innerHTML = `${partner.nama} punya Saldo Luar Kontrak: <b>${fmtRp(saldo)}</b> -- bisa digabung lewat kalkulator di bawah.`;
@@ -3340,7 +3329,7 @@ function renderKontrak(container) {
     const partner = STATE.capitalPartners.find(p => p.id === kPartnerSelect.value);
     if (!partner) { preview.innerHTML = '<span style="color:var(--err);">Pilih Capital Partner dulu.</span>'; return; }
     if (!harga || harga <= 0) { preview.innerHTML = '<span style="color:var(--err);">Isi Harga Modal/Pcs dulu.</span>'; return; }
-    const saldoLama = partner.saldoLuarKontrak||0;
+    const saldoLama = STATE.saldoDiluarKontrak[partner.id]||0;
     const { totalDana, stockAwal: stockAwalHitung, sisa } = hitungStockAwalDariDanaSaldo(danaBaru, pakaiSaldo, saldoLama, harga);
     document.getElementById('k_stock').value = stockAwalHitung;
     preview.innerHTML = `Total dana ${fmtRp(totalDana)} (tunai ${fmtRp(danaBaru)}${pakaiSaldo?` + saldo ${fmtRp(saldoLama)}`:''}) &divide; ${fmtRp(harga)}/pcs = <b>${stockAwalHitung} unit</b>. Sisa ${fmtRp(sisa)} akan ${pakaiSaldo ? 'MENGGANTIKAN' : 'ditambahkan ke'} Saldo Luar Kontrak ${partner.kode2} begitu kontrak ini disimpan.`;
@@ -3370,13 +3359,13 @@ function renderKontrak(container) {
     let saldoUpdateMsg = '';
     if (danaBaru > 0 || pakaiSaldo) {
       if (!hargaModalPcs || hargaModalPcs <= 0) { showMsg(msg, 'err', 'Isi Harga Modal/Pcs dulu utk memakai Dana Tunai Baru/Saldo Luar Kontrak.'); return; }
-      const saldoLama = partner ? (partner.saldoLuarKontrak||0) : 0;
+      const saldoLama = partner ? (STATE.saldoDiluarKontrak[partner.id]||0) : 0;
       const { stockAwal: stockAwalHitung, sisa } = hitungStockAwalDariDanaSaldo(danaBaru, pakaiSaldo, saldoLama, hargaModalPcs);
       if (stockAwal !== stockAwalHitung) {
         if (!confirm(`Stock Awal yg mau disimpan (${stockAwal}) beda dgn hasil hitung dari Dana Tunai Baru/Saldo (${stockAwalHitung} unit, sisa ${fmtRp(sisa)}). Kemungkinan belum klik "Hitung Stock Awal" atau Stock Awal sudah diubah manual belakangan. Lanjutkan simpan Stock Awal ${stockAwal} TANPA mengubah Saldo Luar Kontrak?`)) return;
       } else if (partner) {
-        partner.saldoLuarKontrak = pakaiSaldo ? sisa : (saldoLama + sisa);
-        saldoUpdateMsg = ` Saldo Luar Kontrak ${partner.kode2} diperbarui jadi ${fmtRp(partner.saldoLuarKontrak)}.`;
+        STATE.saldoDiluarKontrak[partner.id] = pakaiSaldo ? sisa : (saldoLama + sisa);
+        saldoUpdateMsg = ` Saldo Luar Kontrak ${partner.kode2} diperbarui jadi ${fmtRp(STATE.saldoDiluarKontrak[partner.id])}.`;
       }
     }
 
@@ -3461,22 +3450,31 @@ function renderKontrak(container) {
     `;
   }
 
-  // ---- Saldo di Luar Kontrak ----
+  // ---- Saldo di Luar Kontrak (EDITABLE -- otomatis nambah dr sisa pembulatan Rollover di
+  // resolveRolloverIntoAllocations, TAPI juga bisa diisi/dikoreksi manual di sini, mis. utk saldo dari
+  // sebelum pakai sistem ini). Tampilkan SEMUA capital partner (bukan cuma yg sudah punya saldo>0) supaya
+  // bisa langsung diisi utk investor yg belum ada entrinya sama sekali di STATE.saldoDiluarKontrak. ----
   const saldoEl = document.getElementById('saldoDiluarView');
-  const saldoEntries = Object.entries(STATE.saldoDiluarKontrak || {}).filter(([,v]) => v > 0);
-  if (!saldoEntries.length) { saldoEl.innerHTML = '<div class="empty-note">Belum ada saldo di luar kontrak.</div>'; }
+  if (!STATE.capitalPartners.length) { saldoEl.innerHTML = '<div class="empty-note">Belum ada Capital Partner terdaftar.</div>'; }
   else {
+    const partnersSorted = [...STATE.capitalPartners].sort((a,b) => a.kode2.localeCompare(b.kode2));
     saldoEl.innerHTML = `
       <table class="data">
-        <thead><tr><th>Kode</th><th>Nama</th><th class="num">Saldo</th></tr></thead>
+        <thead><tr><th>Kode</th><th>Nama</th><th class="num">Saldo di Luar Kontrak (Rp)</th></tr></thead>
         <tbody>
-          ${saldoEntries.map(([cpId, jumlah]) => {
-            const partner = findPartnerById(cpId);
-            return `<tr><td><b>${partner?partner.kode2:'?'}</b></td><td>${partner?partner.nama:'(tidak ditemukan)'}</td><td class="num">${fmtRp(jumlah)}</td></tr>`;
-          }).sort().join('')}
+          ${partnersSorted.map(p => `<tr>
+            <td><b>${p.kode2}</b></td><td>${p.nama}</td>
+            <td class="num"><input type="number" class="saldo-diluar-input" data-partner-id="${p.id}" value="${STATE.saldoDiluarKontrak[p.id]||0}" min="0" style="width:110px; padding:2px 4px; font-size:12px; text-align:right;"></td>
+          </tr>`).join('')}
         </tbody>
       </table>
     `;
+    saldoEl.querySelectorAll('.saldo-diluar-input').forEach(inp => {
+      inp.addEventListener('change', async () => {
+        STATE.saldoDiluarKontrak[inp.dataset.partnerId] = Number(inp.value) || 0;
+        await saveState();
+      });
+    });
   }
 
   // ---- Pembagi Qty SW: tabel per produk, qty kumulatif semua kontrak (spt contoh) ----
