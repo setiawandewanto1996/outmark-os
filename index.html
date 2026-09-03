@@ -1605,6 +1605,35 @@ function renderPartnerList(el) {
   });
 }
 
+// Hitung berapa banyak data lama yg mereferensikan NAMA toko ini secara teks (bukan cuma storeId) -- dipakai utk
+// preview dampak SEBELUM eksekusi ganti nama, supaya user tau persis apa yg akan ikut berubah.
+function hitungDampakGantiNamaToko(namaLama) {
+  const orderDb = STATE.orderDb.filter(r => r.sumber === namaLama).length;
+  const biayaRetur = STATE.biayaRetur.filter(r => r.toko === namaLama).length;
+  const adsMingguan = STATE.adsMingguan.filter(a => a.storeName === namaLama).length;
+  let pendingOrderSku = 0;
+  Object.values(STATE.pendingOrderSku).forEach(arr => { (arr||[]).forEach(p => { if (p && p.storeName === namaLama) pendingOrderSku++; }); });
+  return { orderDb, biayaRetur, adsMingguan, pendingOrderSku };
+}
+
+// Ganti nama toko di STATE.stores DAN di SEMUA data lama yg menyimpan nama toko sbg teks (Database Penjualan
+// via r.sumber, Biaya Retur via r.toko, Biaya Iklan via a.storeName, Pesanan Menunggu via p.storeName) -- WAJIB
+// dicascade krn beberapa perhitungan (mis. computeTokoBreakdown utk Dashboard) mencocokkan berdasarkan STRING
+// nama toko, bukan storeId. Kalau cuma STATE.stores[].nama yg diubah tanpa ini, data lama akan "lepas" dari
+// toko yg baru & laporan lama jadi salah hitung (seolah biaya iklan/retur toko itu = 0 utk periode lama).
+function terapkanGantiNamaToko(storeId, namaBaru) {
+  const store = STATE.stores.find(s => s.id === storeId);
+  if (!store) return null;
+  const namaLama = store.nama;
+  store.nama = namaBaru;
+  let nOrderDb = 0, nBiayaRetur = 0, nAdsMingguan = 0, nPendingOrderSku = 0;
+  STATE.orderDb.forEach(r => { if (r.sumber === namaLama) { r.sumber = namaBaru; nOrderDb++; } });
+  STATE.biayaRetur.forEach(r => { if (r.toko === namaLama) { r.toko = namaBaru; nBiayaRetur++; } });
+  STATE.adsMingguan.forEach(a => { if (a.storeId === storeId || a.storeName === namaLama) { a.storeName = namaBaru; nAdsMingguan++; } });
+  Object.values(STATE.pendingOrderSku).forEach(arr => { (arr||[]).forEach(p => { if (p && p.storeName === namaLama) { p.storeName = namaBaru; nPendingOrderSku++; } }); });
+  return { namaLama, namaBaru, nOrderDb, nBiayaRetur, nAdsMingguan, nPendingOrderSku };
+}
+
 function renderStoreList(el) {
   if (!STATE.stores.length) { el.innerHTML = '<div class="empty-note">Belum ada toko terdaftar.</div>'; return; }
   el.innerHTML = `
@@ -1612,13 +1641,45 @@ function renderStoreList(el) {
       <thead><tr><th>Nama Toko</th><th>Platform</th><th>Status</th><th></th></tr></thead>
       <tbody>
         ${STATE.stores.map(s => `<tr>
-          <td>${s.nama}</td><td>${platformDot(s.platform)}${s.platform}</td>
+          <td><input type="text" class="rename-toko-input" data-store-id="${s.id}" value="${s.nama}" style="width:150px; padding:2px 4px; font-size:12px;"></td>
+          <td>${platformDot(s.platform)}${s.platform}</td>
           <td><span class="pill ${s.status==='Aktif'?'ok':'off'}">${s.status}</span></td>
-          <td><button class="icon-del" data-del-store="${s.id}" title="Hapus">✕</button></td>
+          <td style="white-space:nowrap;">
+            <button class="btn btn-ghost" data-rename-store="${s.id}" style="padding:2px 8px; font-size:11px;">Ganti Nama</button>
+            <button class="icon-del" data-del-store="${s.id}" title="Hapus">✕</button>
+          </td>
         </tr>`).join('')}
       </tbody>
     </table>
   `;
+  el.querySelectorAll('[data-rename-store]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const storeId = btn.dataset.renameStore;
+      const store = STATE.stores.find(s => s.id === storeId);
+      if (!store) return;
+      const input = el.querySelector(`.rename-toko-input[data-store-id="${storeId}"]`);
+      const namaBaru = (input.value || '').trim();
+      if (!namaBaru) { alert('Nama toko tidak boleh kosong.'); return; }
+      if (namaBaru === store.nama) return; // tidak ada perubahan
+      if (STATE.stores.some(s => s.id !== storeId && s.nama === namaBaru)) {
+        alert(`Nama "${namaBaru}" sudah dipakai toko lain -- pakai nama lain.`);
+        return;
+      }
+      const dampak = hitungDampakGantiNamaToko(store.nama);
+      const totalDampak = dampak.orderDb + dampak.biayaRetur + dampak.adsMingguan + dampak.pendingOrderSku;
+      const pesan = `Ganti nama toko "${store.nama}" -> "${namaBaru}"?\n\n` +
+        `Ini akan ikut memperbarui referensi nama toko lama di:\n` +
+        `- ${dampak.orderDb} baris Database Penjualan\n` +
+        `- ${dampak.biayaRetur} baris Biaya Retur\n` +
+        `- ${dampak.adsMingguan} entri Biaya Iklan\n` +
+        `- ${dampak.pendingOrderSku} baris Pesanan Menunggu\n\n` +
+        (totalDampak ? `Total ${totalDampak} data lama ikut diperbarui supaya laporan tetap akurat.` : `Tidak ada data lama yg mereferensikan nama ini.`);
+      if (!confirm(pesan)) return;
+      terapkanGantiNamaToko(storeId, namaBaru);
+      await saveState();
+      renderStoreList(el);
+    });
+  });
   el.querySelectorAll('[data-del-store]').forEach(btn => {
     btn.addEventListener('click', async () => {
       if (!confirm('Hapus toko ini dari daftar?')) return;
@@ -4151,6 +4212,112 @@ function renderLaporanTable(el, container) {
 /* =========================================================================
    TAB: ADS MINGGUAN
    ========================================================================= */
+
+// ---- Migrasi Biaya Iklan dari Excel UJUSO lama (sheet "Ads Mingguan") ----
+// Struktur sheet lama: kolom Tanggal (macam2 format teks tanggal -- kolom Bulan/Tahun di sampingnya TIDAK selalu
+// bisa dipakai, banyak baris #VALUE!/kosong krn formula rusak), lalu 3 kolom biaya per PLATFORM (Tiktok/Tokped/
+// Shopee), BUKAN per toko spesifik -- makanya toko dipetakan MANUAL oleh user lewat dropdown (bukan dicocokkan
+// otomatis dari nama), krn app ini bisa py >1 toko per platform & nama toko bisa beda2/diganti kapan saja.
+// Kebanyakan baris berkelompok per tanggal MULAI MINGGU (selalu hari Kamis, sesuai siklus penarikan mingguan)
+// dgn belasan-puluhan baris per minggu yg harus DIJUMLAHKAN; sebagian baris TERBARU (minggu yg blm "ditutup" jadi
+// 1 rekap) masih tercatat per-hari -- makanya setiap baris di-floor ke hari Kamis pd/sebelum tanggalnya dulu,
+// baru dijumlahkan per kelompok Kamis itu, supaya minggu yg blm ditutup pun tetap terhitung benar ke minggunya.
+function parseTanggalAdsUJUSO(str) {
+  str = String(str == null ? '' : str).trim();
+  if (!str) return null;
+  const bulanMap = { jan:0, feb:1, mar:2, apr:3, mei:4, may:4, jun:5, jul:6, agu:7, aug:7, sep:8, okt:9, oct:9, nov:10, des:11, dec:11 };
+  // format dgn nama bulan teks, mis. "13 Mar 2025", "20-Mar-25", "27 Mar 25", "8 May 2025", "1 August 2026"
+  let m = str.match(/^(\d{1,2})[\s-]+([A-Za-z]+)[\s-]+(\d{2,4})$/);
+  if (m) {
+    const day = Number(m[1]);
+    const mon = bulanMap[m[2].toLowerCase().slice(0,3)];
+    let year = Number(m[3]); if (year < 100) year += 2000;
+    if (mon != null && day >= 1 && day <= 31) return new Date(Date.UTC(year, mon, day));
+  }
+  // format numerik DD/MM/YYYY -- urutan ini dikonfirmasi dari file asli lewat kolom Bulan yg masih valid persis
+  // di baris2 berformat ini (mis. "01/05/2025" berpasangan dgn kolom Bulan="5")
+  m = str.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (m) {
+    const day = Number(m[1]), mon = Number(m[2]) - 1, year = Number(m[3]);
+    if (mon >= 0 && mon <= 11 && day >= 1 && day <= 31) return new Date(Date.UTC(year, mon, day));
+  }
+  return null;
+}
+
+function floorKeKamis(date) {
+  const day = date.getUTCDay(); // 0=Minggu .. 6=Sabtu, Kamis=4
+  const diff = (day - 4 + 7) % 7;
+  const d2 = new Date(date);
+  d2.setUTCDate(d2.getUTCDate() - diff);
+  return d2;
+}
+
+function parseNominalAdsUJUSO(v) {
+  if (v == null || v === '') return 0;
+  const n = Number(String(v).replace(/[^0-9.-]/g, ''));
+  return isNaN(n) ? 0 : n;
+}
+
+// rows: hasil XLSX.utils.sheet_to_json(ws, {header:1}) dari sheet "Ads Mingguan". Return array minggu unik
+// (diurutkan tanggal naik), tiap elemen {tanggalDariIso, tanggalSampaiIso, tiktok, tokped, shopee, nBarisSumber}.
+function parseAdsMingguanSheet(rows) {
+  const weekMap = new Map();
+  for (let i = 1; i < rows.length; i++) {
+    const r = rows[i] || [];
+    const tglRaw = r[1];
+    if (!tglRaw) continue;
+    const d = parseTanggalAdsUJUSO(tglRaw);
+    if (!d) continue;
+    const kamis = floorKeKamis(d);
+    const key = kamis.toISOString().slice(0, 10);
+    if (!weekMap.has(key)) weekMap.set(key, { tiktok: 0, tokped: 0, shopee: 0, nBarisSumber: 0 });
+    const w = weekMap.get(key);
+    w.tiktok += parseNominalAdsUJUSO(r[4]);
+    w.tokped += parseNominalAdsUJUSO(r[5]);
+    w.shopee += parseNominalAdsUJUSO(r[6]);
+    w.nBarisSumber++;
+  }
+  const keys = [...weekMap.keys()].sort();
+  return keys.map(key => {
+    const w = weekMap.get(key);
+    const dari = new Date(key + 'T00:00:00.000Z');
+    const sampai = new Date(dari); sampai.setUTCDate(sampai.getUTCDate() + 6);
+    return {
+      tanggalDariIso: dari.toISOString(), tanggalSampaiIso: sampai.toISOString(),
+      tiktok: w.tiktok, tokped: w.tokped, shopee: w.shopee, nBarisSumber: w.nBarisSumber,
+    };
+  });
+}
+
+// mapping: { tiktok: storeId|'', tokped: storeId|'', shopee: storeId|'' } -- dipilih user lewat dropdown krn
+// sheet lama cuma py kolom per PLATFORM, bukan per toko spesifik. Kolom yg TIDAK dipetakan (mapping kosong)
+// dilewati sepenuhnya. Idempoten: skip kombinasi minggu+toko yg SUDAH ada entrinya (dicek by storeId +
+// tanggalDari persis) supaya aman dijalankan ulang tanpa dobel kalau user re-upload file yg sama/lebih baru.
+function terapkanMigrasiAdsMingguan(parsedWeeks, mapping) {
+  let nEntriBaru = 0, nDilewatiSudahAda = 0, nDilewatiNol = 0;
+  const detailBaru = [];
+  ['tiktok', 'tokped', 'shopee'].forEach(platformKey => {
+    const storeId = mapping[platformKey];
+    if (!storeId) return;
+    const store = STATE.stores.find(s => s.id === storeId);
+    if (!store) return;
+    parsedWeeks.forEach(w => {
+      const biaya = w[platformKey];
+      if (!biaya) { nDilewatiNol++; return; }
+      const sudahAda = STATE.adsMingguan.some(a => a.storeId === storeId && a.tanggalDari && a.tanggalDari.slice(0,10) === w.tanggalDariIso.slice(0,10));
+      if (sudahAda) { nDilewatiSudahAda++; return; }
+      STATE.adsMingguan.push({
+        id: uid('ads'), tanggalDari: w.tanggalDariIso, tanggalSampai: w.tanggalSampaiIso,
+        storeId: store.id, storeName: store.nama, platform: store.platform, biaya,
+        catatan: 'Migrasi dari Excel UJUSO (sheet Ads Mingguan)',
+      });
+      nEntriBaru++;
+      detailBaru.push({ tanggalDari: w.tanggalDariIso, storeName: store.nama, biaya });
+    });
+  });
+  return { nEntriBaru, nDilewatiSudahAda, nDilewatiNol, detailBaru };
+}
+
 let adsFilter = { storeId: '', tglDari: '', tglSampai: '' };
 
 function renderAds(container) {
@@ -4166,6 +4333,29 @@ function renderAds(container) {
   filtered.forEach(a => { byStore[a.storeName] = (byStore[a.storeName]||0) + (a.biaya||0); });
 
   container.innerHTML = `
+    <div class="panel">
+      <h2>Migrasi Biaya Iklan dari Excel <span class="pill">opsional</span></h2>
+      <div class="desc">Isi otomatis riwayat Biaya Iklan mingguan dari sheet "Ads Mingguan" file Excel UJUSO lama. Sheet itu cuma punya biaya per platform (Tiktok/Tokped/Shopee), jadi pilih dulu toko yg sesuai per platform di bawah -- kolom yg tidak dipetakan akan dilewati. Yang sudah ada tidak akan ditimpa/dobel.</div>
+      ${!activeStores.length ? '<div class="empty-note">Belum ada toko terdaftar. Tambah di tab Data Master dulu.</div>' : `
+      <input type="file" id="fileMigrasiAds" accept=".xlsx" style="display:none">
+      <button class="btn btn-ghost" id="btnPickFileAds">Pilih File Excel UJUSO</button>
+      <span id="fileMigrasiAdsLabel" style="font-size:12px; color:var(--ink-soft); margin-left:8px;">Belum ada file dipilih</span>
+      <div class="grid2" style="margin-top:10px;">
+        <div class="field"><label>Kolom "Tiktok" &rarr; Toko</label>
+          <select id="ads_map_tiktok"><option value="">-- Lewati --</option>${activeStores.map(s=>`<option value="${s.id}">${s.nama} (${s.platform})</option>`).join('')}</select>
+        </div>
+        <div class="field"><label>Kolom "Tokped" &rarr; Toko</label>
+          <select id="ads_map_tokped"><option value="">-- Lewati --</option>${activeStores.map(s=>`<option value="${s.id}">${s.nama} (${s.platform})</option>`).join('')}</select>
+        </div>
+      </div>
+      <div class="field"><label>Kolom "Shopee" &rarr; Toko</label>
+        <select id="ads_map_shopee"><option value="">-- Lewati --</option>${activeStores.map(s=>`<option value="${s.id}">${s.nama} (${s.platform})</option>`).join('')}</select>
+      </div>
+      <button class="btn btn-primary" id="btnMigrasiAds" style="margin-top:10px;" disabled>Proses Migrasi</button>
+      <div class="status-box" id="migrasiAdsMsg"></div>
+      `}
+    </div>
+
     <div class="panel">
       <h2>Tambah Biaya Iklan</h2>
       <div class="desc">Catat biaya iklan per toko untuk 1 periode (biasanya 1 minggu, sesuai siklus penarikan).</div>
@@ -4224,6 +4414,49 @@ function renderAds(container) {
       </div>
     </div>
   `;
+
+  const btnPickFileAds = document.getElementById('btnPickFileAds');
+  if (btnPickFileAds) {
+    btnPickFileAds.addEventListener('click', () => document.getElementById('fileMigrasiAds').click());
+    let pendingMigrasiAdsFile = null;
+    document.getElementById('fileMigrasiAds').addEventListener('change', (e) => {
+      if (e.target.files[0]) {
+        pendingMigrasiAdsFile = e.target.files[0];
+        document.getElementById('fileMigrasiAdsLabel').textContent = pendingMigrasiAdsFile.name;
+        document.getElementById('btnMigrasiAds').disabled = false;
+      }
+    });
+    document.getElementById('btnMigrasiAds').addEventListener('click', async () => {
+      const msg = document.getElementById('migrasiAdsMsg');
+      if (!pendingMigrasiAdsFile) return;
+      const mapping = {
+        tiktok: document.getElementById('ads_map_tiktok').value,
+        tokped: document.getElementById('ads_map_tokped').value,
+        shopee: document.getElementById('ads_map_shopee').value,
+      };
+      if (!mapping.tiktok && !mapping.tokped && !mapping.shopee) {
+        showMsg(msg, 'err', 'Pilih minimal 1 toko tujuan (Tiktok/Tokped/Shopee) dulu.');
+        return;
+      }
+      showMsg(msg, 'info', 'Membaca file...');
+      try {
+        const buf = await pendingMigrasiAdsFile.arrayBuffer();
+        const wb = XLSX.read(buf, { type: 'array' });
+        const ws = wb.Sheets['Ads Mingguan'];
+        if (!ws) { showMsg(msg, 'err', 'Sheet "Ads Mingguan" tidak ditemukan di file ini.'); return; }
+        const rows = XLSX.utils.sheet_to_json(ws, { header: 1, raw: false, defval: '' });
+        const parsedWeeks = parseAdsMingguanSheet(rows);
+        if (!parsedWeeks.length) { showMsg(msg, 'err', 'Tidak ada baris tanggal yg bisa dibaca dari sheet ini.'); return; }
+        const result = terapkanMigrasiAdsMingguan(parsedWeeks, mapping);
+        await withSaving(msg, `Migrasi selesai: ${parsedWeeks.length} minggu terbaca, ${result.nEntriBaru} entri biaya iklan baru ditambahkan${result.nDilewatiSudahAda ? `, ${result.nDilewatiSudahAda} dilewati (sudah ada sebelumnya)` : ''}.`, async () => {
+          await saveState();
+        });
+        setTimeout(() => renderAds(container), 1000);
+      } catch (e) {
+        showMsg(msg, 'err', 'Gagal migrasi: ' + e.message);
+      }
+    });
+  }
 
   const formAds = document.getElementById('formAds');
   if (formAds) {
