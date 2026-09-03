@@ -933,8 +933,17 @@ async function getOrCreateStateFile() {
   return created.id;
 }
 
-async function loadState() {
-  stateFileId = await getOrCreateStateFile();
+// fileIdOverride: kalau dikasih (mis. dari hasil pilihan Google Picker di bukaPickerSambungData/onPickerResult),
+// PAKAI LANGSUNG id itu, JANGAN lewat getOrCreateStateFile()/cariStateFileYangSudahAda() lagi. Alasan: begitu user
+// baru saja memilih file di Picker, izin drive.file ke file itu kadang belum langsung "matang" utk endpoint metadata
+// (files.get?fields=...) sepersekian detik -- kalau pengecekan itu gagal & di-fallback ke pencarian list biasa,
+// list itu bisa TIDAK menemukan file yg baru saja dibuka via Picker (beda dgn file yg dibuat sendiri oleh app),
+// dan ujung2nya getOrCreateStateFile() malah diam2 MEMBUAT FILE BARU YG KOSONG. Ini bug nyata yg sempat kejadian:
+// user memilih file yg sudah dibagikan dgn benar di Picker, tapi Dashboard tetap kosong krn tanpa sepengetahuannya
+// jadi memakai file baru kosong itu. Dgn override ini, begitu Picker mengembalikan id file, kita percaya langsung
+// & baca isinya (alt=media) tanpa validasi ulang yg rawan gagal tsb.
+async function loadState(fileIdOverride) {
+  stateFileId = fileIdOverride || await getOrCreateStateFile();
   const res = await driveApi(`/drive/v3/files/${stateFileId}?alt=media`);
   const text = await res.text();
   const loaded = text ? JSON.parse(text) : {};
@@ -1058,8 +1067,8 @@ async function onLoggedIn() {
 // Dipanggil setelah dipastikan ada file state yg bisa dipakai (baik lama, baru dibuat, maupun baru dipilih
 // lewat Picker) -- 1 titik yg sama dipakai dari 3 alur berbeda (login normal, "Mulai dari Kosong", "Sambung ke
 // Data yang Sudah Dibagikan") supaya cara masuk ke dashboard konsisten & tidak dobel logic.
-async function masukKeAppSetelahDapatFile() {
-  await loadState();
+async function masukKeAppSetelahDapatFile(fileIdOverride) {
+  await loadState(fileIdOverride);
   document.getElementById('tabs').style.display = 'flex';
   switchTab('dashboard');
 }
@@ -1140,7 +1149,7 @@ async function onPickerResult(data, msg) {
   localStorage.setItem('outmark-os-state-file-id', file.id);
   document.getElementById('app').innerHTML = `<div class="loading-wrap">Memuat data...</div>`;
   try {
-    await masukKeAppSetelahDapatFile();
+    await masukKeAppSetelahDapatFile(file.id); // pakai id dari Picker LANGSUNG, jangan divalidasi ulang (lihat catatan di loadState)
   } catch (e) {
     document.getElementById('app').innerHTML = `<div class="panel"><div class="status-box show err">Gagal memuat data dari file yang dipilih: ${e.message}. Pastikan file itu sudah dibagikan (Share) dengan akses Editor ke akun Google ini.</div></div>`;
   }
