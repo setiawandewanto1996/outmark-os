@@ -162,6 +162,12 @@ const STATE_FILENAME = 'outmark-os-state.json';
 // Dipakai HANYA utk fitur "Sambung ke Data yang Sudah Dibagikan" (multi-user, akun Google beda tapi 1 data
 // bersama) lewat Google Picker. Dibuat di project "Outmark OS" Google Cloud Console (Google Picker API).
 const GOOGLE_PICKER_API_KEY = 'AIzaSyD_nwkvEJmeR4S1XHoAaVio4Dg9f8WHanY';
+// Project Number (BUKAN Project ID) dari project GCP yg sama -- WAJIB diisi & dipasang via setAppId() di Picker
+// supaya scope drive.file benar2 memberi izin akses ke file yg DIPILIH lewat Picker tapi BUKAN milik/dibuat oleh
+// akun yg sedang login (mis. file yg dibagikan orang lain). Tanpa ini, Picker tetap bisa MENAMPILKAN file itu
+// (visibilitas), tapi panggilan Drive API sesudahnya (baca isi file) bisa gagal "404 File not found" walau file
+// sudah di-Share dgn benar -- karena izin per-file drive.file-nya tidak pernah benar2 "dihibahkan" ke app ini.
+const GOOGLE_PROJECT_NUMBER = '534061439425';
 
 // Logo default UJUSO (dari file yg user kirim) -- dipakai sbg logo awal slip gaji, bisa diganti user lewat
 // panel Pengaturan Slip Gaji (upload gambar baru -> disimpan sbg data URI juga, jadi tetap 1 file JSON saja).
@@ -1133,6 +1139,8 @@ async function bukaPickerSambungData() {
     .addView(view)
     .setOAuthToken(accessToken)
     .setDeveloperKey(GOOGLE_PICKER_API_KEY)
+    .setAppId(GOOGLE_PROJECT_NUMBER)
+    .setOrigin(window.location.protocol + '//' + window.location.host)
     .setCallback((data) => onPickerResult(data, msg))
     .build();
   picker.setVisible(true);
