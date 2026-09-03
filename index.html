@@ -6,6 +6,7 @@
 <title>Outmark OS</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://accounts.google.com/gsi/client" async defer></script>
+<script src="https://apis.google.com/js/api.js" async defer></script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
@@ -158,6 +159,13 @@
 const CLIENT_ID = '534061439425-cl0savvhsflp1ub4tgcnf8uih4b2iqso.apps.googleusercontent.com';
 const SCOPE = 'https://www.googleapis.com/auth/drive.file';
 const STATE_FILENAME = 'outmark-os-state.json';
+// Dipakai HANYA utk fitur "Sambung ke Data yang Sudah Dibagikan" (multi-user, akun Google beda tapi 1 data
+// bersama) lewat Google Picker. Dibuat di project "Outmark OS" Google Cloud Console (Google Picker API).
+const GOOGLE_PICKER_API_KEY = 'AIzaSyD_nwkvEJmeR4S1XHoAaVio4Dg9f8WHanY';
+
+// Logo default UJUSO (dari file yg user kirim) -- dipakai sbg logo awal slip gaji, bisa diganti user lewat
+// panel Pengaturan Slip Gaji (upload gambar baru -> disimpan sbg data URI juga, jadi tetap 1 file JSON saja).
+const DEFAULT_LOGO_UJUSO_DATA_URI = 'data:image/jpeg;base64,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';
 
 /* =========================================================================
    STATE
@@ -180,7 +188,7 @@ let STATE = {
   biayaRetur: [],                  // biaya retur/refund dari order lama yg ditolak/dikembalikan: {id, tanggalDihitung, orderId, toko, jumlah, catatan}
   karyawan: [],                    // {id, nik, nama, status}
   slipGaji: [],                    // riwayat slip gaji per bulan: {id, karyawanId, bulan(1-12), tahun, pendapatan:[{label,jumlah}], potongan:[{label,jumlah}], createdAt, updatedAt}
-  slipGajiSettings: { namaPerusahaan: 'UJUSO', alamatBaris: ['Jl. Permana Timur Blok D7 No. 28', 'Kel. Citeureup, Kec. Cimahi Utara', 'Kota Cimahi'] }, // letterhead slip gaji
+  slipGajiSettings: { namaPerusahaan: 'UJUSO', alamatBaris: ['Jl. Permana Timur Blok D7 No. 28', 'Kel. Citeureup, Kec. Cimahi Utara', 'Kota Cimahi'], logoDataUri: DEFAULT_LOGO_UJUSO_DATA_URI, emailKontak: 'setiawandewanto@gmail.com' }, // letterhead slip gaji
 };
 let stateFileId = null;
 let accessToken = null;
@@ -875,7 +883,12 @@ async function driveApi(path, opts) {
   return res;
 }
 
-async function getOrCreateStateFile() {
+// Cari file state yg SUDAH ADA di akun Google Drive yg sedang login, TANPA membuat baru kalau belum ketemu.
+// Dipakai sblm loadState() supaya kalau akun ini belum pernah pakai app ini sama sekali (mis. akun teman kerja
+// yg baru diajak sharing), user bisa MEMILIH dulu: mulai dari kosong, atau sambung ke data yg sudah dibagikan
+// orang lain (lihat renderOnboardingPilihan/bukaPickerSambungData) -- bukan otomatis dibuatkan file baru yg
+// kosong tanpa sepengetahuannya (yg akan terlihat spt "datanya hilang").
+async function cariStateFileYangSudahAda() {
   // cek cache lokal dulu -- hindari re-search berulang yg rawan race condition/salah pilih kalau ada duplikat
   const cachedId = localStorage.getItem('outmark-os-state-file-id');
   if (cachedId) {
@@ -886,8 +899,9 @@ async function getOrCreateStateFile() {
     } catch (e) { /* file mungkin sudah tidak ada/berubah, lanjut cari ulang di bawah */ }
   }
 
-  // cari file yg sudah pernah dibuat app ini (drive.file scope: cuma file yg dibuat app ini yg kelihatan)
-  // urutkan by modifiedTime desc -- kalau (seharusnya tidak terjadi lagi) ada duplikat, pakai yg PALING BARU diubah, bukan asal ambil pertama
+  // cari file yg sudah pernah dibuat/dipilih app ini (drive.file scope: cuma file yg dibuat app ini ATAU yg
+  // sudah pernah dipilih lewat Google Picker yg kelihatan) -- urutkan by modifiedTime desc, kalau (seharusnya
+  // tidak terjadi lagi) ada duplikat, pakai yg PALING BARU diubah, bukan asal ambil pertama
   const q = encodeURIComponent(`name='${STATE_FILENAME}' and trashed=false`);
   const listRes = await driveApi(`/drive/v3/files?q=${q}&fields=files(id,name,modifiedTime,size)&orderBy=modifiedTime desc`);
   const list = await listRes.json();
@@ -899,6 +913,12 @@ async function getOrCreateStateFile() {
     localStorage.setItem('outmark-os-state-file-id', chosenId);
     return chosenId;
   }
+  return null;
+}
+
+async function getOrCreateStateFile() {
+  const existing = await cariStateFileYangSudahAda();
+  if (existing) return existing;
   // belum ada -> buat baru, isi kosong
   const initialContent = JSON.stringify({ capitalPartners: [], stores: [] });
   const metadata = { name: STATE_FILENAME, mimeType: 'application/json' };
@@ -920,7 +940,7 @@ async function loadState() {
   const loaded = text ? JSON.parse(text) : {};
   // DEFAULT_STATE mencakup SEMUA field yg pernah ada -- supaya file lama (dari sebelum field baru ditambahkan)
   // tidak jadi undefined pas dimuat. Tiap kali nambah field baru ke STATE, tambahkan juga di sini.
-  const DEFAULT_STATE = { capitalPartners: [], stores: [], products: [], contracts: [], colorCodeMap: {}, pembagiPctManual: {}, orderDb: [], pendingOrderSku: {}, payouts: [], vendorPayouts: [], adsMingguan: [], biayaOperasional: [], saldoDiluarKontrak: {}, biayaRetur: [], karyawan: [], slipGaji: [], slipGajiSettings: { namaPerusahaan: 'UJUSO', alamatBaris: ['Jl. Permana Timur Blok D7 No. 28', 'Kel. Citeureup, Kec. Cimahi Utara', 'Kota Cimahi'] } };
+  const DEFAULT_STATE = { capitalPartners: [], stores: [], products: [], contracts: [], colorCodeMap: {}, pembagiPctManual: {}, orderDb: [], pendingOrderSku: {}, payouts: [], vendorPayouts: [], adsMingguan: [], biayaOperasional: [], saldoDiluarKontrak: {}, biayaRetur: [], karyawan: [], slipGaji: [], slipGajiSettings: { namaPerusahaan: 'UJUSO', alamatBaris: ['Jl. Permana Timur Blok D7 No. 28', 'Kel. Citeureup, Kec. Cimahi Utara', 'Kota Cimahi'], logoDataUri: DEFAULT_LOGO_UJUSO_DATA_URI, emailKontak: 'setiawandewanto@gmail.com' } };
   STATE = Object.assign({}, DEFAULT_STATE, loaded);
 }
 
@@ -1024,15 +1044,106 @@ function renderGate() {
 
 async function onLoggedIn() {
   document.getElementById('authStatus').innerHTML = `<div class="email">● Tersambung ke Google Drive</div><button id="btnLogout">Keluar</button>`;
+  document.getElementById('btnLogout').addEventListener('click', () => { location.reload(); });
   document.getElementById('app').innerHTML = `<div class="loading-wrap">Memuat data dari Google Drive...</div>`;
   try {
-    await loadState();
-    document.getElementById('tabs').style.display = 'flex';
-    switchTab('dashboard');
+    const existingId = await cariStateFileYangSudahAda();
+    if (!existingId) { renderOnboardingPilihan(); return; }
+    await masukKeAppSetelahDapatFile();
   } catch (e) {
     document.getElementById('app').innerHTML = `<div class="panel"><div class="status-box show err">Gagal memuat data: ${e.message}</div></div>`;
   }
-  document.getElementById('btnLogout').addEventListener('click', () => { location.reload(); });
+}
+
+// Dipanggil setelah dipastikan ada file state yg bisa dipakai (baik lama, baru dibuat, maupun baru dipilih
+// lewat Picker) -- 1 titik yg sama dipakai dari 3 alur berbeda (login normal, "Mulai dari Kosong", "Sambung ke
+// Data yang Sudah Dibagikan") supaya cara masuk ke dashboard konsisten & tidak dobel logic.
+async function masukKeAppSetelahDapatFile() {
+  await loadState();
+  document.getElementById('tabs').style.display = 'flex';
+  switchTab('dashboard');
+}
+
+/* =========================================================================
+   ONBOARDING: akun Drive baru (belum pernah pakai app ini) -- mulai kosong ATAU sambung ke data yg dibagikan
+   ========================================================================= */
+function renderOnboardingPilihan() {
+  document.getElementById('tabs').style.display = 'none';
+  document.getElementById('app').innerHTML = `
+    <div class="gate">
+      <div class="wordmark">Outmark <span style="color:var(--accent)">OS</span></div>
+      <p>Akun Google ini belum pernah dipakai di Outmark OS (belum ada data tersimpan). Pilih salah satu:</p>
+      <button id="btnMulaiKosong" class="btn btn-primary" style="margin-bottom:10px;">Mulai dari Kosong (data baru)</button>
+      <br>
+      <button id="btnSambungSharing" class="btn btn-ghost">Sambung ke Data yang Sudah Dibagikan</button>
+      <div class="desc" style="max-width:440px; margin:14px auto 0;">Pilih ini kalau pemilik data (mis. pemilik usaha) sudah membagikan file datanya ke akun Google ini lewat menu Share di Google Drive, dan kamu ingin memakai data bisnis yang sama, bukan mulai dari nol.</div>
+      <div class="status-box" id="onboardMsg"></div>
+    </div>
+  `;
+  document.getElementById('btnMulaiKosong').addEventListener('click', async () => {
+    document.getElementById('app').innerHTML = `<div class="loading-wrap">Menyiapkan data baru...</div>`;
+    try {
+      await masukKeAppSetelahDapatFile(); // getOrCreateStateFile() di dlm loadState() otomatis bikin file baru krn memang blm ada
+    } catch (e) {
+      document.getElementById('app').innerHTML = `<div class="panel"><div class="status-box show err">Gagal: ${e.message}</div></div>`;
+    }
+  });
+  document.getElementById('btnSambungSharing').addEventListener('click', () => bukaPickerSambungData());
+}
+
+let pickerApiPromise = null;
+function pastikanPickerApiSiap() {
+  if (pickerApiPromise) return pickerApiPromise;
+  pickerApiPromise = new Promise((resolve, reject) => {
+    if (typeof gapi === 'undefined') { reject(new Error('Library Google API (gapi) gagal dimuat -- coba refresh halaman.')); return; }
+    gapi.load('picker', { callback: () => resolve(), onerror: () => reject(new Error('Gagal memuat Google Picker.')) });
+  });
+  return pickerApiPromise;
+}
+
+// Buka Google Picker (scope drive.file yg SAMA dgn login biasa -- TIDAK perlu izin lebih luas) supaya user bisa
+// memilih file "outmark-os-state.json" yg sudah dibagikan (Share) ke akun mereka oleh pemilik data. Memilih file
+// lewat Picker ini yg "membuka" akses drive.file ke file spesifik itu utk akun ybs -- ini cara resmi Google utk
+// mengakses file yg TIDAK dibuat sendiri oleh app tanpa perlu scope Drive penuh (yg lebih sensitif & butuh proses
+// verifikasi Google terpisah).
+async function bukaPickerSambungData() {
+  const msg = document.getElementById('onboardMsg');
+  if (!GOOGLE_PICKER_API_KEY || GOOGLE_PICKER_API_KEY === 'GANTI_DENGAN_API_KEY_ANDA') {
+    showMsg(msg, 'err', 'Fitur ini belum di-setup: GOOGLE_PICKER_API_KEY belum diisi di kode index.html. Lihat instruksi setup multi-user.');
+    return;
+  }
+  showMsg(msg, 'info', 'Membuka Google Drive Picker...');
+  try {
+    await pastikanPickerApiSiap();
+  } catch (e) {
+    showMsg(msg, 'err', e.message);
+    return;
+  }
+  const view = new google.picker.DocsView(google.picker.ViewId.DOCS).setMimeTypes('application/json').setIncludeFolders(false);
+  const picker = new google.picker.PickerBuilder()
+    .addView(view)
+    .setOAuthToken(accessToken)
+    .setDeveloperKey(GOOGLE_PICKER_API_KEY)
+    .setCallback((data) => onPickerResult(data, msg))
+    .build();
+  picker.setVisible(true);
+  showMsg(msg, 'info', 'Pilih file "' + STATE_FILENAME + '" pada jendela Google Drive yang terbuka (cek tab "Dibagikan dengan saya" kalau tidak langsung terlihat).');
+}
+
+async function onPickerResult(data, msg) {
+  if (data.action !== google.picker.Action.PICKED) return;
+  const file = data.docs && data.docs[0];
+  if (!file) return;
+  if (file.name !== STATE_FILENAME) {
+    if (!confirm(`File yang dipilih bernama "${file.name}", bukan "${STATE_FILENAME}". Yakin file ini yang benar? (Kalau ragu, klik Batal lalu pilih ulang file yang namanya persis "${STATE_FILENAME}")`)) return;
+  }
+  localStorage.setItem('outmark-os-state-file-id', file.id);
+  document.getElementById('app').innerHTML = `<div class="loading-wrap">Memuat data...</div>`;
+  try {
+    await masukKeAppSetelahDapatFile();
+  } catch (e) {
+    document.getElementById('app').innerHTML = `<div class="panel"><div class="status-box show err">Gagal memuat data dari file yang dipilih: ${e.message}. Pastikan file itu sudah dibagikan (Share) dengan akses Editor ke akun Google ini.</div></div>`;
+  }
 }
 
 /* =========================================================================
@@ -4748,6 +4859,8 @@ function buildSlipView(slip) {
     jumlahPendapatan: totals.jumlahPendapatan, jumlahPotongan: totals.jumlahPotongan, gajiBersih: totals.gajiBersih,
     terbilang: terbilangRupiah(totals.gajiBersih),
     namaPerusahaan: STATE.slipGajiSettings.namaPerusahaan, alamatBaris: STATE.slipGajiSettings.alamatBaris,
+    logoDataUri: STATE.slipGajiSettings.logoDataUri || null,
+    emailKontak: STATE.slipGajiSettings.emailKontak || null,
   };
 }
 
@@ -4756,45 +4869,68 @@ function buildSlipView(slip) {
 function buildSlipPrintHtml(views) {
   const css = `<style>
     * { box-sizing: border-box; }
-    body { font-family: Arial, Helvetica, sans-serif; margin: 0; padding: 0; color: #111; }
-    .slip-page { padding: 24px 32px; page-break-after: always; }
+    body { font-family: 'Helvetica Neue', Arial, Helvetica, sans-serif; margin: 0; padding: 0; color: #1A1A1A; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    .slip-page { padding: 16mm 16mm 14mm; page-break-after: always; }
     .slip-page:last-child { page-break-after: auto; }
-    .kop { display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 2px solid #111; padding-bottom: 8px; margin-bottom: 14px; }
-    .kop .perusahaan { font-size: 20px; font-weight: bold; }
-    .kop .alamat { font-size: 11px; line-height: 1.4; margin-top: 2px; }
-    .kop .judul { text-align: right; }
-    .kop .judul .t { font-size: 18px; font-weight: bold; }
-    .kop .judul .p { font-size: 12px; }
-    .identitas { margin-bottom: 14px; font-size: 13px; }
-    .identitas div { margin-bottom: 2px; }
-    table.slip-tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
-    table.slip-tbl th { text-align: left; border-bottom: 1.5px solid #111; padding: 4px 6px; font-size: 12px; }
-    table.slip-tbl td { padding: 3px 6px; }
-    table.slip-tbl td.num { text-align: right; }
-    table.slip-tbl tr.jumlah td { border-top: 1px solid #111; font-weight: bold; }
-    .kolom-wrap { display: flex; gap: 16px; }
-    .kolom-wrap table.slip-tbl { flex: 1; }
-    .gaji-bersih { margin-top: 14px; display: flex; justify-content: space-between; font-size: 15px; font-weight: bold; border-top: 2px solid #111; padding-top: 8px; }
-    .terbilang { margin-top: 10px; font-size: 12px; font-style: italic; }
-    @media print { .slip-page { padding: 10mm 14mm; } }
+
+    .kop { display: flex; justify-content: space-between; align-items: center; }
+    .kop-left { display: flex; align-items: center; gap: 14px; }
+    .kop-left img.logo { width: 52px; height: 52px; object-fit: contain; border-radius: 8px; display: block; }
+    .firma .perusahaan { font-size: 19px; font-weight: 700; letter-spacing: 0.3px; color: #111; }
+    .firma .alamat { font-size: 10.5px; line-height: 1.5; color: #666; margin-top: 3px; }
+    .judul { text-align: right; }
+    .judul .t { font-size: 15px; font-weight: 700; letter-spacing: 1.8px; color: #222; }
+    .judul .p { font-size: 12px; color: #666; margin-top: 3px; }
+
+    .accent-bar { height: 3px; background: #C40010; border-radius: 2px; margin: 14px 0 18px; }
+
+    .identitas { font-size: 12.5px; margin-bottom: 20px; background: #FAFAFA; border: 1px solid #EEE; border-radius: 8px; padding: 12px 18px; }
+    .identitas .id-row { display: flex; align-items: baseline; }
+    .identitas .id-row + .id-row { margin-top: 5px; }
+    .identitas .id-label { display: inline-block; width: 108px; flex-shrink: 0; color: #888; font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.4px; }
+    .identitas .id-value { font-weight: 700; color: #111; font-size: 13px; }
+
+    .kolom-wrap { display: flex; gap: 20px; }
+    .kolom-wrap table.slip-tbl { flex: 1; width: 100%; border-collapse: collapse; font-size: 12.5px; }
+    table.slip-tbl th { text-align: left; font-size: 11px; letter-spacing: 0.6px; color: #fff; background: #202020; padding: 7px 10px; }
+    table.slip-tbl td { padding: 6px 10px; border-bottom: 1px solid #EEE; }
+    table.slip-tbl td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+    table.slip-tbl td:first-child { width: 62%; }
+    table.slip-tbl tr.jumlah td { border-top: 1.5px solid #333; border-bottom: none; font-weight: 700; background: #F7F7F7; }
+
+    .gaji-bersih { margin-top: 20px; display: flex; justify-content: space-between; align-items: center; font-size: 14px; font-weight: 700; background: #FAFAFA; border: 1px solid #DDD; border-top: 2.5px solid #222; border-radius: 8px; padding: 13px 18px; color: #111; }
+    .gaji-bersih div:last-child { font-size: 17px; }
+
+    .terbilang { margin-top: 9px; font-size: 11.5px; font-style: italic; color: #555; }
+
+    .perhatian { margin-top: 36px; padding-top: 12px; border-top: 1px solid #EEE; font-size: 9.5px; line-height: 1.6; color: #777; text-align: justify; }
+    .perhatian b { color: #555; }
+
+    @media print { .slip-page { padding: 14mm 14mm 12mm; } }
   </style>`;
-  const rowsHtml = (items) => items.length ? items.map(it => `<tr><td>${it.label}</td><td class="num">${fmtRp(it.jumlah)}</td></tr>`).join('') : `<tr><td colspan="2" style="color:#888;">Tidak ada</td></tr>`;
+  const rowsHtml = (items) => items.length ? items.map(it => `<tr><td>${it.label}</td><td class="num">${fmtRp(it.jumlah)}</td></tr>`).join('') : `<tr><td colspan="2" style="color:#aaa;">Tidak ada</td></tr>`;
   const pages = views.map(v => `
     <div class="slip-page">
       <div class="kop">
-        <div>
-          <div class="perusahaan">${v.namaPerusahaan}</div>
-          <div class="alamat">${(v.alamatBaris || []).filter(Boolean).join('<br>')}</div>
+        <div class="kop-left">
+          ${v.logoDataUri ? `<img class="logo" src="${v.logoDataUri}" alt="Logo ${v.namaPerusahaan}">` : ''}
+          <div class="firma">
+            <div class="perusahaan">${v.namaPerusahaan}</div>
+            <div class="alamat">${(v.alamatBaris || []).filter(Boolean).join('<br>')}</div>
+          </div>
         </div>
         <div class="judul">
           <div class="t">SLIP GAJI</div>
           <div class="p">${v.bulanTahun}</div>
         </div>
       </div>
+      <div class="accent-bar"></div>
+
       <div class="identitas">
-        <div><b>NIK</b> : ${v.nik}</div>
-        <div><b>Nama Karyawan</b> : ${v.nama}</div>
+        <div class="id-row"><span class="id-label">Nama Karyawan</span><span class="id-value">${v.nama}</span></div>
+        <div class="id-row"><span class="id-label">NIK</span><span class="id-value">${v.nik}</span></div>
       </div>
+
       <div class="kolom-wrap">
         <table class="slip-tbl">
           <thead><tr><th colspan="2">PENDAPATAN</th></tr></thead>
@@ -4805,8 +4941,11 @@ function buildSlipPrintHtml(views) {
           <tbody>${rowsHtml(v.potongan)}<tr class="jumlah"><td>JUMLAH POTONGAN</td><td class="num">${fmtRp(v.jumlahPotongan)}</td></tr></tbody>
         </table>
       </div>
+
       <div class="gaji-bersih"><div>GAJI BERSIH</div><div>${fmtRp(v.gajiBersih)}</div></div>
-      <div class="terbilang">"${v.terbilang}"</div>
+      <div class="terbilang">Terbilang: "${v.terbilang}"</div>
+
+      <div class="perhatian"><b>Perhatian:</b> Slip gaji ini bersifat rahasia dan hanya diperuntukkan bagi karyawan yang namanya tercantum di atas. Anda tidak diperkenankan untuk memanfaatkan, menyebarluaskan, atau menggandakan dokumen ini kepada pihak lain tanpa izin dari ${v.namaPerusahaan}. Apabila Anda menerima dokumen ini bukan sebagai pihak yang dituju, mohon segera memberitahukan kami${v.emailKontak ? ` melalui email ${v.emailKontak}` : ''} serta memusnahkan seluruh salinannya. Seluruh informasi dalam slip gaji ini bersifat pribadi dan rahasia milik ${v.namaPerusahaan}.</div>
     </div>
   `).join('');
   return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Slip Gaji</title>${css}</head><body>${pages}</body></html>`;
@@ -4883,10 +5022,19 @@ function renderGaji(container) {
     <div class="panel">
       <h2>Pengaturan Slip Gaji</h2>
       <div class="desc">Kop surat yang tampil di setiap slip gaji.</div>
+      <div class="field"><label>Logo Perusahaan</label>
+        <div style="display:flex; align-items:center; gap:12px;">
+          ${STATE.slipGajiSettings.logoDataUri ? `<img src="${STATE.slipGajiSettings.logoDataUri}" alt="Logo" style="width:52px; height:52px; object-fit:contain; border-radius:8px; border:1px solid var(--line);">` : '<div class="empty-note" style="padding:10px 14px; margin:0;">Belum ada logo</div>'}
+          <input type="file" id="gs_logoFile" accept="image/*" style="display:none">
+          <button type="button" class="btn btn-ghost" id="btnGantiLogo">Ganti Logo</button>
+          ${STATE.slipGajiSettings.logoDataUri ? `<button type="button" class="btn btn-ghost" id="btnHapusLogo">Hapus Logo</button>` : ''}
+        </div>
+      </div>
       <div class="field"><label>Nama Perusahaan</label><input type="text" id="gs_namaPerusahaan" value="${STATE.slipGajiSettings.namaPerusahaan}"></div>
       <div class="field"><label>Alamat Baris 1</label><input type="text" id="gs_alamat1" value="${STATE.slipGajiSettings.alamatBaris[0] || ''}"></div>
       <div class="field"><label>Alamat Baris 2</label><input type="text" id="gs_alamat2" value="${STATE.slipGajiSettings.alamatBaris[1] || ''}"></div>
       <div class="field"><label>Alamat Baris 3</label><input type="text" id="gs_alamat3" value="${STATE.slipGajiSettings.alamatBaris[2] || ''}"></div>
+      <div class="field"><label>Email Kontak (utk catatan kerahasiaan di slip)</label><input type="email" id="gs_emailKontak" value="${STATE.slipGajiSettings.emailKontak || ''}" placeholder="mis. keuangan@perusahaan.com"></div>
       <button class="btn btn-ghost" id="btnSimpanSettingsGaji" style="margin-top:8px;">Simpan Pengaturan</button>
       <div class="status-box" id="settingsGajiMsg"></div>
     </div>
@@ -5019,6 +5167,28 @@ function renderGaji(container) {
     });
   });
 
+  document.getElementById('btnGantiLogo').addEventListener('click', () => document.getElementById('gs_logoFile').click());
+  document.getElementById('gs_logoFile').addEventListener('change', async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const msg = document.getElementById('settingsGajiMsg');
+    const reader = new FileReader();
+    reader.onload = async () => {
+      STATE.slipGajiSettings.logoDataUri = reader.result;
+      await withSaving(msg, 'Logo diperbarui.', async () => { await saveState(); });
+      setTimeout(() => renderGaji(container), 800);
+    };
+    reader.onerror = () => showMsg(msg, 'err', 'Gagal membaca file gambar.');
+    reader.readAsDataURL(file);
+  });
+  const btnHapusLogo = document.getElementById('btnHapusLogo');
+  if (btnHapusLogo) btnHapusLogo.addEventListener('click', async () => {
+    if (!confirm('Hapus logo dari kop surat slip gaji?')) return;
+    STATE.slipGajiSettings.logoDataUri = null;
+    await saveState();
+    renderGaji(container);
+  });
+
   document.getElementById('btnSimpanSettingsGaji').addEventListener('click', async () => {
     const msg = document.getElementById('settingsGajiMsg');
     STATE.slipGajiSettings = {
@@ -5028,6 +5198,8 @@ function renderGaji(container) {
         document.getElementById('gs_alamat2').value.trim(),
         document.getElementById('gs_alamat3').value.trim(),
       ],
+      logoDataUri: STATE.slipGajiSettings.logoDataUri || null,
+      emailKontak: document.getElementById('gs_emailKontak').value.trim() || null,
     };
     await withSaving(msg, 'Pengaturan slip gaji disimpan.', async () => { await saveState(); });
   });
