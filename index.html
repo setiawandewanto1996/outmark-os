@@ -1807,6 +1807,7 @@ let vendorOrphanFollowup = null; // { tanggalBaru, orphansByDate: {tanggalLama: 
 let vendorOrphanManualPreview = null; // { tanggalLama, tanggalBaru, orphans } -- versi manual, independen dari alur Koreksi Tanggal di atas
 let kontrakDuplikatPreview = null; // hasil cariKontrakRolloverDuplikatKosong() -- tahap konfirmasi, blm ada mutasi
 let hargaKonveksiRefreshPreview = null; // hasil cariOrderTanpaHargaKonveksiYangBisaDiperbaiki() -- tahap konfirmasi, blm ada mutasi
+let hargaModalPayoutRefreshPreview = null; // hasil cariPayoutHargaModalKosongYangBisaDiperbaiki() -- tahap konfirmasi, blm ada mutasi
 
 function labelForPlatform(platform) {
   if (platform === 'Shopee') return { order: 'Order All', income: 'Income Sudah Dilepas' };
@@ -2091,6 +2092,40 @@ async function terapkanPerbaruiHargaKonveksiKosong(groups) {
   return { nBarisDiperbarui, totalUnit };
 }
 
+// Cari baris STATE.payouts yg hargaModalPcs-nya null (Harga tampil "-" & Total Rp0 di Laporan Penarikan) TAPI
+// kontraknya (dicari lewat kodeKontrak) SEKARANG py hargaModalPcs yg valid di STATE.contracts -- kasus ini
+// muncul krn bug historis di resolveRolloverIntoAllocations (sudah diperbaiki 2026-09-04): saat rollover
+// (Putar Penuh/Putar Modal Saja), kontrak PENERUS dibuat dgn harga modal baru yg benar, tp entri payout yg
+// tercipta utk kontrak penerus itu lupa ikut dibawakan harganya (tetap null dari placeholder sblm kontrak
+// penerus ada). rate/payout (Rp yg dibayar ke investor) TIDAK terpengaruh bug ini -- cuma field hargaModalPcs
+// (dipakai murni utk kolom "Harga"/"Total" di Laporan Penarikan, bukan utk hitung payout) yg kosong.
+function cariPayoutHargaModalKosongYangBisaDiperbaiki() {
+  const byKontrak = {};
+  STATE.payouts.forEach(p => {
+    if (p.hargaModalPcs != null || !p.kodeKontrak) return;
+    const kontrak = STATE.contracts.find(c => c.kodeKontrak === p.kodeKontrak);
+    if (!kontrak || kontrak.hargaModalPcs == null) return; // masih genuine tidak bisa ditentukan -- jangan disentuh
+    const key = p.kodeKontrak;
+    if (!byKontrak[key]) byKontrak[key] = { kodeKontrak: p.kodeKontrak, namaInvestor: p.namaInvestor, produk: p.produk, qty: 0, hargaBaru: kontrak.hargaModalPcs, rows: [] };
+    byKontrak[key].qty += (p.qty||0);
+    byKontrak[key].rows.push(p);
+  });
+  return Object.values(byKontrak).sort((a,b) => b.qty - a.qty);
+}
+
+// MUTASI: isi ulang p.hargaModalPcs utk semua baris pada grup2 hasil cariPayoutHargaModalKosongYangBisaDiperbaiki()
+// dgn harga kontrak yg SEKARANG berlaku. Aman krn hanya menyentuh field yg SEBELUMNYA kosong (null) -- rate/payout
+// (jumlah Rp yg dibayar ke investor) TIDAK ikut diubah sama sekali, cuma field tampilan Harga/Total di Laporan
+// Penarikan yg diperbaiki.
+async function terapkanPerbaikiHargaModalPayoutKosong(groups) {
+  let nBarisDiperbarui = 0, totalUnit = 0;
+  groups.forEach(g => {
+    g.rows.forEach(p => { p.hargaModalPcs = g.hargaBaru; nBarisDiperbarui++; totalUnit += (p.qty||0); });
+  });
+  await saveState();
+  return { nBarisDiperbarui, totalUnit };
+}
+
 function cleanupPendingAlreadySettled() {
   const settledKeys = new Set(STATE.orderDb.map(r => r.orderId + '|' + r.sku));
   let nRemoved = 0, nOrdersAffected = 0;
@@ -2238,6 +2273,14 @@ function renderImport(container) {
       <button class="btn btn-ghost" id="btnCekHargaKonveksiKosong">Cek Sekarang</button>
       <div class="status-box" id="hargaKonveksiRefreshMsg"></div>
       <div id="hargaKonveksiRefreshArea" style="margin-top:10px;"></div>
+    </div>
+
+    <div class="panel">
+      <h2>Perbaiki Harga Modal Payout yang Kosong (Rollover)</h2>
+      <div class="desc">Utk payout investor yang tercipta dari kontrak hasil rollover (Putar Penuh/Putar Modal Saja) tapi kolom Harga-nya tampil "-" dan Total Rp0 di Laporan Penarikan, walau qty-nya nyata ada -- ini gejala bug lama (sudah diperbaiki) di mana harga modal kontrak baru lupa ikut ditempelkan ke payout-nya. Alat ini mencari payout seperti itu yang kontraknya SEKARANG sudah punya harga modal yang jelas, lalu mengisi ulang. Jumlah Rp yang dibayar ke investor (payout) TIDAK berubah sama sekali -- cuma kolom Harga/Total di laporan yang diperbaiki.</div>
+      <button class="btn btn-ghost" id="btnCekHargaModalPayoutKosong">Cek Sekarang</button>
+      <div class="status-box" id="hargaModalPayoutRefreshMsg"></div>
+      <div id="hargaModalPayoutRefreshArea" style="margin-top:10px;"></div>
     </div>
 
     <div class="panel">
@@ -2433,6 +2476,21 @@ function renderImport(container) {
       renderHargaKonveksiRefreshArea(document.getElementById('hargaKonveksiRefreshArea'), container);
     });
 
+    const btnCekHargaModalPayoutKosong = document.getElementById('btnCekHargaModalPayoutKosong');
+    if (btnCekHargaModalPayoutKosong) btnCekHargaModalPayoutKosong.addEventListener('click', () => {
+      const msg = document.getElementById('hargaModalPayoutRefreshMsg');
+      const groups = cariPayoutHargaModalKosongYangBisaDiperbaiki();
+      if (!groups.length) {
+        showMsg(msg, 'ok', 'Tidak ada payout yang perlu diperbaiki saat ini.');
+        hargaModalPayoutRefreshPreview = null;
+        renderHargaModalPayoutRefreshArea(document.getElementById('hargaModalPayoutRefreshArea'), container);
+        return;
+      }
+      hargaModalPayoutRefreshPreview = groups;
+      showMsg(msg, 'info', 'Cek rincian di bawah sebelum konfirmasi.');
+      renderHargaModalPayoutRefreshArea(document.getElementById('hargaModalPayoutRefreshArea'), container);
+    });
+
     const storeSelect = document.getElementById('imp_store');
     storeSelect.addEventListener('change', () => {
       const store = activeStores.find(s => s.id === storeSelect.value);
@@ -2464,6 +2522,7 @@ function renderImport(container) {
   if (vendorOrphanManualPreview) renderVendorOrphanManualArea(document.getElementById('vendorOrphanManualArea'), container);
   if (kontrakDuplikatPreview) renderKontrakDuplikatArea(document.getElementById('kontrakDuplikatArea'), container);
   if (hargaKonveksiRefreshPreview) renderHargaKonveksiRefreshArea(document.getElementById('hargaKonveksiRefreshArea'), container);
+  if (hargaModalPayoutRefreshPreview) renderHargaModalPayoutRefreshArea(document.getElementById('hargaModalPayoutRefreshArea'), container);
 }
 
 function renderHargaKonveksiRefreshArea(el, container) {
@@ -2495,6 +2554,38 @@ function renderHargaKonveksiRefreshArea(el, container) {
   document.getElementById('btnBatalHargaKonveksiRefresh').addEventListener('click', () => {
     hargaKonveksiRefreshPreview = null;
     renderHargaKonveksiRefreshArea(el, container);
+  });
+}
+
+function renderHargaModalPayoutRefreshArea(el, container) {
+  const groups = hargaModalPayoutRefreshPreview;
+  if (!groups || !groups.length) { el.innerHTML = ''; return; }
+  const totalUnit = groups.reduce((s,g) => s+g.qty, 0);
+  el.innerHTML = `
+    <div style="border:1px solid var(--line); border-radius:6px; padding:14px; background:#F8F7F3;">
+      <div style="font-weight:600; margin-bottom:8px;">Ditemukan ${groups.length} kontrak (${totalUnit} unit) yang harga payout-nya sekarang sudah bisa diisi</div>
+      <table class="data compact">
+        <thead><tr><th>Kode Kontrak</th><th>Investor</th><th>Produk</th><th class="num">Qty</th><th class="num">Harga Modal Baru</th></tr></thead>
+        <tbody>${groups.map(g => `<tr>
+          <td>${g.kodeKontrak}</td><td>${g.namaInvestor||'-'}</td><td>${g.produk}</td><td class="num">${g.qty}</td><td class="num">${fmtRp(g.hargaBaru)}</td>
+        </tr>`).join('')}</tbody>
+      </table>
+      <div style="margin-top:12px; display:flex; gap:8px;">
+        <button class="btn btn-primary" id="btnTerapkanHargaModalPayoutRefresh">Ya, Isi Harga Payout (${totalUnit} unit)</button>
+        <button class="btn btn-ghost" id="btnBatalHargaModalPayoutRefresh">Batal</button>
+      </div>
+    </div>
+  `;
+  document.getElementById('btnTerapkanHargaModalPayoutRefresh').addEventListener('click', async () => {
+    const msg = document.getElementById('hargaModalPayoutRefreshMsg');
+    const { nBarisDiperbarui, totalUnit } = await terapkanPerbaikiHargaModalPayoutKosong(groups);
+    hargaModalPayoutRefreshPreview = null;
+    showMsg(msg, 'ok', `${nBarisDiperbarui} baris payout (${totalUnit} unit) berhasil diisi harga modalnya. Laporan Penarikan akan otomatis ikut akurat.`);
+    renderHargaModalPayoutRefreshArea(el, container);
+  });
+  document.getElementById('btnBatalHargaModalPayoutRefresh').addEventListener('click', () => {
+    hargaModalPayoutRefreshPreview = null;
+    renderHargaModalPayoutRefreshArea(el, container);
   });
 }
 
