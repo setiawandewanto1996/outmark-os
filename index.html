@@ -761,9 +761,17 @@ async function processWeeklyBatch(storeImports) {
   });
 
   // ---- TikTok/Tokopedia ----
+  // BUG PENTING (ditemukan 2026-09-04 dari laporan user: OSWALD kurang 2 pcs, order 585736009448326282 &
+  // 585816740340532343 "tidak terbaca"): sheet "Detail pesanan" di file Income TikTok/Tokopedia CUMA py 1 baris
+  // header (baris index 0), data langsung mulai di baris index 1 -- dataStartIdx dulu keliru diisi 2, jadi
+  // BARIS DATA PERTAMA di tiap file (biasanya order dgn tanggal PALING BARU, krn file terurut terbaru dulu)
+  // SELALU terlewat diam2 dari SETIAP import mingguan TikTok/Tokopedia sejak fitur ini ada, tanpa muncul di
+  // "SKU tidak ketemu" ataupun kategori manapun di ringkasan (order itu bahkan tidak pernah sampai ke tahap
+  // pencarian SKU sama sekali). Diverifikasi lgs dgn 2 file Income asli user (baris data pertama masing2 file
+  // persis 2 order yg dilaporkan hilang).
   const tiktokFinance = {};
   tiktokImports.forEach(si => {
-    const objsI = rowsToObjects(sheetToRows(si.incomeWb.Sheets['Detail pesanan']), 0, 2);
+    const objsI = rowsToObjects(sheetToRows(si.incomeWb.Sheets['Detail pesanan']), 0, 1);
     objsI.filter(o => o['Jenis transaksi'] === 'Pesanan').forEach(o => {
       const id = String(o['ID Pesanan/Penyesuaian']);
       const pendapatan = Number(o['Total Pendapatan'])||0;
