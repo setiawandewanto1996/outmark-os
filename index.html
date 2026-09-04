@@ -625,9 +625,16 @@ function allocateUnitsToContracts(qtyPerProduk, cairSkuRows) {
         .sort((a,b) => new Date(a.tanggalMasuk) - new Date(b.tanggalMasuk));
       const kontrak = activeContractsForPartner[0] || null;
       let remaining = qty;
+      let kontrakHabisPersis = false; // kontrak PAS habis (stok tersisa terpakai semua persis) -- beda dgn
+      // "remaining > 0" (permintaan LEBIH BESAR dari stok) -- di kasus ini TIDAK ADA unit yg kurang batch ini,
+      // tapi kontrak tetap harus dianggap habis & butuh keputusan rollover utk pencairan BERIKUTNYA. Ditemukan
+      // dari laporan nyata: IDW009 sisa 9 pcs, pencairan pas 9 pcs -- keputusan rollover sempat tidak muncul
+      // krn kode lama HANYA memicu keputusan kalau ada unit yg tidak tertampung (remaining>0), bukan setiap kali
+      // kontrak jadi habis.
       if (kontrak) {
         const qtyForThisContract = Math.min(qty, kontrak.stockAkhir);
         remaining = qty - qtyForThisContract;
+        kontrakHabisPersis = qtyForThisContract > 0 && qtyForThisContract === kontrak.stockAkhir && remaining === 0;
         if (qtyForThisContract > 0) {
           const subUnits = assignedUnits.slice(0, qtyForThisContract);
           const skuBreakdown = {};
@@ -641,11 +648,13 @@ function allocateUnitsToContracts(qtyPerProduk, cairSkuRows) {
           });
         }
       }
-      if (remaining > 0) {
+      if (remaining > 0 || kontrakHabisPersis) {
         // Kontrak (paling awal/sedang jalan) sudah habis -- investor perlu kontrak baru (rollover) atau
         // dihentikan, WALAU investor ini kebetulan py kontrak aktif LAIN utk produk yg sama (lihat komentar
         // di atas -- itu sengaja TIDAK dipakai otomatis). BELUM otomatis dibuatkan -- perlu keputusan manual
-        // (lihat notifikasi "Perlu Kontrak Baru" di preview batch).
+        // (lihat notifikasi "Perlu Kontrak Baru" di preview batch). Kasus kontrakHabisPersis: qty=0 di sini
+        // (tidak ada unit yg kurang), tapi entri keputusan tetap wajib dimunculkan -- resolveRolloverIntoAllocations
+        // sudah menangani qty=0 dgn benar (kontrak baru ttp dibuat dari qtyKontrakLama, bukan dari qty sisa).
         const lastContract = kontrak
           || STATE.contracts.filter(c => c.produk === produk && c.capitalPartnerId === partner.id)
                .sort((a,b) => new Date(b.tanggalMasuk) - new Date(a.tanggalMasuk))[0] || null;
@@ -653,7 +662,9 @@ function allocateUnitsToContracts(qtyPerProduk, cairSkuRows) {
         allocations.push({
           produk, kode2, namaInvestor: partner.nama, capitalPartnerId: partner.id, kodeKontrak: null, contractId: null,
           qty: remaining, rate: null, payout: null,
-          catatan: `⚠ ${remaining} unit TIDAK ADA kontrak aktif yg cukup -- kontrak ${partner.nama} utk ${produk} sudah habis, perlu kontrak baru (rollover) atau dihentikan.`,
+          catatan: kontrakHabisPersis
+            ? `⚠ Kontrak ${kontrak.kodeKontrak} milik ${partner.nama} utk ${produk} PAS HABIS di pencairan ini (stok tersisa terpakai semua, tidak ada unit yg kurang) -- tetap perlu keputusan rollover (Putar Penuh/Modal Saja) atau Stop utk pencairan berikutnya.`
+            : `⚠ ${remaining} unit TIDAK ADA kontrak aktif yg cukup -- kontrak ${partner.nama} utk ${produk} sudah habis, perlu kontrak baru (rollover) atau dihentikan.`,
           orderUnits: sisaUnits, skuBreakdown: {}, hargaModalPcs: null, perluKontrakBaru: true,
           kodeKontrakLama: lastContract ? lastContract.kodeKontrak : null,
           qtyKontrakLama: lastContract ? lastContract.stockAwal : 0,
@@ -2549,7 +2560,7 @@ function renderRolloverCase(a, key, resolutions) {
   const profitLama = a.qtyKontrakLama * a.nilaiMarginLama;
   return `
     <div style="border:1px solid #E8C2B8; border-radius:3px; padding:12px; margin-top:8px; background:#fff;" data-rollover-case="${key}">
-      <div style="font-weight:600; font-size:13px;">${a.namaInvestor} &middot; ${a.produk} &middot; ${a.qty} unit perlu keputusan</div>
+      <div style="font-weight:600; font-size:13px;">${a.namaInvestor} &middot; ${a.produk} &middot; ${a.qty > 0 ? a.qty + ' unit perlu keputusan' : 'kontrak pas habis, perlu keputusan'}</div>
       <div class="desc" style="margin:4px 0;">Kontrak ${a.kodeKontrakLama} habis. Modal awal: ${fmtRp(modalLama)} &middot; Profit terkumpul: ${fmtRp(profitLama)}</div>
       ${res ? `
         <div class="status-box show ok" style="margin-top:6px;">
