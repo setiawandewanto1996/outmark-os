@@ -428,6 +428,11 @@ function resolveRolloverIntoAllocations(result, resolutions, tanggalPenarikanFor
     a.kodeKontrak = kontrakBaru.kodeKontrak; a.contractId = kontrakBaru.id; a.qty = qtyAlokasi;
     a.orderUnits = subUnitsBaru; a.skuBreakdown = skuBreakdownBaru;
     a.rate = a.nilaiMarginLama; a.payout = qtyAlokasi * a.nilaiMarginLama;
+    // BUG (dilaporkan user 2026-09-04): a.hargaModalPcs dulu TIDAK PERNAH di-set di sini, jadi tetap null
+    // (dari placeholder awal saat masih perluKontrakBaru) -- akibatnya payout hasil rollover (kontrak BARU,
+    // mis. IDS002 penerus IDS001) tersimpan dgn hargaModalPcs:null, & Laporan Penarikan (renderKontrakDetailTable,
+    // Harga = payout.hargaModalPcs) menampilkan Harga "-" dan Total Rp0 walau qty-nya nyata ada.
+    a.hargaModalPcs = kontrakBaru.hargaModalPcs;
     a.catatan = `Rollover (${res.tipe==='putar_penuh'?'putar penuh':'putar modal saja'}) dari ${a.kodeKontrakLama} -> ${kontrakBaru.kodeKontrak}` +
       (qtyDariSibling > 0 ? ` -- ${qtyDariSibling} unit sudah dipakaikan dulu ke kontrak aktif lama sebelum ke kontrak baru ini` : '') +
       (qtyAlokasi < sisaQty ? ` -- ⚠ kontrak baru cuma cukup utk ${stockAwalBaru} dari ${sisaQty} unit, sisanya perlu ditangani manual` : '');
