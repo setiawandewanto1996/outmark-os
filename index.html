@@ -487,6 +487,15 @@ function deriveWarnaFromSku(sku) {
   const kode = String(sku).toUpperCase().slice(3,6);
   return STATE.colorCodeMap[kode] || null;
 }
+// "Warna Terlaris" (Dashboard, breakdown per produk) digabung per warna DASAR -- varian akhiran "Waterproof"
+// (mis. "Navy Waterproof") sengaja digabung ke warna dasarnya ("Navy") DI BREAKDOWN INI SAJA (dikonfirmasi
+// user 2026-09-10), krn dari sisi warna dianggap sama, cuma beda bahan -- supaya tidak kesannya ada 2 warna
+// beda padahal sama. Data SKU/produk asli TIDAK diubah, ini murni pengelompokan tampilan.
+function normalizeWarnaUtkBreakdown(w) {
+  if (!w) return w;
+  const base = String(w).replace(/\s+waterproof\s*$/i, '').trim();
+  return base || w;
+}
 function lookupHargaKonveksiBySku(sku) {
   if (!sku) return null;
   const skuUpper = String(sku).toUpperCase();
@@ -809,8 +818,15 @@ async function processWeeklyBatch(storeImports) {
   });
 
   // ---- Gabungkan baris SKU cair (fallback: file minggu ini -> pendingOrderSku registry -> histori orderDb) ----
+  // BUG (ditemukan 2026-09-10 saat mau tambah filter tanggal pesan di Dashboard): historicalOrderSku dulu
+  // TIDAK ikut bawa tanggalPesan sama sekali, dan cairSkuRows yg dibangun di bawah ini JUGA tidak pernah
+  // menyimpan tanggalPesan -- akibatnya applyBatchResult() terpaksa cari ulang tanggalPesan lewat
+  // STATE.pendingOrderSku[orderId] SENDIRI (tanpa fallback historicalOrderSku), jadi order yg match lewat
+  // jalur fallback (pendingOrderSku sudah kosong/kepakai) selalu kebagian tanggalPesan = null walau
+  // sebenarnya sudah pernah diketahui dari histori orderDb. Sekarang tanggalPesan dibawa serta di sini,
+  // ikut fallback yg sama persis dgn SKU, spy tidak diam2 hilang.
   const historicalOrderSku = {};
-  STATE.orderDb.forEach(r => { if (r.orderId && r.sku) { historicalOrderSku[r.orderId] = historicalOrderSku[r.orderId] || []; historicalOrderSku[r.orderId].push({ sku: r.sku, qty: r.qty, warna: r.warna }); } });
+  STATE.orderDb.forEach(r => { if (r.orderId && r.sku) { historicalOrderSku[r.orderId] = historicalOrderSku[r.orderId] || []; historicalOrderSku[r.orderId].push({ sku: r.sku, qty: r.qty, warna: r.warna, tanggalPesan: r.tanggalPesan || null }); } });
 
   const cairSkuRows = [];
   const notFoundOrderIds = [];
@@ -818,13 +834,13 @@ async function processWeeklyBatch(storeImports) {
   Object.keys(shopeeFinance).forEach(id => {
     matchStats.shopeeTotal++;
     let rows = STATE.pendingOrderSku[id] || historicalOrderSku[id];
-    if (rows) { matchStats.shopeeFound++; rows.forEach(r => cairSkuRows.push({ orderId:id, sku:r.sku, qty:r.qty, warna:r.warna, ...financeShare(shopeeFinance[id], r, rows) })); }
+    if (rows) { matchStats.shopeeFound++; rows.forEach(r => cairSkuRows.push({ orderId:id, sku:r.sku, qty:r.qty, warna:r.warna, tanggalPesan: r.tanggalPesan || null, ...financeShare(shopeeFinance[id], r, rows) })); }
     else { matchStats.shopeeNotFound++; notFoundOrderIds.push({ orderId: id, toko: shopeeFinance[id].toko }); }
   });
   Object.keys(tiktokFinance).forEach(id => {
     matchStats.tiktokTotal++;
     let rows = STATE.pendingOrderSku[id] || historicalOrderSku[id];
-    if (rows) { matchStats.tiktokFound++; rows.forEach(r => cairSkuRows.push({ orderId:id, sku:r.sku, qty:r.qty, warna:r.warna, ...financeShare(tiktokFinance[id], r, rows) })); }
+    if (rows) { matchStats.tiktokFound++; rows.forEach(r => cairSkuRows.push({ orderId:id, sku:r.sku, qty:r.qty, warna:r.warna, tanggalPesan: r.tanggalPesan || null, ...financeShare(tiktokFinance[id], r, rows) })); }
     else { matchStats.tiktokNotFound++; notFoundOrderIds.push({ orderId: id, toko: tiktokFinance[id].toko }); }
   });
 
@@ -1726,8 +1742,10 @@ async function applyBatchResult(result, tanggalPenarikanIso) {
     const key = r.orderId + '|' + r.sku;
     if (genuinelySettledKeys.has(key)) return; // sudah beneran settle sebelumnya, jangan diproses lagi
     const cpProduk = r.brand === 'URBAN OUTDOOR' ? capitalPartnerProduk(r.produk) : null;
-    const pending = STATE.pendingOrderSku[r.orderId];
-    const tanggalPesan = pending ? (pending.find(p => p.sku === r.sku) || pending[0] || {}).tanggalPesan || null : null;
+    // DULU cari ulang ke STATE.pendingOrderSku[r.orderId] langsung di sini -- tapi itu TIDAK ikut fallback ke
+    // historicalOrderSku spt proses pencocokan SKU-nya sendiri, jadi order yg match lewat fallback selalu
+    // kebagian tanggalPesan = null. Sekarang r.tanggalPesan sudah dihitung dgn fallback yg benar di processWeeklyBatch.
+    const tanggalPesan = r.tanggalPesan || null;
     const fresh = {
       orderId: r.orderId, sumber: r.sumber||null, produk: r.produk, sku: r.sku, brand: r.brand, warna: r.warna||null,
       qty: r.qty, hargaKonveksi: r.hargaKonveksi||null, tanggalPenarikan: tglPenarikan, tanggalCair: r.tanggalCair||null, tanggalPesan,
@@ -4721,6 +4739,108 @@ function renderOpex(container) {
    TAB: PNL
    ========================================================================= */
 let pnlFilter = { dari: '', sampai: '', preset: 'bulan_ini' };
+let skuProfitFilter = { search: '', page: 1 };
+const SKU_PROFIT_PAGE_SIZE = 30;
+
+// ==========================================================================
+// PROFIT PER SKU (breakdown per produk/SKU yg SUDAH CAIR) -- permintaan user 2026-09-10, pelengkap tab PNL.
+// Basis tanggal: tanggal CAIR (tanggalPenarikan), SAMA PERSIS dgn computePNL() -- dipanggil dgn dari/sampai yg
+// sama persis dgn pnlFilter di tab PNL, spy 1 basis tanggal yg konsisten.
+//
+// Biaya yg BISA ditelusur langsung ke 1 SKU (Modal Konveksi, Komisi Platform, Biaya Layanan, Biaya Pembayaran,
+// Komisi Afiliasi, Komisi Dinamis, Pajak) dijumlah LANGSUNG per SKU dari orderDb -- EKSAK, bukan perkiraan.
+// Payout Capital Partner (investor) per SKU juga EKSAK: tiap entri STATE.payouts sudah py skuBreakdown{sku:qty}
+// + rate flat per unit (rate sama utk semua SKU dlm 1 kontrak, krn margin investor tdk beda per warna/size),
+// jadi payoutPerSku = qty_sku_di_breakdown * rate.
+//
+// Biaya Iklan (Ads Mingguan), Biaya Retur, & Biaya Operasional TIDAK tercatat per SKU/order (dicatat per-toko
+// atau company-wide) -- 3 biaya ini DIALOKASIKAN proporsional ke tiap SKU:
+//   - Iklan & Retur: proporsional dari porsi omzet SKU tsb thdp total omzet TOKO yg sama pd periode ini.
+//   - Operasional: proporsional dari porsi omzet SKU tsb thdp total omzet SELURUH PERUSAHAAN pd periode ini.
+// Total tiap biaya alokasi ini (dijumlah semua SKU) SAMA PERSIS dgn total biaya aslinya -- yg perkiraan cuma
+// CARA BAGINYA ke tiap SKU, bukan totalnya.
+//
+// CATATAN AKURASI: "Modal" di sini dijumlah dari field r.hargaKonveksi per baris orderDb (fallback live lookup
+// spt di computeTokoBreakdown), BUKAN dari STATE.vendorPayouts.total spt "Biaya Modal" di computePNL --
+// vendorPayouts cuma simpan qty per SKU (bukan Rp per SKU), jadi tdk bisa dipecah eksak per SKU dari situ.
+// Akibatnya total "Profit Bersih" semua SKU di sini bisa beda TIPIS dari "Profit Akhir Perusahaan" di tabel
+// PNL kalau vendorPayouts.total pernah tercatat beda dari hargaKonveksi*qty saat itu (jarang, tp mungkin kalau
+// harga konveksi baru diisi belakangan setelah payout vendor sempat tercatat pakai harga lain).
+function computeProfitPerSku(dari, sampai) {
+  const inRange = (isoStr) => { if (!isoStr) return false; const d = isoStr.slice(0,10); return (!dari || d >= dari) && (!sampai || d <= sampai); };
+  const overlaps = (dariStr, sampaiStr) => {
+    if (!dariStr || !sampaiStr) return false;
+    const a1 = dariStr.slice(0,10), a2 = sampaiStr.slice(0,10);
+    return (!sampai || a1 <= sampai) && (!dari || a2 >= dari);
+  };
+  const effectiveHarga = (r) => r.hargaKonveksi != null ? r.hargaKonveksi : lookupHargaKonveksiBySku(r.sku);
+
+  const rows = STATE.orderDb.filter(r => inRange(r.tanggalPenarikan) && r.sku);
+
+  const bySku = {};
+  rows.forEach(r => {
+    const key = r.sku;
+    if (!bySku[key]) bySku[key] = {
+      sku: key, produk: null, warna: null, qty: 0, pendapatan: 0, modal: 0,
+      komisiPlatform: 0, biayaLayanan: 0, biayaPembayaran: 0, komisiAfiliasi: 0, komisiDinamis: 0, pajak: 0,
+      biayaIklan: 0, biayaRetur: 0, biayaOperasional: 0, payoutInvestor: 0, byToko: {},
+    };
+    const g = bySku[key];
+    g.qty += r.qty||1;
+    g.pendapatan += r.pendapatan||0;
+    const h = effectiveHarga(r);
+    if (h != null) g.modal += (r.qty||1) * h;
+    g.komisiPlatform += r.komisiPlatform||0;
+    g.biayaLayanan += r.biayaLayanan||0;
+    g.biayaPembayaran += r.biayaPembayaran||0;
+    g.komisiAfiliasi += r.komisiAfiliasi||0;
+    g.komisiDinamis += r.komisiDinamis||0;
+    g.pajak += r.pajak||0;
+    const toko = r.sumber || 'Tidak diketahui';
+    g.byToko[toko] = (g.byToko[toko]||0) + (r.pendapatan||0);
+    if (!g.produk && r.produk) g.produk = r.produk;
+    if (!g.warna && r.warna) g.warna = r.warna;
+  });
+
+  const totalOmzetPerusahaan = rows.reduce((s,r) => s + (r.pendapatan||0), 0);
+  const omzetPerToko = {};
+  rows.forEach(r => { const toko = r.sumber || 'Tidak diketahui'; omzetPerToko[toko] = (omzetPerToko[toko]||0) + (r.pendapatan||0); });
+
+  const semuaToko = new Set([...Object.keys(omzetPerToko), ...STATE.adsMingguan.map(a=>a.storeName), ...STATE.biayaRetur.map(r=>r.toko)]);
+  const iklanPerToko = {}, returPerToko = {};
+  semuaToko.forEach(toko => {
+    iklanPerToko[toko] = STATE.adsMingguan.filter(a => a.storeName === toko && overlaps(a.tanggalDari, a.tanggalSampai)).reduce((s,a)=>s+(a.biaya||0),0);
+    returPerToko[toko] = STATE.biayaRetur.filter(r => r.toko === toko && inRange(r.tanggalDihitung)).reduce((s,r)=>s+(r.jumlah||0),0);
+  });
+  const totalOpex = STATE.biayaOperasional.filter(o => overlaps(o.tanggalDari, o.tanggalSampai)).reduce((s,o)=>s+(o.jumlah||0),0);
+
+  Object.values(bySku).forEach(g => {
+    Object.entries(g.byToko).forEach(([toko, omzetSkuDiToko]) => {
+      const totalOmzetToko = omzetPerToko[toko] || 0;
+      const share = totalOmzetToko > 0 ? omzetSkuDiToko / totalOmzetToko : 0;
+      g.biayaIklan += (iklanPerToko[toko]||0) * share;
+      g.biayaRetur += (returPerToko[toko]||0) * share;
+    });
+    const shareCompany = totalOmzetPerusahaan > 0 ? g.pendapatan / totalOmzetPerusahaan : 0;
+    g.biayaOperasional = totalOpex * shareCompany;
+  });
+
+  STATE.payouts.filter(p => inRange(p.tanggalDihitung) && p.rate != null).forEach(p => {
+    Object.entries(p.skuBreakdown||{}).forEach(([sku, qtySku]) => {
+      if (!bySku[sku]) return; // SKU ini tdk muncul di orderDb pd rentang tanggal cair yg sama -- lewati
+      bySku[sku].payoutInvestor += qtySku * p.rate;
+    });
+  });
+
+  const list = Object.values(bySku).map(g => {
+    const bebanLangsung = g.komisiPlatform + g.biayaLayanan + g.biayaPembayaran + g.komisiAfiliasi + g.komisiDinamis + g.pajak;
+    const profitBersih = g.pendapatan - g.modal - bebanLangsung - g.biayaIklan - g.biayaRetur - g.biayaOperasional - g.payoutInvestor;
+    const marginPct = g.pendapatan > 0 ? (profitBersih / g.pendapatan * 100) : null;
+    return { ...g, bebanLangsung, profitBersih, marginPct };
+  });
+  list.sort((a,b) => b.pendapatan - a.pendapatan);
+  return list;
+}
 
 function pnlDateRangeFromPreset(preset) {
   const now = new Date();
@@ -4826,14 +4946,75 @@ function renderPnl(container) {
         </tbody>
       </table>
     </div>
+
+    ${renderProfitPerSkuPanel()}
   `;
   document.getElementById('pnlPreset').addEventListener('change', (e) => {
     pnlFilter.preset = e.target.value;
     if (e.target.value !== 'custom') Object.assign(pnlFilter, pnlDateRangeFromPreset(e.target.value));
+    skuProfitFilter.page = 1;
     renderPnl(container);
   });
-  document.getElementById('pnlDari').addEventListener('change', (e) => { pnlFilter.preset='custom'; pnlFilter.dari = e.target.value; renderPnl(container); });
-  document.getElementById('pnlSampai').addEventListener('change', (e) => { pnlFilter.preset='custom'; pnlFilter.sampai = e.target.value; renderPnl(container); });
+  document.getElementById('pnlDari').addEventListener('change', (e) => { pnlFilter.preset='custom'; pnlFilter.dari = e.target.value; skuProfitFilter.page = 1; renderPnl(container); });
+  document.getElementById('pnlSampai').addEventListener('change', (e) => { pnlFilter.preset='custom'; pnlFilter.sampai = e.target.value; skuProfitFilter.page = 1; renderPnl(container); });
+  wireProfitPerSkuHandlers(container);
+
+  // ---- Panel "Profit per SKU (Sudah Cair)" -- pakai periode yg sama persis dgn tabel PNL di atas ----
+  function renderProfitPerSkuPanel() {
+    const list = computeProfitPerSku(pnlFilter.dari, pnlFilter.sampai);
+    let filtered = list;
+    if (skuProfitFilter.search) {
+      const s = skuProfitFilter.search.toLowerCase();
+      filtered = filtered.filter(g => (g.sku||'').toLowerCase().includes(s) || (g.produk||'').toLowerCase().includes(s));
+    }
+    const totalPages = Math.max(1, Math.ceil(filtered.length / SKU_PROFIT_PAGE_SIZE));
+    skuProfitFilter.page = Math.min(Math.max(1, skuProfitFilter.page), totalPages);
+    const pageRows = filtered.slice((skuProfitFilter.page-1)*SKU_PROFIT_PAGE_SIZE, skuProfitFilter.page*SKU_PROFIT_PAGE_SIZE);
+    const totalPendapatan = filtered.reduce((s,g)=>s+g.pendapatan,0);
+    const totalProfitBersih = filtered.reduce((s,g)=>s+g.profitBersih,0);
+
+    return `
+    <div class="panel">
+      <h2>Profit per SKU (Sudah Cair)</h2>
+      <div class="desc">Rincian per SKU dari total di atas, periode yg sama (basis tanggal cair). Modal, Beban Langsung (komisi/biaya/pajak), dan Payout Investor dihitung EKSAK per SKU. Iklan, Retur, dan Operasional dialokasikan proporsional dari omzet (lihat rincian di kode) krn ketiganya dicatat per-toko/company-wide, bukan per SKU -- totalnya tetap sama persis dgn Biaya Iklan/Retur/Operasional di tabel PNL di atas, cuma cara baginya yg perkiraan.</div>
+      <div class="field"><label>Cari Produk / SKU</label><input type="text" id="skuProfitSearch" value="${skuProfitFilter.search}" placeholder="ketik nama produk atau SKU..."></div>
+      <div class="desc">${filtered.length.toLocaleString('id-ID')} SKU cocok &middot; halaman ${skuProfitFilter.page} dari ${totalPages} &middot; Total Pendapatan <b>${fmtRp(totalPendapatan)}</b> &middot; Total Profit Bersih <b>${fmtRp(totalProfitBersih)}</b></div>
+      ${!filtered.length ? '<div class="empty-note">Tidak ada data di periode ini.</div>' : `
+      <div style="overflow-x:auto; margin-top:8px;">
+      <table class="data compact">
+        <thead><tr>
+          <th>Produk</th><th>SKU</th><th>Warna</th><th class="num">Qty</th><th class="num">Pendapatan</th>
+          <th class="num">Modal</th><th class="num">Beban Langsung</th><th class="num">Iklan</th><th class="num">Retur</th>
+          <th class="num">Opex</th><th class="num">Payout Investor</th><th class="num">Profit Bersih</th><th class="num">Margin%</th>
+        </tr></thead>
+        <tbody>
+          ${pageRows.map(g => `<tr>
+            <td>${g.produk||'-'}</td><td style="font-size:10.5px;">${g.sku}</td><td style="font-size:10.5px;">${g.warna||'-'}</td>
+            <td class="num">${g.qty}</td><td class="num">${fmtRpCompact(g.pendapatan)}</td>
+            <td class="num">${fmtRpCompact(g.modal)}</td><td class="num">${fmtRpCompact(g.bebanLangsung)}</td>
+            <td class="num">${fmtRpCompact(g.biayaIklan)}</td><td class="num">${fmtRpCompact(g.biayaRetur)}</td>
+            <td class="num">${fmtRpCompact(g.biayaOperasional)}</td><td class="num">${fmtRpCompact(g.payoutInvestor)}</td>
+            <td class="num" style="font-weight:600; color:${g.profitBersih>=0?'var(--ok)':'var(--err)'};">${fmtRpCompact(g.profitBersih)}</td>
+            <td class="num">${g.marginPct!=null?g.marginPct.toFixed(1)+'%':'-'}</td>
+          </tr>`).join('')}
+        </tbody>
+      </table>
+      </div>
+      <div style="display:flex; justify-content:space-between; margin-top:12px;">
+        <button class="btn btn-ghost" id="skuProfitPrevPage" ${skuProfitFilter.page<=1?'disabled':''}>&larr; Sebelumnya</button>
+        <button class="btn btn-ghost" id="skuProfitNextPage" ${skuProfitFilter.page>=totalPages?'disabled':''}>Selanjutnya &rarr;</button>
+      </div>
+      `}
+    </div>`;
+  }
+  function wireProfitPerSkuHandlers(el) {
+    const searchEl = el.querySelector('#skuProfitSearch');
+    if (searchEl) searchEl.addEventListener('input', (e) => { skuProfitFilter.search = e.target.value; skuProfitFilter.page = 1; renderPnl(container); });
+    const prevBtn = el.querySelector('#skuProfitPrevPage');
+    if (prevBtn) prevBtn.addEventListener('click', () => { skuProfitFilter.page--; renderPnl(container); });
+    const nextBtn = el.querySelector('#skuProfitNextPage');
+    if (nextBtn) nextBtn.addEventListener('click', () => { skuProfitFilter.page++; renderPnl(container); });
+  }
 }
 
 /* =========================================================================
@@ -4896,7 +5077,14 @@ function renderDashboard(container) {
     Object.assign(dashFilter, pnlDateRangeFromPreset(dashFilter.preset));
   }
   const inRange = (isoStr) => { if (!isoStr) return false; const d = isoStr.slice(0,10); return (!dashFilter.dari || d >= dashFilter.dari) && (!dashFilter.sampai || d <= dashFilter.sampai); };
-  const rows = STATE.orderDb.filter(r => inRange(r.tanggalPenarikan));
+  // Omzet/Qty/breakdown Toko & Produk sengaja dipakaikan TANGGAL PESAN (bukan tanggal cair) -- permintaan user
+  // 2026-09-10, spy Dashboard mencerminkan kapan barang laku terjual (bukan kapan uangnya masuk, yg bisa telat
+  // berminggu-minggu dari platform). Total Profit di bawah TETAP pakai computePNL() berbasis tanggal cair --
+  // sengaja TIDAK ikut pindah, karena biaya modal/payout investor/ads baru "pasti" nilainya pas cair, jadi
+  // Profit yg dipaksa ke tanggal pesan bisa understated/salah utk pesanan yg belum cair. Konsekuensinya: Omzet
+  // & Profit di Dashboard yg sama bisa berasal dari kumpulan pesanan yg sedikit beda kalau ada jeda antara
+  // tanggal pesan & tanggal cair -- ini keputusan sadar (dikonfirmasi user), bukan bug.
+  const rows = STATE.orderDb.filter(r => inRange(r.tanggalPesan));
 
   const totalOmzet = rows.reduce((s,r) => s + (r.pendapatan||0), 0);
   const totalQty = rows.reduce((s,r) => s + (r.qty||1), 0);
@@ -4924,7 +5112,7 @@ function renderDashboard(container) {
     const produkRows = rows.filter(r => r.produk === nama);
     const byWarna = {}, bySize = {};
     produkRows.forEach(r => {
-      const w = r.warna || 'Tidak diketahui';
+      const w = r.warna ? normalizeWarnaUtkBreakdown(r.warna) : 'Tidak diketahui';
       byWarna[w] = (byWarna[w]||0) + (r.qty||1);
       let sizeLabel = 'Tidak diketahui';
       if (r.sku) { const sizeCode = String(r.sku).toUpperCase().slice(-2); sizeLabel = SIZE_CODE_MAP[sizeCode] || 'Tidak diketahui'; }
@@ -5016,6 +5204,7 @@ function renderDashboard(container) {
         <div class="field"><label>Dari Tanggal</label><input type="date" id="dashDari" value="${dashFilter.dari}"></div>
         <div class="field"><label>Sampai Tanggal</label><input type="date" id="dashSampai" value="${dashFilter.sampai}"></div>
       </div>
+      <div class="desc">Omzet, Qty, dan breakdown Toko/Produk di bawah berdasarkan <b>tanggal pesan</b>. Total Profit berdasarkan <b>tanggal cair</b> (sama spt tab PNL) krn biaya modal/payout investor baru pasti nilainya pas cair.</div>
     </div>
 
     <div class="kpi-row">
