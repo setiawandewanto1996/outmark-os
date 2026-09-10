@@ -5084,7 +5084,21 @@ function renderDashboard(container) {
   // Profit yg dipaksa ke tanggal pesan bisa understated/salah utk pesanan yg belum cair. Konsekuensinya: Omzet
   // & Profit di Dashboard yg sama bisa berasal dari kumpulan pesanan yg sedikit beda kalau ada jeda antara
   // tanggal pesan & tanggal cair -- ini keputusan sadar (dikonfirmasi user), bukan bug.
-  const rows = STATE.orderDb.filter(r => inRange(r.tanggalPesan));
+  //
+  // BUG DITEMUKAN 2026-09-10 (user lapor Omzet SHOPEE_UOUT Agustus cuma Rp53jt, seharusnya ~Rp118jt): tanggalPesan
+  // TIDAK SELALU terisi -- baris hasil migrasi Excel lama cuma keisi kalau sheet PENJUALAN py kolom "Tanggal
+  // Pesan" & terisi di baris itu; baris hasil Import Mingguan cuma keisi kalau order-nya sempat tercatat di
+  // pendingOrderSku (dari upload "Update Daftar Pesanan") entah sekarang atau di histori. Kalau dipakai APA
+  // ADANYA (fallback ke DIBUANG), baris yg tanggalPesan-nya kosong DIAM2 HILANG dari Omzet Dashboard walau
+  // pendapatannya valid & sudah cair -- persis gejala yg dilaporkan. Fix: fallback ke tanggalPenarikan kalau
+  // tanggalPesan kosong (pola yg sama persis sudah dipakai di sort Database Penjualan:
+  // `tanggalPenarikan||tanggalPesan`), spy TIDAK PERNAH ada baris yg diam2 hilang cuma krn field tanggal
+  // pesannya belum/tidak diketahui -- baris itu tetap kehitung (pakai tanggal cairnya), cuma jadi kurang presisi
+  // utk baris spesifik itu, drpd hilang total dari laporan.
+  const rows = STATE.orderDb.filter(r => inRange(r.tanggalPesan || r.tanggalPenarikan));
+  // Supaya kelihatan di UI kalau ada baris yg "kehitung" pakai fallback tanggal cair (bkn tanggal pesan asli) --
+  // user berhak tahu sebagian Omzet di bawah ini presisinya lebih rendah, bukan cuma didiamkan begitu saja.
+  const nRowsFallbackTglPesan = rows.filter(r => !r.tanggalPesan).length;
 
   const totalOmzet = rows.reduce((s,r) => s + (r.pendapatan||0), 0);
   const totalQty = rows.reduce((s,r) => s + (r.qty||1), 0);
@@ -5205,6 +5219,7 @@ function renderDashboard(container) {
         <div class="field"><label>Sampai Tanggal</label><input type="date" id="dashSampai" value="${dashFilter.sampai}"></div>
       </div>
       <div class="desc">Omzet, Qty, dan breakdown Toko/Produk di bawah berdasarkan <b>tanggal pesan</b>. Total Profit berdasarkan <b>tanggal cair</b> (sama spt tab PNL) krn biaya modal/payout investor baru pasti nilainya pas cair.</div>
+      ${nRowsFallbackTglPesan > 0 ? `<div class="desc" style="color:var(--err);">&#9888; ${nRowsFallbackTglPesan.toLocaleString('id-ID')} baris di periode ini tidak punya data tanggal pesan (baris lama/import tanpa "Update Daftar Pesanan") -- tetap dihitung memakai tanggal cairnya spy tidak hilang dari Omzet, tapi presisinya sedikit lebih rendah drpd baris yg py tanggal pesan asli.</div>` : ''}
     </div>
 
     <div class="kpi-row">
