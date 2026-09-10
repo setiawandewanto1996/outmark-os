@@ -1826,6 +1826,7 @@ let vendorOrphanManualPreview = null; // { tanggalLama, tanggalBaru, orphans } -
 let kontrakDuplikatPreview = null; // hasil cariKontrakRolloverDuplikatKosong() -- tahap konfirmasi, blm ada mutasi
 let hargaKonveksiRefreshPreview = null; // hasil cariOrderTanpaHargaKonveksiYangBisaDiperbaiki() -- tahap konfirmasi, blm ada mutasi
 let hargaModalPayoutRefreshPreview = null; // hasil cariPayoutHargaModalKosongYangBisaDiperbaiki() -- tahap konfirmasi, blm ada mutasi
+let tanggalPesanRefreshPreview = null; // hasil cariOrderTanpaTanggalPesanYangBisaDiperbaiki() -- tahap konfirmasi, blm ada mutasi
 
 function labelForPlatform(platform) {
   if (platform === 'Shopee') return { order: 'Order All', income: 'Income Sudah Dilepas' };
@@ -2144,6 +2145,41 @@ async function terapkanPerbaikiHargaModalPayoutKosong(groups) {
   return { nBarisDiperbarui, totalUnit };
 }
 
+// Cari baris STATE.orderDb yg tanggalPesan-nya KOSONG (null) TAPI ada entri STATE.pendingOrderSku[orderId]
+// dgn SKU yg sama & tanggalPesan TERISI -- kasus ini muncul kalau order tsb SUDAH cair/settle (masuk orderDb)
+// SEBELUM user meng-upload/refresh "Update Daftar Pesanan Saja" utk order itu (jadi tanggalPesan blm diketahui
+// waktu disettle & tersimpan null selamanya), padahal BELAKANGAN user upload ulang file Order List yg utk
+// order yg sama ITU JUSTRU SUDAH ada tanggal pesannya -- data baru itu nyangkut nganggur di pendingOrderSku
+// (krn SKU-nya sudah "abis" dipakai/disettle di orderDb, tidak pernah dipakai lagi utk matching) dan TIDAK
+// otomatis ditarik balik ke baris orderDb yg sudah lama ada. Alat ini menariknya secara manual & aman: HANYA
+// menyentuh baris yg field-nya SEBELUMNYA kosong (null), tidak pernah menimpa tanggalPesan yg sudah terisi.
+function cariOrderTanpaTanggalPesanYangBisaDiperbaiki() {
+  const byOrder = {};
+  STATE.orderDb.forEach(r => {
+    if (r.tanggalPesan || !r.orderId || !r.sku) return;
+    const pending = STATE.pendingOrderSku[r.orderId];
+    if (!pending) return;
+    const match = pending.find(p => p.sku === r.sku && p.tanggalPesan);
+    if (!match) return;
+    const key = r.orderId;
+    if (!byOrder[key]) byOrder[key] = { orderId: r.orderId, sumber: r.sumber || '-', tanggalBaru: match.tanggalPesan, qty: 0, rows: [] };
+    byOrder[key].qty += (r.qty || 1);
+    byOrder[key].rows.push({ row: r, tanggalBaru: match.tanggalPesan });
+  });
+  return Object.values(byOrder).sort((a,b) => (a.tanggalBaru||'').localeCompare(b.tanggalBaru||''));
+}
+
+// MUTASI: isi ulang r.tanggalPesan utk semua baris pada grup2 hasil cariOrderTanpaTanggalPesanYangBisaDiperbaiki()
+// dgn tanggal yg ditemukan di pendingOrderSku. Aman krn hanya menyentuh baris yg field-nya SEBELUMNYA kosong.
+async function terapkanPerbaikiTanggalPesanKosong(groups) {
+  let nBarisDiperbarui = 0, totalUnit = 0;
+  groups.forEach(g => {
+    g.rows.forEach(({ row, tanggalBaru }) => { row.tanggalPesan = tanggalBaru; nBarisDiperbarui++; totalUnit += (row.qty||1); });
+  });
+  await saveState();
+  return { nBarisDiperbarui, totalUnit };
+}
+
 function cleanupPendingAlreadySettled() {
   const settledKeys = new Set(STATE.orderDb.map(r => r.orderId + '|' + r.sku));
   let nRemoved = 0, nOrdersAffected = 0;
@@ -2299,6 +2335,14 @@ function renderImport(container) {
       <button class="btn btn-ghost" id="btnCekHargaModalPayoutKosong">Cek Sekarang</button>
       <div class="status-box" id="hargaModalPayoutRefreshMsg"></div>
       <div id="hargaModalPayoutRefreshArea" style="margin-top:10px;"></div>
+    </div>
+
+    <div class="panel">
+      <h2>Perbaiki Tanggal Pesan yang Kosong dari Daftar Pesanan</h2>
+      <div class="desc">Utk order yang SUDAH cair/tercatat di Database Penjualan tapi Tanggal Pesan-nya kosong (dashboard jadi harus pakai tanggal cair sbg cadangan) -- padahal SEKARANG di "Update Daftar Pesanan Saja" di atas sudah ada tanggal pesannya (mis. baru diupload/refresh belakangan, setelah order itu keburu cair). Ini terjadi karena tanggal pesan cuma ditarik SEKALI waktu order disettle -- upload daftar pesanan setelahnya tidak otomatis menoleh balik ke baris lama. Alat ini mencari baris seperti itu &amp; mengisinya. Baris yang memang genuinely tidak pernah ada di file Order List manapun TIDAK akan disentuh.</div>
+      <button class="btn btn-ghost" id="btnCekTanggalPesanKosong">Cek Sekarang</button>
+      <div class="status-box" id="tanggalPesanRefreshMsg"></div>
+      <div id="tanggalPesanRefreshArea" style="margin-top:10px;"></div>
     </div>
 
     <div class="panel">
@@ -2509,6 +2553,21 @@ function renderImport(container) {
       renderHargaModalPayoutRefreshArea(document.getElementById('hargaModalPayoutRefreshArea'), container);
     });
 
+    const btnCekTanggalPesanKosong = document.getElementById('btnCekTanggalPesanKosong');
+    if (btnCekTanggalPesanKosong) btnCekTanggalPesanKosong.addEventListener('click', () => {
+      const msg = document.getElementById('tanggalPesanRefreshMsg');
+      const groups = cariOrderTanpaTanggalPesanYangBisaDiperbaiki();
+      if (!groups.length) {
+        showMsg(msg, 'ok', 'Tidak ada baris yang bisa diperbaiki saat ini -- baris yang tanggal pesannya kosong memang belum pernah ada di file Daftar Pesanan manapun yang diupload.');
+        tanggalPesanRefreshPreview = null;
+        renderTanggalPesanRefreshArea(document.getElementById('tanggalPesanRefreshArea'), container);
+        return;
+      }
+      tanggalPesanRefreshPreview = groups;
+      showMsg(msg, 'info', 'Cek rincian di bawah sebelum konfirmasi.');
+      renderTanggalPesanRefreshArea(document.getElementById('tanggalPesanRefreshArea'), container);
+    });
+
     const storeSelect = document.getElementById('imp_store');
     storeSelect.addEventListener('change', () => {
       const store = activeStores.find(s => s.id === storeSelect.value);
@@ -2541,6 +2600,7 @@ function renderImport(container) {
   if (kontrakDuplikatPreview) renderKontrakDuplikatArea(document.getElementById('kontrakDuplikatArea'), container);
   if (hargaKonveksiRefreshPreview) renderHargaKonveksiRefreshArea(document.getElementById('hargaKonveksiRefreshArea'), container);
   if (hargaModalPayoutRefreshPreview) renderHargaModalPayoutRefreshArea(document.getElementById('hargaModalPayoutRefreshArea'), container);
+  if (tanggalPesanRefreshPreview) renderTanggalPesanRefreshArea(document.getElementById('tanggalPesanRefreshArea'), container);
 }
 
 function renderHargaKonveksiRefreshArea(el, container) {
@@ -2604,6 +2664,38 @@ function renderHargaModalPayoutRefreshArea(el, container) {
   document.getElementById('btnBatalHargaModalPayoutRefresh').addEventListener('click', () => {
     hargaModalPayoutRefreshPreview = null;
     renderHargaModalPayoutRefreshArea(el, container);
+  });
+}
+
+function renderTanggalPesanRefreshArea(el, container) {
+  const groups = tanggalPesanRefreshPreview;
+  if (!groups || !groups.length) { el.innerHTML = ''; return; }
+  const totalUnit = groups.reduce((s,g) => s+g.qty, 0);
+  el.innerHTML = `
+    <div style="border:1px solid var(--line); border-radius:6px; padding:14px; background:#F8F7F3;">
+      <div style="font-weight:600; margin-bottom:8px;">Ditemukan ${groups.length} order (${totalUnit} unit) yang sekarang sudah bisa diisi tanggal pesannya</div>
+      <table class="data compact">
+        <thead><tr><th>Order ID</th><th>Toko</th><th class="num">Qty</th><th>Tanggal Pesan Baru</th></tr></thead>
+        <tbody>${groups.map(g => `<tr>
+          <td>${g.orderId}</td><td>${g.sumber}</td><td class="num">${g.qty}</td><td>${new Date(g.tanggalBaru).toLocaleDateString('id-ID')}</td>
+        </tr>`).join('')}</tbody>
+      </table>
+      <div style="margin-top:12px; display:flex; gap:8px;">
+        <button class="btn btn-primary" id="btnTerapkanTanggalPesanRefresh">Ya, Isi Tanggal Pesan (${totalUnit} unit)</button>
+        <button class="btn btn-ghost" id="btnBatalTanggalPesanRefresh">Batal</button>
+      </div>
+    </div>
+  `;
+  document.getElementById('btnTerapkanTanggalPesanRefresh').addEventListener('click', async () => {
+    const msg = document.getElementById('tanggalPesanRefreshMsg');
+    const { nBarisDiperbarui, totalUnit } = await terapkanPerbaikiTanggalPesanKosong(groups);
+    tanggalPesanRefreshPreview = null;
+    showMsg(msg, 'ok', `${nBarisDiperbarui} baris order (${totalUnit} unit) berhasil diisi tanggal pesannya. Dashboard akan otomatis ikut lebih akurat (baris ini keluar dari hitungan "pakai tanggal cair sbg cadangan").`);
+    renderTanggalPesanRefreshArea(el, container);
+  });
+  document.getElementById('btnBatalTanggalPesanRefresh').addEventListener('click', () => {
+    tanggalPesanRefreshPreview = null;
+    renderTanggalPesanRefreshArea(el, container);
   });
 }
 
