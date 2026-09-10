@@ -204,12 +204,67 @@ function uid(prefix) { return prefix + '_' + Date.now().toString(36) + Math.rand
 // Konversi tanggal serial Excel (angka mentah, mis. 46246) -> ISO string, MURNI matematika, TANPA lewat
 // konversi objek Date/timezone browser sama sekali. Ini utk hindari bug SheetJS yg bisa geser tanggal
 // tergantung zona waktu perangkat yg membaca file (ditemukan lewat laporan user, tanggal geser -1 hari).
+//
+// BUG NYATA ditemukan 2026-09-10 (cek langsung file Order.all/Semua Pesanan asli user): kolom tanggal di file
+// export tsb ("Waktu Pesanan Dibuat" Shopee, "Created Time" TikTok) TERNYATA TIDAK berupa angka serial Excel
+// sama sekali, melainkan TEKS biasa -- Shopee format "2026-08-23 07:43" (YYYY-MM-DD HH:MM), TikTok format
+// "21/08/2026 07:07:41" (DD/MM/YYYY HH:MM:SS). Dulu fungsi ini cuma bisa angka, jadi `Number(teks)` = NaN dan
+// SELALU return null -- artinya tanggalPesan dari "Update Daftar Pesanan Saja" SELALU kosong utk SEMUA baris,
+// utk SEMUA user, bukan cuma sebagian/baris lama spt yg dikira sebelumnya. Sekarang ditambah fallback: kalau
+// bukan angka serial, coba cocokkan pola teks Shopee & TikTok di atas (plus varian tanpa jam, jaga-jaga utk
+// format lain). Dibaca sbg komponen tanggal APA ADANYA (diperlakukan spt UTC, TIDAK dikonversi timezone) --
+// konsisten dgn perilaku serial-numerik di atas yg juga tidak peduli timezone, supaya bucket tanggal (dipakai
+// via .slice(0,10) di seluruh app) tetap sama persis dgn tanggal yg tertulis apa adanya di file.
 function excelSerialToISO(serial) {
-  if (serial == null || isNaN(serial)) return null;
-  // Excel epoch: 30 Des 1899 (serial 0), dgn bug historis menganggap 1900 kabisat -- rumus baku konversi ke Unix ms:
-  const ms = Math.round((Number(serial) - 25569) * 86400 * 1000);
-  const d = new Date(ms); // dibuat dari angka milidetik absolut -- TIDAK bergantung timezone sama sekali
-  return isNaN(d) ? null : d.toISOString();
+  if (serial == null) return null;
+  if (typeof serial === 'number') {
+    if (isNaN(serial)) return null;
+    const ms = Math.round((serial - 25569) * 86400 * 1000);
+    const d = new Date(ms); // dibuat dari angka milidetik absolut -- TIDAK bergantung timezone sama sekali
+    return isNaN(d) ? null : d.toISOString();
+  }
+  const s = String(serial).trim();
+  if (!s) return null;
+  if (/^\d+(\.\d+)?$/.test(s)) { // serial numerik yg kebetulan berupa teks (mis. "46246") -- tetap dukung spt dulu
+    const ms = Math.round((Number(s) - 25569) * 86400 * 1000);
+    const d = new Date(ms);
+    return isNaN(d) ? null : d.toISOString();
+  }
+  let m = s.match(/^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2})(?::(\d{2}))?)?/); // teks Shopee: YYYY-MM-DD[ HH:MM[:SS]]
+  if (m) {
+    const [, y, mo, d, h, mi, se] = m;
+    const dt = new Date(Date.UTC(+y, +mo-1, +d, +(h||0), +(mi||0), +(se||0)));
+    return isNaN(dt) ? null : dt.toISOString();
+  }
+  m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})(?: (\d{2}):(\d{2})(?::(\d{2}))?)?/); // teks TikTok: DD/MM/YYYY[ HH:MM[:SS]]
+  if (m) {
+    const [, d, mo, y, h, mi, se] = m;
+    const dt = new Date(Date.UTC(+y, +mo-1, +d, +(h||0), +(mi||0), +(se||0)));
+    return isNaN(dt) ? null : dt.toISOString();
+  }
+  return null;
+}
+
+// Parse angka format Indonesia dari TEKS mentah file Order List (mis. "359.000" = 359000, titik = pemisah
+// ribuan -- BUKAN 359.000 spt kalau ditelan Number() polos yg akan salah baca jadi 359). Dipakai utk kolom
+// nilai/harga yg (beda dgn file Income) ternyata tersimpan sbg TEKS di file Order.all/Semua Pesanan asli.
+function parseAngkaID(v) {
+  if (v == null) return null;
+  if (typeof v === 'number') return isNaN(v) ? null : v;
+  let s = String(v).trim();
+  if (!s) return null;
+  s = s.replace(/[^\d.,-]/g, '');
+  if (!s) return null;
+  if (s.includes(',')) {
+    s = s.replace(/\./g, '').replace(',', '.'); // titik = ribuan, koma = desimal
+  } else {
+    const parts = s.split('.');
+    if (parts.length > 1 && parts[parts.length-1].length === 3 && parts.slice(0,-1).every(p => p.length <= 3)) {
+      s = parts.join(''); // pola persis "xxx.xxx" -- titik dianggap ribuan, bukan desimal
+    }
+  }
+  const num = Number(s);
+  return isNaN(num) ? null : num;
 }
 
 // Kebalikan dari excelSerialToISO -- dipakai utk bikin "baris income palsu" di fitur Tambah Transaksi Manual,
@@ -2193,6 +2248,31 @@ function cleanupPendingAlreadySettled() {
   return { nRemoved, nOrdersAffected };
 }
 
+// Perkiraan omset dari order yg SUDAH dipesan (tanggal pesan dlm rentang) tp BELUM cair -- diminta user 2026-09-10:
+// "itu jelas capaian penjualan dari marketing walaupun ada kemungkinan gagal". Sumbernya pendingOrderSku (diisi
+// dari "Update Daftar Pesanan Saja"), BUKAN orderDb -- makanya ini estimasi (bisa batal/retur), bukan pendapatan
+// resmi. PENTING utk tidak dobel hitung: sebuah pendingOrderSku[orderId] bisa saja NYANGKUT/BASI (order itu
+// SUDAH cair beneran & sudah ada di orderDb, tp entri pending-nya belum sempat dibersihkan -- lihat
+// cleanupPendingAlreadySettled) -- baris spt itu HARUS dikecualikan di sini, krn pendapatan aslinya SUDAH
+// terhitung di "Omzet Sudah Cair" (dari orderDb). Baris yg tanggalPesan-nya msh kosong (mis. file lama sblm
+// perbaikan parsing tanggal 2026-09-10) TIDAK ikut dihitung sama sekali di sini (drpd salah kelompokkan ke
+// tanggal yg salah) -- akan otomatis ikut kehitung normal nanti begitu order itu cair (masuk orderDb).
+function computeOmzetEstimasiBelumCair(dari, sampai) {
+  const inRange = (isoStr) => { if (!isoStr) return false; const d = isoStr.slice(0,10); return (!dari || d >= dari) && (!sampai || d <= sampai); };
+  const settledKeys = new Set(STATE.orderDb.map(r => r.orderId + '|' + r.sku));
+  let total = 0, qty = 0, nBaris = 0;
+  Object.entries(STATE.pendingOrderSku).forEach(([orderId, rowsPending]) => {
+    rowsPending.forEach(r => {
+      if (settledKeys.has(orderId + '|' + r.sku)) return; // sudah beneran cair (data pending ini nyangkut/basi) -- JANGAN dobel hitung dgn Omzet Sudah Cair
+      if (!inRange(r.tanggalPesan)) return;
+      total += (r.estimasiPendapatan || 0);
+      qty += (r.qty || 1);
+      nBaris++;
+    });
+  });
+  return { total, qty, nBaris };
+}
+
 async function uploadOrderListOnly(store, orderFile) {
   const wb = XLSX.read(await orderFile.arrayBuffer(), { type:'array' }); // TANPA cellDates -- baca angka mentah
   let count = 0, nDibatalkan = 0;
@@ -2204,7 +2284,11 @@ async function uploadOrderListOnly(store, orderFile) {
     objs.forEach(o => {
       const id = String(o['No. Pesanan']);
       byOrder[id] = byOrder[id] || [];
-      byOrder[id].push({ sku: o['Nomor Referensi SKU'], qty: Number(o['Jumlah'])||0, warna: parseWarna(o['Nama Variasi']), storeName: store.nama, tanggalPesan: toIso(o['Waktu Pesanan Dibuat']) });
+      // estimasiPendapatan: perkiraan omset dari "Subtotal Pesanan" (blm cair, blm dipotong komisi/biaya) --
+      // dipakai HANYA utk KPI "Omzet Estimasi (Belum Cair)" di Dashboard, BUKAN pengganti pendapatan resmi
+      // yg baru ada setelah order ini benar2 cair lewat Income. Kolom "Subtotal Pesanan" di file Order.all
+      // asli tersimpan sbg TEKS format Indonesia (mis. "359.000") -- pakai parseAngkaID, bukan Number() polos.
+      byOrder[id].push({ sku: o['Nomor Referensi SKU'], qty: Number(o['Jumlah'])||0, warna: parseWarna(o['Nama Variasi']), storeName: store.nama, tanggalPesan: toIso(o['Waktu Pesanan Dibuat']), estimasiPendapatan: parseAngkaID(o['Subtotal Pesanan']) });
       statusById[id] = o['Status Pesanan'];
     });
     Object.entries(byOrder).forEach(([id, rows]) => {
@@ -2212,12 +2296,20 @@ async function uploadOrderListOnly(store, orderFile) {
       else { STATE.pendingOrderSku[id] = rows; count++; } // timpa (bukan tambah) -- data terbaru dari upload ini
     });
   } else {
-    const objs = rowsToObjects(sheetToRows(wb.Sheets['OrderSKUList']), 0, 2);
+    // dataStartIdx=1 (BUKAN 2) -- sheet "OrderSKUList" cuma py 1 baris header, persis bug off-by-one yg sama
+    // spt sudah diperbaiki di processWeeklyBatch (2026-09-04) utk sheet Income TikTok/Tokopedia. Dulu ini
+    // "SUSPECTED, belum diverifikasi" krn blm ada contoh file asli -- sekarang terbukti nyata (baris data
+    // PERTAMA tiap file OrderSKUList selalu terlewat diam2, cek langsung file asli user 2026-09-10).
+    const objs = rowsToObjects(sheetToRows(wb.Sheets['OrderSKUList']), 0, 1);
     const byOrder = {}; const statusById = {};
     objs.forEach(o => {
       const id = String(o['Order ID']);
       byOrder[id] = byOrder[id] || [];
-      byOrder[id].push({ sku: o['Seller SKU'], qty: Number(o['Quantity'])||0, warna: parseWarna(o['Variation']), storeName: store.nama, tanggalPesan: toIso(o['Created Time']) });
+      // estimasiPendapatan: sama spt Shopee di atas, tp pakai "SKU Subtotal After Discount" (per-baris SKU,
+      // sepadan dgn "Subtotal Pesanan" Shopee -- omset produk sblm ongkir/biaya, blm cair). Kolom ini di file
+      // TikTok/Tokopedia asli tersimpan sbg TEKS angka polos (mis. "253890", tanpa titik ribuan) -- parseAngkaID
+      // tetap aman dipakai (angka polos lolos apa adanya).
+      byOrder[id].push({ sku: o['Seller SKU'], qty: Number(o['Quantity'])||0, warna: parseWarna(o['Variation']), storeName: store.nama, tanggalPesan: toIso(o['Created Time']), estimasiPendapatan: parseAngkaID(o['SKU Subtotal After Discount']) });
       statusById[id] = o['Order Status'];
     });
     Object.entries(byOrder).forEach(([id, rows]) => {
@@ -5285,7 +5377,12 @@ function renderDashboard(container) {
   // user berhak tahu sebagian Omzet di bawah ini presisinya lebih rendah, bukan cuma didiamkan begitu saja.
   const nRowsFallbackTglPesan = rows.filter(r => !r.tanggalPesan).length;
 
-  const totalOmzet = rows.reduce((s,r) => s + (r.pendapatan||0), 0);
+  const totalOmzetCair = rows.reduce((s,r) => s + (r.pendapatan||0), 0);
+  // Diminta user 2026-09-10: omset dari order yg sudah DIPESAN tp blm CAIR tetap ikut dihitung sbg "capaian
+  // marketing" ("walaupun ada kemungkinan gagal, itu bukti marketing sudah bekerja") -- tapi tetap dipisah
+  // jelas (bukan dicampur diam2) sesuai konvensi app ini: Total Omzet = Sudah Cair + Estimasi Belum Cair.
+  const estimasiBelumCair = computeOmzetEstimasiBelumCair(dashFilter.dari, dashFilter.sampai);
+  const totalOmzet = totalOmzetCair + estimasiBelumCair.total;
   const totalQty = rows.reduce((s,r) => s + (r.qty||1), 0);
   // DULU: totalProfit = rows.reduce((s,r) => s + (r.profit||0), 0) -- SALAH, krn field `profit` di tiap baris
   // order cuma pernah keisi utk data lama hasil migrasi Excel (migrasi_penjualan). Baris hasil Import Mingguan
@@ -5405,6 +5502,7 @@ function renderDashboard(container) {
       </div>
       <div class="desc">Semua angka di Dashboard ini (Omzet, Qty, Profit, breakdown Toko/Produk) berdasarkan <b>tanggal pesan</b> -- supaya bisa dibandingkan langsung dgn budget iklan periode yg sama. Utk laporan akuntansi resmi berbasis tanggal cair/settlement, lihat tab PNL.</div>
       ${nRowsFallbackTglPesan > 0 ? `<div class="desc" style="color:var(--err);">&#9888; ${nRowsFallbackTglPesan.toLocaleString('id-ID')} baris di periode ini tidak punya data tanggal pesan (baris lama/import tanpa "Update Daftar Pesanan") -- tetap dihitung memakai tanggal cairnya spy tidak hilang dari Omzet, tapi presisinya sedikit lebih rendah drpd baris yg py tanggal pesan asli.</div>` : ''}
+      ${estimasiBelumCair.total > 0 ? `<div class="desc">Total Omzet = Omzet Sudah Cair (${fmtRp(totalOmzetCair)}) + Estimasi Order Belum Cair (${fmtRp(estimasiBelumCair.total)}, dari ${estimasiBelumCair.nBaris.toLocaleString('id-ID')} baris di "Update Daftar Pesanan Saja" yg blm sempat diproses Income) -- bagian estimasi ini BELUM PASTI (bisa batal/retur), dihitung sbg capaian marketing, bukan pendapatan resmi.</div>` : ''}
     </div>
 
     <div class="kpi-row">
