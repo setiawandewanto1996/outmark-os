@@ -4766,6 +4766,14 @@ const SKU_PROFIT_PAGE_SIZE = 30;
 // Akibatnya total "Profit Bersih" semua SKU di sini bisa beda TIPIS dari "Profit Akhir Perusahaan" di tabel
 // PNL kalau vendorPayouts.total pernah tercatat beda dari hargaKonveksi*qty saat itu (jarang, tp mungkin kalau
 // harga konveksi baru diisi belakangan setelah payout vendor sempat tercatat pakai harga lain).
+//
+// DRILL-DOWN PER ORDER (2026-09-10, permintaan user): tiap grup SKU juga bawa `orders[]` -- rincian per nomor
+// pesanan (orderId) di dalam SKU itu. Pendapatan/Modal/Beban Langsung per order EKSAK (langsung dari baris
+// orderDb-nya, orderId+sku itu sendiri sudah unik). Iklan/Retur/Operasional/Payout Investor di level SKU
+// (yg SUDAH dialokasikan proporsional dari toko/company-wide ke SKU, lihat komentar di atas) DIALOKASIKAN
+// SEKALI LAGI ke tiap order proporsional dari porsi omzet order tsb thdp omzet total SKU-nya -- konsisten
+// dgn metode yg sama, bukan estimasi baru. Total tiap kolom kalau dijumlah semua order dlm 1 SKU SAMA PERSIS
+// dgn angka SKU di atasnya (cuma cara baginya makin terperinci per order, bukan re-estimasi).
 function computeProfitPerSku(dari, sampai) {
   const inRange = (isoStr) => { if (!isoStr) return false; const d = isoStr.slice(0,10); return (!dari || d >= dari) && (!sampai || d <= sampai); };
   const overlaps = (dariStr, sampaiStr) => {
@@ -4783,13 +4791,14 @@ function computeProfitPerSku(dari, sampai) {
     if (!bySku[key]) bySku[key] = {
       sku: key, produk: null, warna: null, qty: 0, pendapatan: 0, modal: 0,
       komisiPlatform: 0, biayaLayanan: 0, biayaPembayaran: 0, komisiAfiliasi: 0, komisiDinamis: 0, pajak: 0,
-      biayaIklan: 0, biayaRetur: 0, biayaOperasional: 0, payoutInvestor: 0, byToko: {},
+      biayaIklan: 0, biayaRetur: 0, biayaOperasional: 0, payoutInvestor: 0, byToko: {}, ordersByKey: {},
     };
     const g = bySku[key];
     g.qty += r.qty||1;
     g.pendapatan += r.pendapatan||0;
     const h = effectiveHarga(r);
-    if (h != null) g.modal += (r.qty||1) * h;
+    const modalBaris = h != null ? (r.qty||1) * h : 0;
+    if (h != null) g.modal += modalBaris;
     g.komisiPlatform += r.komisiPlatform||0;
     g.biayaLayanan += r.biayaLayanan||0;
     g.biayaPembayaran += r.biayaPembayaran||0;
@@ -4800,6 +4809,17 @@ function computeProfitPerSku(dari, sampai) {
     g.byToko[toko] = (g.byToko[toko]||0) + (r.pendapatan||0);
     if (!g.produk && r.produk) g.produk = r.produk;
     if (!g.warna && r.warna) g.warna = r.warna;
+    // orderId+sku sudah unik di orderDb (dipakai sbg key jg di applyBatchResult) -- 1 baris = 1 order utk SKU ini
+    const orderKey = r.orderId || '(tanpa order ID)';
+    if (!g.ordersByKey[orderKey]) g.ordersByKey[orderKey] = {
+      orderId: r.orderId||null, sumber: r.sumber||null, qty: 0, pendapatan: 0, modal: 0,
+      bebanLangsung: 0, tanggalPenarikan: r.tanggalPenarikan||null, tanggalPesan: r.tanggalPesan||null,
+    };
+    const o = g.ordersByKey[orderKey];
+    o.qty += r.qty||1;
+    o.pendapatan += r.pendapatan||0;
+    o.modal += modalBaris;
+    o.bebanLangsung += (r.komisiPlatform||0) + (r.biayaLayanan||0) + (r.biayaPembayaran||0) + (r.komisiAfiliasi||0) + (r.komisiDinamis||0) + (r.pajak||0);
   });
 
   const totalOmzetPerusahaan = rows.reduce((s,r) => s + (r.pendapatan||0), 0);
@@ -4836,7 +4856,20 @@ function computeProfitPerSku(dari, sampai) {
     const bebanLangsung = g.komisiPlatform + g.biayaLayanan + g.biayaPembayaran + g.komisiAfiliasi + g.komisiDinamis + g.pajak;
     const profitBersih = g.pendapatan - g.modal - bebanLangsung - g.biayaIklan - g.biayaRetur - g.biayaOperasional - g.payoutInvestor;
     const marginPct = g.pendapatan > 0 ? (profitBersih / g.pendapatan * 100) : null;
-    return { ...g, bebanLangsung, profitBersih, marginPct };
+    // Alokasikan Iklan/Retur/Operasional/Payout Investor SKU ini ke tiap order, proporsional omzet order thdp omzet SKU
+    const orders = Object.values(g.ordersByKey).map(o => {
+      const shareInSku = g.pendapatan > 0 ? o.pendapatan / g.pendapatan : 0;
+      const oIklan = g.biayaIklan * shareInSku;
+      const oRetur = g.biayaRetur * shareInSku;
+      const oOpex = g.biayaOperasional * shareInSku;
+      const oPayout = g.payoutInvestor * shareInSku;
+      const oProfit = o.pendapatan - o.modal - o.bebanLangsung - oIklan - oRetur - oOpex - oPayout;
+      const oMarginPct = o.pendapatan > 0 ? (oProfit / o.pendapatan * 100) : null;
+      return { ...o, biayaIklan: oIklan, biayaRetur: oRetur, biayaOperasional: oOpex, payoutInvestor: oPayout, profitBersih: oProfit, marginPct: oMarginPct };
+    });
+    orders.sort((a,b) => b.pendapatan - a.pendapatan);
+    const { ordersByKey, ...gTanpaOrdersByKey } = g;
+    return { ...gTanpaOrdersByKey, bebanLangsung, profitBersih, marginPct, orders };
   });
   list.sort((a,b) => b.pendapatan - a.pendapatan);
   return list;
@@ -4859,19 +4892,38 @@ function pnlDateRangeFromPreset(preset) {
   return { dari: '', sampai: '' };
 }
 
-function computePNL(dari, sampai) {
+// dateBasis: 'cair' (default, dipakai tab PNL) filter baris orderDb pakai tanggalPenarikan, sesuai laporan
+// akuntansi resmi (biaya modal ikut dari STATE.vendorPayouts, sesuai batch settle-nya). 'pesan' (dipakai
+// Dashboard, permintaan user 2026-09-10 spy Omzet/Biaya/Biaya Iklan bisa dibandingkan apple-to-apple utk
+// keputusan budget ads harian/mingguan -- pesanan yg blm/telat cair jgn bikin perbandingan ads-vs-sales
+// kelihatan boros padahal cuma soal timing) filter pakai tanggalPesan (fallback ke tanggalPenarikan kalau
+// tanggalPesan kosong, sama spt Dashboard) DAN biaya modal dihitung LANGSUNG dari orderDb.hargaKonveksi
+// (bukan vendorPayouts, krn vendorPayouts dicatat per BATCH SETTLE bukan per tanggal pesan, jadi tdk nyambung
+// kalau basisnya pesan). Iklan/Retur/Operasional/Payout Investor TETAP pakai tanggal & rentang aslinya
+// masing2 (overlap dgn dari/sampai yg sama) di KEDUA basis -- iklan mingguan SUDAH inheren berbasis "kapan
+// iklan itu jalan" (bukan kapan cair), jadi otomatis nyambung dgn pesanan yg dihasilkannya di periode yg sama.
+function computePNL(dari, sampai, dateBasis) {
   const inRange = (isoStr) => { if (!isoStr) return false; const d = isoStr.slice(0,10); return (!dari || d >= dari) && (!sampai || d <= sampai); };
   const overlaps = (dariStr, sampaiStr) => { // utk entri ber-rentang (ads/opex): overlap dgn rentang filter
     if (!dariStr || !sampaiStr) return false;
     const a1 = dariStr.slice(0,10), a2 = sampaiStr.slice(0,10);
     return (!sampai || a1 <= sampai) && (!dari || a2 >= dari);
   };
+  const pakaiTglPesan = dateBasis === 'pesan';
 
-  const orderRows = STATE.orderDb.filter(r => inRange(r.tanggalPenarikan));
+  const orderRows = pakaiTglPesan
+    ? STATE.orderDb.filter(r => inRange(r.tanggalPesan || r.tanggalPenarikan))
+    : STATE.orderDb.filter(r => inRange(r.tanggalPenarikan));
   const pendapatan = orderRows.reduce((s,r) => s + (r.pendapatan||0), 0);
 
-  const vendorRows = STATE.vendorPayouts.filter(v => inRange(v.tanggalDihitung));
-  const biayaModal = vendorRows.reduce((s,v) => s + (v.total||0), 0);
+  let biayaModal;
+  if (pakaiTglPesan) {
+    const effectiveHarga = (r) => r.hargaKonveksi != null ? r.hargaKonveksi : lookupHargaKonveksiBySku(r.sku);
+    biayaModal = orderRows.reduce((s,r) => { const h = effectiveHarga(r); return h != null ? s + (r.qty||1) * h : s; }, 0);
+  } else {
+    const vendorRows = STATE.vendorPayouts.filter(v => inRange(v.tanggalDihitung));
+    biayaModal = vendorRows.reduce((s,v) => s + (v.total||0), 0);
+  }
 
   const komisiPlatform = orderRows.reduce((s,r) => s + (r.komisiPlatform||0), 0);
   const biayaLayanan = orderRows.reduce((s,r) => s + (r.biayaLayanan||0), 0);
@@ -4973,10 +5025,41 @@ function renderPnl(container) {
     const totalPendapatan = filtered.reduce((s,g)=>s+g.pendapatan,0);
     const totalProfitBersih = filtered.reduce((s,g)=>s+g.profitBersih,0);
 
+    function renderOrderDetailTable(g) {
+      if (!g.orders.length) return '<div class="empty-note">Tidak ada rincian order.</div>';
+      return `
+      <div style="background:#F4EFE2; border:1px solid var(--line); border-radius:3px; padding:10px; margin:4px 0 10px;">
+        <div class="desc" style="margin-bottom:6px;">Rincian per nomor pesanan utk SKU ${g.sku}. Pendapatan/Modal/Beban Langsung EKSAK per order; Iklan/Retur/Opex/Payout Investor dialokasikan proporsional dari omzet order ini thdp omzet SKU -- jumlah semua baris di bawah = angka SKU di atas.</div>
+        <div style="overflow-x:auto;">
+        <table class="data compact">
+          <thead><tr>
+            <th>Order ID</th><th>Toko</th><th>Tgl Pesan</th><th>Tgl Cair</th><th class="num">Qty</th><th class="num">Pendapatan</th>
+            <th class="num">Modal</th><th class="num">Beban Langsung</th><th class="num">Iklan</th><th class="num">Retur</th>
+            <th class="num">Opex</th><th class="num">Payout Investor</th><th class="num">Profit Bersih</th><th class="num">Margin%</th>
+          </tr></thead>
+          <tbody>
+            ${g.orders.map(o => `<tr>
+              <td style="font-family:'IBM Plex Mono',monospace;font-size:10px;">${o.orderId||'-'}</td>
+              <td style="font-size:10.5px;">${platformDot(o.sumber)}${o.sumber||'-'}</td>
+              <td style="font-size:10.5px;">${fmtTanggal(o.tanggalPesan)}</td>
+              <td style="font-size:10.5px;">${fmtTanggal(o.tanggalPenarikan)}</td>
+              <td class="num">${o.qty}</td><td class="num">${fmtRpCompact(o.pendapatan)}</td>
+              <td class="num">${fmtRpCompact(o.modal)}</td><td class="num">${fmtRpCompact(o.bebanLangsung)}</td>
+              <td class="num">${fmtRpCompact(o.biayaIklan)}</td><td class="num">${fmtRpCompact(o.biayaRetur)}</td>
+              <td class="num">${fmtRpCompact(o.biayaOperasional)}</td><td class="num">${fmtRpCompact(o.payoutInvestor)}</td>
+              <td class="num" style="font-weight:600; color:${o.profitBersih>=0?'var(--ok)':'var(--err)'};">${fmtRpCompact(o.profitBersih)}</td>
+              <td class="num">${o.marginPct!=null?o.marginPct.toFixed(1)+'%':'-'}</td>
+            </tr>`).join('')}
+          </tbody>
+        </table>
+        </div>
+      </div>`;
+    }
+
     return `
     <div class="panel">
       <h2>Profit per SKU (Sudah Cair)</h2>
-      <div class="desc">Rincian per SKU dari total di atas, periode yg sama (basis tanggal cair). Modal, Beban Langsung (komisi/biaya/pajak), dan Payout Investor dihitung EKSAK per SKU. Iklan, Retur, dan Operasional dialokasikan proporsional dari omzet (lihat rincian di kode) krn ketiganya dicatat per-toko/company-wide, bukan per SKU -- totalnya tetap sama persis dgn Biaya Iklan/Retur/Operasional di tabel PNL di atas, cuma cara baginya yg perkiraan.</div>
+      <div class="desc">Rincian per SKU dari total di atas, periode yg sama (basis tanggal cair). Modal, Beban Langsung (komisi/biaya/pajak), dan Payout Investor dihitung EKSAK per SKU. Iklan, Retur, dan Operasional dialokasikan proporsional dari omzet (lihat rincian di kode) krn ketiganya dicatat per-toko/company-wide, bukan per SKU -- totalnya tetap sama persis dgn Biaya Iklan/Retur/Operasional di tabel PNL di atas, cuma cara baginya yg perkiraan. Klik baris SKU utk lihat rincian per nomor pesanan.</div>
       <div class="field"><label>Cari Produk / SKU</label><input type="text" id="skuProfitSearch" value="${skuProfitFilter.search}" placeholder="ketik nama produk atau SKU..."></div>
       <div class="desc">${filtered.length.toLocaleString('id-ID')} SKU cocok &middot; halaman ${skuProfitFilter.page} dari ${totalPages} &middot; Total Pendapatan <b>${fmtRp(totalPendapatan)}</b> &middot; Total Profit Bersih <b>${fmtRp(totalProfitBersih)}</b></div>
       ${!filtered.length ? '<div class="empty-note">Tidak ada data di periode ini.</div>' : `
@@ -4988,15 +5071,16 @@ function renderPnl(container) {
           <th class="num">Opex</th><th class="num">Payout Investor</th><th class="num">Profit Bersih</th><th class="num">Margin%</th>
         </tr></thead>
         <tbody>
-          ${pageRows.map(g => `<tr>
-            <td>${g.produk||'-'}</td><td style="font-size:10.5px;">${g.sku}</td><td style="font-size:10.5px;">${g.warna||'-'}</td>
+          ${pageRows.map((g,i) => { const rowId = 'skuOrders_' + skuProfitFilter.page + '_' + i; return `<tr class="sku-profit-toggle" data-sku-orders="${rowId}" style="cursor:pointer;">
+            <td>${g.produk||'-'}</td><td style="font-size:10.5px; text-decoration:underline; color:var(--accent);">${g.sku}</td><td style="font-size:10.5px;">${g.warna||'-'}</td>
             <td class="num">${g.qty}</td><td class="num">${fmtRpCompact(g.pendapatan)}</td>
             <td class="num">${fmtRpCompact(g.modal)}</td><td class="num">${fmtRpCompact(g.bebanLangsung)}</td>
             <td class="num">${fmtRpCompact(g.biayaIklan)}</td><td class="num">${fmtRpCompact(g.biayaRetur)}</td>
             <td class="num">${fmtRpCompact(g.biayaOperasional)}</td><td class="num">${fmtRpCompact(g.payoutInvestor)}</td>
             <td class="num" style="font-weight:600; color:${g.profitBersih>=0?'var(--ok)':'var(--err)'};">${fmtRpCompact(g.profitBersih)}</td>
             <td class="num">${g.marginPct!=null?g.marginPct.toFixed(1)+'%':'-'}</td>
-          </tr>`).join('')}
+          </tr>
+          <tr id="${rowId}" style="display:none;"><td colspan="13" style="padding:0 0 4px 0;">${renderOrderDetailTable(g)}</td></tr>`; }).join('')}
         </tbody>
       </table>
       </div>
@@ -5014,6 +5098,12 @@ function renderPnl(container) {
     if (prevBtn) prevBtn.addEventListener('click', () => { skuProfitFilter.page--; renderPnl(container); });
     const nextBtn = el.querySelector('#skuProfitNextPage');
     if (nextBtn) nextBtn.addEventListener('click', () => { skuProfitFilter.page++; renderPnl(container); });
+    el.querySelectorAll('[data-sku-orders]').forEach(rowEl => {
+      rowEl.addEventListener('click', () => {
+        const target = document.getElementById(rowEl.dataset.skuOrders);
+        if (target) target.style.display = target.style.display === 'none' ? 'table-row' : 'none';
+      });
+    });
   }
 }
 
@@ -5077,13 +5167,15 @@ function renderDashboard(container) {
     Object.assign(dashFilter, pnlDateRangeFromPreset(dashFilter.preset));
   }
   const inRange = (isoStr) => { if (!isoStr) return false; const d = isoStr.slice(0,10); return (!dashFilter.dari || d >= dashFilter.dari) && (!dashFilter.sampai || d <= dashFilter.sampai); };
-  // Omzet/Qty/breakdown Toko & Produk sengaja dipakaikan TANGGAL PESAN (bukan tanggal cair) -- permintaan user
-  // 2026-09-10, spy Dashboard mencerminkan kapan barang laku terjual (bukan kapan uangnya masuk, yg bisa telat
-  // berminggu-minggu dari platform). Total Profit di bawah TETAP pakai computePNL() berbasis tanggal cair --
-  // sengaja TIDAK ikut pindah, karena biaya modal/payout investor/ads baru "pasti" nilainya pas cair, jadi
-  // Profit yg dipaksa ke tanggal pesan bisa understated/salah utk pesanan yg belum cair. Konsekuensinya: Omzet
-  // & Profit di Dashboard yg sama bisa berasal dari kumpulan pesanan yg sedikit beda kalau ada jeda antara
-  // tanggal pesan & tanggal cair -- ini keputusan sadar (dikonfirmasi user), bukan bug.
+  // SEMUA KPI Dashboard (Omzet, Qty, Profit, breakdown Toko & Produk) dipakaikan TANGGAL PESAN (bukan tanggal
+  // cair) -- permintaan user 2026-09-10, revisi dari keputusan awal (yg tadinya Profit sengaja dibiarkan
+  // tanggal cair). User: "aku inginkan agar dashboard itu menyesuaikan tampilan penjualan sesuai tanggal
+  // pesanan, sehingga nanti match dengan biaya dan biaya ads, jadi aku tidak boros saat mengeluarkan budget
+  // ads." -- Dashboard ini dipakai utk keputusan operasional harian/mingguan (terutama kalibrasi budget ads),
+  // jadi Omzet & Profit HARUS satu basis tanggal yg sama (tanggal pesan) spy bisa dibandingkan apple-to-apple
+  // dgn Biaya Iklan periode yg sama, tanpa terdistorsi jeda settlement platform (yg bisa berminggu-minggu).
+  // Tab PNL (computePNL default/tanpa dateBasis) TETAP berbasis tanggal cair sbg laporan akuntansi resmi --
+  // TIDAK diubah, krn itu laporan settlement yg terpisah tujuannya dari Dashboard operasional ini.
   //
   // BUG DITEMUKAN 2026-09-10 (user lapor Omzet SHOPEE_UOUT Agustus cuma Rp53jt, seharusnya ~Rp118jt): tanggalPesan
   // TIDAK SELALU terisi -- baris hasil migrasi Excel lama cuma keisi kalau sheet PENJUALAN py kolom "Tanggal
@@ -5094,7 +5186,8 @@ function renderDashboard(container) {
   // tanggalPesan kosong (pola yg sama persis sudah dipakai di sort Database Penjualan:
   // `tanggalPenarikan||tanggalPesan`), spy TIDAK PERNAH ada baris yg diam2 hilang cuma krn field tanggal
   // pesannya belum/tidak diketahui -- baris itu tetap kehitung (pakai tanggal cairnya), cuma jadi kurang presisi
-  // utk baris spesifik itu, drpd hilang total dari laporan.
+  // utk baris spesifik itu, drpd hilang total dari laporan. computePNL(...,'pesan') di bawah pakai fallback yg
+  // SAMA PERSIS spy Profit & Omzet konsisten satu populasi pesanan.
   const rows = STATE.orderDb.filter(r => inRange(r.tanggalPesan || r.tanggalPenarikan));
   // Supaya kelihatan di UI kalau ada baris yg "kehitung" pakai fallback tanggal cair (bkn tanggal pesan asli) --
   // user berhak tahu sebagian Omzet di bawah ini presisinya lebih rendah, bukan cuma didiamkan begitu saja.
@@ -5105,9 +5198,9 @@ function renderDashboard(container) {
   // DULU: totalProfit = rows.reduce((s,r) => s + (r.profit||0), 0) -- SALAH, krn field `profit` di tiap baris
   // order cuma pernah keisi utk data lama hasil migrasi Excel (migrasi_penjualan). Baris hasil Import Mingguan
   // (cara kerja normal sekarang) TIDAK PERNAH punya field `profit`, jadi KPI ini diam2 kurang akurat (0 atau
-  // understated) utk data terbaru. Diperbaiki dgn pakai computePNL() yg sama persis dgn tab PNL -- 1 sumber
-  // kebenaran, dan otomatis ikut akurat/konsisten kalau formula PNL diubah lagi nanti.
-  const pnlForDash = computePNL(dashFilter.dari, dashFilter.sampai);
+  // understated) utk data terbaru. Diperbaiki dgn pakai computePNL() -- 1 sumber kebenaran (skrg dgn parameter
+  // dateBasis='pesan' spy basisnya sama dgn Omzet di atas, lihat komentar panjang di definisi computePNL()).
+  const pnlForDash = computePNL(dashFilter.dari, dashFilter.sampai, 'pesan');
   const totalProfit = pnlForDash.profitAkhir;
 
   const rowsBySumber = {};
@@ -5218,7 +5311,7 @@ function renderDashboard(container) {
         <div class="field"><label>Dari Tanggal</label><input type="date" id="dashDari" value="${dashFilter.dari}"></div>
         <div class="field"><label>Sampai Tanggal</label><input type="date" id="dashSampai" value="${dashFilter.sampai}"></div>
       </div>
-      <div class="desc">Omzet, Qty, dan breakdown Toko/Produk di bawah berdasarkan <b>tanggal pesan</b>. Total Profit berdasarkan <b>tanggal cair</b> (sama spt tab PNL) krn biaya modal/payout investor baru pasti nilainya pas cair.</div>
+      <div class="desc">Semua angka di Dashboard ini (Omzet, Qty, Profit, breakdown Toko/Produk) berdasarkan <b>tanggal pesan</b> -- supaya bisa dibandingkan langsung dgn budget iklan periode yg sama. Utk laporan akuntansi resmi berbasis tanggal cair/settlement, lihat tab PNL.</div>
       ${nRowsFallbackTglPesan > 0 ? `<div class="desc" style="color:var(--err);">&#9888; ${nRowsFallbackTglPesan.toLocaleString('id-ID')} baris di periode ini tidak punya data tanggal pesan (baris lama/import tanpa "Update Daftar Pesanan") -- tetap dihitung memakai tanggal cairnya spy tidak hilang dari Omzet, tapi presisinya sedikit lebih rendah drpd baris yg py tanggal pesan asli.</div>` : ''}
     </div>
 
