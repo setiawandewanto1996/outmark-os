@@ -4264,6 +4264,10 @@ function fmtRpCompact(n) {
    ========================================================================= */
 let laporanFilter = { status: 'belum', investorId: '', tab: 'investor' };
 let laporanDetail = { tanggal: '', kodeKontrak: '', brand: '' };
+// Centang "Tandai Dibayar" massal (permintaan user 2026-09-18, tab Payout Capital Partner) -- Set berisi id
+// STATE.payouts yg lagi dicentang. Dikosongkan tiap ganti sub-tab/filter status spy tidak nyangkut ke tampilan
+// yg beda (id yg sudah tidak kelihatan tetap aman kalaupun ketinggalan, cuma diabaikan saat commit massal).
+let laporanBulkSelection = new Set();
 
 // Ubah SKU (mis. "OSWHTM04") -> label ukuran spt di laporan Excel (mis. "OSWALD" + "4XL" -> "OSWALD4XL"), digabung lintas warna.
 function skuToSizeLabel(produkNama, sku) {
@@ -4667,7 +4671,7 @@ function renderLaporan(container) {
   `;
 
   container.querySelectorAll('[data-subtab]').forEach(btn => {
-    btn.addEventListener('click', () => { laporanFilter.tab = btn.dataset.subtab; renderLaporan(container); });
+    btn.addEventListener('click', () => { laporanFilter.tab = btn.dataset.subtab; laporanBulkSelection.clear(); renderLaporan(container); });
   });
   document.getElementById('btnBackfill').addEventListener('click', async () => {
     const msg = document.getElementById('backfillMsg');
@@ -4703,7 +4707,7 @@ function renderLaporan(container) {
   }
   if (laporanFilter.tab === 'detail') { renderLaporanDetailPanel(document.getElementById('laporanDetailArea')); return; }
   const statusFilterEl = document.getElementById('laporanStatusFilter');
-  if (statusFilterEl) statusFilterEl.addEventListener('change', (e) => { laporanFilter.status = e.target.value; renderLaporan(container); });
+  if (statusFilterEl) statusFilterEl.addEventListener('change', (e) => { laporanFilter.status = e.target.value; laporanBulkSelection.clear(); renderLaporan(container); });
   const btnExportLaporan = document.getElementById('btnExportLaporan');
   if (btnExportLaporan) btnExportLaporan.addEventListener('click', () => {
     const { isVendor, filtered } = getLaporanFilteredList();
@@ -4774,6 +4778,19 @@ function getLaporanFilteredList() {
   return { isVendor, filtered };
 }
 
+// Ekstraksi murni: tandai 1/beberapa payout sbg sudah dibayar (idempoten -- yg sudah lunas dilewati, id yg tdk
+// ditemukan diabaikan). Dipakai tombol "Tandai Dibayar" per-baris (1 id) & tombol massal (banyak id sekaligus)
+// supaya keduanya DIJAMIN perilakunya identik. Return jumlah payout yg BENERAN baru ditandai (bkn total id yg dikirim).
+function markPayoutsDibayar(payoutIds) {
+  const now = new Date().toISOString();
+  let n = 0;
+  payoutIds.forEach(id => {
+    const p = STATE.payouts.find(x => x.id === id);
+    if (p && !p.tanggalDibayar) { p.tanggalDibayar = now; n++; }
+  });
+  return n;
+}
+
 function renderLaporanTable(el, container) {
   const { isVendor, filtered } = getLaporanFilteredList();
 
@@ -4799,11 +4816,19 @@ function renderLaporanTable(el, container) {
       });
     });
   } else {
+    const adaYgBelumDibayar = filtered.some(p => !p.tanggalDibayar);
     el.innerHTML = `
+      ${adaYgBelumDibayar ? `<div style="display:flex; align-items:center; gap:10px; margin-bottom:8px;">
+        <button class="btn btn-primary" id="btnBulkMarkDibayar" disabled>Tandai Dibayar (0 dipilih)</button>
+      </div>` : ''}
       <table class="data compact">
-        <thead><tr><th>Tgl Dihitung</th><th>Investor</th><th>Produk</th><th>Kontrak</th><th class="num">Qty</th><th class="num">Rate</th><th class="num">Payout</th><th>Status</th><th></th></tr></thead>
+        <thead><tr>
+          ${adaYgBelumDibayar ? '<th style="width:22px;"><input type="checkbox" id="chkSelectAllPayout" title="Pilih semua yg belum dibayar"></th>' : ''}
+          <th>Tgl Dihitung</th><th>Investor</th><th>Produk</th><th>Kontrak</th><th class="num">Qty</th><th class="num">Rate</th><th class="num">Payout</th><th>Status</th><th></th>
+        </tr></thead>
         <tbody>
           ${filtered.map(p => `<tr>
+            ${adaYgBelumDibayar ? `<td>${!p.tanggalDibayar ? `<input type="checkbox" class="chk-payout" data-payout-id="${p.id}" ${laporanBulkSelection.has(p.id)?'checked':''}>` : ''}</td>` : ''}
             <td>${fmtTanggal(p.tanggalDihitung)}${p.sumberData==='backfill_estimasi'?' <span class="pill" style="font-size:9px;">perkiraan</span>':''}</td><td>${p.namaInvestor||'-'}</td><td>${p.produk}</td><td style="font-size:11px;">${p.kodeKontrak||'-'}</td>
             <td class="num">${p.qty}</td><td class="num">${p.rate?fmtRpCompact(p.rate):'-'}</td><td class="num">${p.payout?fmtRp(p.payout):'-'}</td>
             <td>${p.tanggalDibayar ? `<span class="pill ok">Lunas ${fmtTanggal(p.tanggalDibayar,{short:true})}</span>` : `<span class="pill pending">Belum</span>`}</td>
@@ -4814,12 +4839,50 @@ function renderLaporanTable(el, container) {
     `;
     el.querySelectorAll('[data-mark-payout]').forEach(btn => {
       btn.addEventListener('click', async () => {
-        const p = STATE.payouts.find(x => x.id === btn.dataset.markPayout);
-        if (p) p.tanggalDibayar = new Date().toISOString();
+        markPayoutsDibayar([btn.dataset.markPayout]);
+        laporanBulkSelection.delete(btn.dataset.markPayout);
         await saveState();
         renderLaporan(container);
       });
     });
+
+    // ---- Centang massal (permintaan user 2026-09-18): pilih beberapa baris sekaligus, lalu 1x klik utk
+    // menandai semuanya dibayar -- drpd klik "Tandai Dibayar" 1 per 1 kalau lagi settle banyak payout sekaligus. ----
+    if (adaYgBelumDibayar) {
+      const chkAll = document.getElementById('chkSelectAllPayout');
+      const chkRows = () => Array.from(el.querySelectorAll('.chk-payout'));
+      const btnBulk = document.getElementById('btnBulkMarkDibayar');
+      function updateBulkBar() {
+        const n = laporanBulkSelection.size;
+        btnBulk.textContent = `Tandai Dibayar (${n} dipilih)`;
+        btnBulk.disabled = n === 0;
+        const rows = chkRows();
+        if (chkAll) chkAll.checked = rows.length > 0 && rows.every(c => c.checked);
+      }
+      chkRows().forEach(chk => {
+        chk.addEventListener('change', () => {
+          if (chk.checked) laporanBulkSelection.add(chk.dataset.payoutId); else laporanBulkSelection.delete(chk.dataset.payoutId);
+          updateBulkBar();
+        });
+      });
+      if (chkAll) chkAll.addEventListener('change', () => {
+        chkRows().forEach(chk => {
+          chk.checked = chkAll.checked;
+          if (chkAll.checked) laporanBulkSelection.add(chk.dataset.payoutId); else laporanBulkSelection.delete(chk.dataset.payoutId);
+        });
+        updateBulkBar();
+      });
+      updateBulkBar();
+      btnBulk.addEventListener('click', async () => {
+        const ids = [...laporanBulkSelection];
+        if (!ids.length) return;
+        if (!confirm(`Tandai ${ids.length} payout terpilih sbg sudah dibayar?`)) return;
+        markPayoutsDibayar(ids);
+        laporanBulkSelection.clear();
+        await saveState();
+        renderLaporan(container);
+      });
+    }
   }
 }
 
@@ -5320,7 +5383,7 @@ function renderOpex(container) {
 /* =========================================================================
    TAB: PNL
    ========================================================================= */
-let pnlFilter = { dari: '', sampai: '', preset: 'bulan_ini' };
+let pnlFilter = { dari: '', sampai: '', preset: 'bulan_ini', basis: 'cair' };
 let skuProfitFilter = { search: '', page: 1 };
 const SKU_PROFIT_PAGE_SIZE = 30;
 
@@ -5356,7 +5419,11 @@ const SKU_PROFIT_PAGE_SIZE = 30;
 // SEKALI LAGI ke tiap order proporsional dari porsi omzet order tsb thdp omzet total SKU-nya -- konsisten
 // dgn metode yg sama, bukan estimasi baru. Total tiap kolom kalau dijumlah semua order dlm 1 SKU SAMA PERSIS
 // dgn angka SKU di atasnya (cuma cara baginya makin terperinci per order, bukan re-estimasi).
-function computeProfitPerSku(dari, sampai) {
+// dateBasis (FITUR BARU 2026-09-18, permintaan user, sama pola dgn computePNL): 'cair' (default) filter pakai
+// tanggalPenarikan; 'pesan' filter pakai tanggalPesan (fallback ke tanggalPenarikan kalau kosong, sama spt
+// Dashboard/computePNL) -- dipanggil dgn basis yg SAMA PERSIS dgn pnlFilter.basis di tabel PNL di atasnya, spy
+// panel ini tidak pernah beda basis dari tabel yg jadi rujukannya.
+function computeProfitPerSku(dari, sampai, dateBasis) {
   const inRange = (isoStr) => { if (!isoStr) return false; const d = isoStr.slice(0,10); return (!dari || d >= dari) && (!sampai || d <= sampai); };
   const overlaps = (dariStr, sampaiStr) => {
     if (!dariStr || !sampaiStr) return false;
@@ -5364,8 +5431,9 @@ function computeProfitPerSku(dari, sampai) {
     return (!sampai || a1 <= sampai) && (!dari || a2 >= dari);
   };
   const effectiveHarga = (r) => r.hargaKonveksi != null ? r.hargaKonveksi : lookupHargaKonveksiBySku(r.sku);
+  const pakaiTglPesan = dateBasis === 'pesan';
 
-  const rows = STATE.orderDb.filter(r => inRange(r.tanggalPenarikan) && r.sku);
+  const rows = STATE.orderDb.filter(r => inRange(pakaiTglPesan ? (r.tanggalPesan || r.tanggalPenarikan) : r.tanggalPenarikan) && r.sku);
 
   const bySku = {};
   rows.forEach(r => {
@@ -5538,7 +5606,7 @@ function renderPnl(container) {
   if (pnlFilter.preset !== 'custom' && (!pnlFilter.dari || !pnlFilter.sampai)) {
     Object.assign(pnlFilter, pnlDateRangeFromPreset(pnlFilter.preset));
   }
-  const p = computePNL(pnlFilter.dari, pnlFilter.sampai);
+  const p = computePNL(pnlFilter.dari, pnlFilter.sampai, pnlFilter.basis);
 
   container.innerHTML = `
     <div class="panel">
@@ -5555,7 +5623,14 @@ function renderPnl(container) {
         <div class="field"><label>Dari Tanggal</label><input type="date" id="pnlDari" value="${pnlFilter.dari}"></div>
         <div class="field"><label>Sampai Tanggal</label><input type="date" id="pnlSampai" value="${pnlFilter.sampai}"></div>
       </div>
+      <div class="field" style="max-width:320px;"><label>Basis Tanggal</label>
+        <select id="pnlBasis">
+          <option value="cair" ${pnlFilter.basis==='cair'?'selected':''}>Tanggal Cair (Resmi)</option>
+          <option value="pesan" ${pnlFilter.basis==='pesan'?'selected':''}>Tanggal Pesan (Operasional)</option>
+        </select>
+      </div>
       <div class="desc">${p.nOrder.toLocaleString('id-ID')} baris transaksi dalam periode ini.</div>
+      ${pnlFilter.basis==='pesan' ? `<div class="desc" style="color:var(--err);">&#9888; Basis Tanggal Pesan: pesanan yg BELUM cair (belum ada di Database Penjualan) belum ikut terhitung di sini, jadi angka periode yg masih baru bisa kelihatan lebih kecil &amp; ikut naik belakangan begitu pesanan lama itu cair. Utk laporan resmi/final, pakai basis Tanggal Cair.</div>` : ''}
     </div>
 
     <div class="panel">
@@ -5591,11 +5666,12 @@ function renderPnl(container) {
   });
   document.getElementById('pnlDari').addEventListener('change', (e) => { pnlFilter.preset='custom'; pnlFilter.dari = e.target.value; skuProfitFilter.page = 1; renderPnl(container); });
   document.getElementById('pnlSampai').addEventListener('change', (e) => { pnlFilter.preset='custom'; pnlFilter.sampai = e.target.value; skuProfitFilter.page = 1; renderPnl(container); });
+  document.getElementById('pnlBasis').addEventListener('change', (e) => { pnlFilter.basis = e.target.value; skuProfitFilter.page = 1; renderPnl(container); });
   wireProfitPerSkuHandlers(container);
 
-  // ---- Panel "Profit per SKU (Sudah Cair)" -- pakai periode yg sama persis dgn tabel PNL di atas ----
+  // ---- Panel "Profit per SKU" -- pakai periode & basis tanggal yg SAMA PERSIS dgn tabel PNL di atas ----
   function renderProfitPerSkuPanel() {
-    const list = computeProfitPerSku(pnlFilter.dari, pnlFilter.sampai);
+    const list = computeProfitPerSku(pnlFilter.dari, pnlFilter.sampai, pnlFilter.basis);
     let filtered = list;
     if (skuProfitFilter.search) {
       const s = skuProfitFilter.search.toLowerCase();
@@ -5640,8 +5716,8 @@ function renderPnl(container) {
 
     return `
     <div class="panel">
-      <h2>Profit per SKU (Sudah Cair)</h2>
-      <div class="desc">Rincian per SKU dari total di atas, periode yg sama (basis tanggal cair). Modal, Beban Langsung (komisi/biaya/pajak), dan Payout Investor dihitung EKSAK per SKU. Iklan, Retur, dan Operasional dialokasikan proporsional dari omzet (lihat rincian di kode) krn ketiganya dicatat per-toko/company-wide, bukan per SKU -- totalnya tetap sama persis dgn Biaya Iklan/Retur/Operasional di tabel PNL di atas, cuma cara baginya yg perkiraan. Klik baris SKU utk lihat rincian per nomor pesanan.</div>
+      <h2>Profit per SKU (${pnlFilter.basis==='pesan'?'Basis Tanggal Pesan':'Sudah Cair'})</h2>
+      <div class="desc">Rincian per SKU dari total di atas, periode &amp; basis tanggal yg sama persis dgn tabel PNL di atas (${pnlFilter.basis==='pesan'?'Tanggal Pesan':'Tanggal Cair'}). Modal, Beban Langsung (komisi/biaya/pajak), dan Payout Investor dihitung EKSAK per SKU. Iklan, Retur, dan Operasional dialokasikan proporsional dari omzet (lihat rincian di kode) krn ketiganya dicatat per-toko/company-wide, bukan per SKU -- totalnya tetap sama persis dgn Biaya Iklan/Retur/Operasional di tabel PNL di atas, cuma cara baginya yg perkiraan. Klik baris SKU utk lihat rincian per nomor pesanan.</div>
       <div class="field"><label>Cari Produk / SKU</label><input type="text" id="skuProfitSearch" value="${skuProfitFilter.search}" placeholder="ketik nama produk atau SKU..."></div>
       <div class="desc">${filtered.length.toLocaleString('id-ID')} SKU cocok &middot; halaman ${skuProfitFilter.page} dari ${totalPages} &middot; Total Pendapatan <b>${fmtRp(totalPendapatan)}</b> &middot; Total Profit Bersih <b>${fmtRp(totalProfitBersih)}</b></div>
       ${!filtered.length ? '<div class="empty-note">Tidak ada data di periode ini.</div>' : `
