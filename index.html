@@ -3604,6 +3604,62 @@ let showPendingOrders = false;
 let pendingPage = 1;
 let pendingSearch = '';
 
+// Asumsi flat per unit utk Gross/Nett Profit di tabel Database Penjualan (permintaan user 2026-09-18) --
+// SENGAJA berupa angka pukul rata (bukan ditarik dari kontrak/vendorPayouts asli spt di tab PNL), krn tujuannya
+// cuma utk cek cepat margin per JENIS PRODUK kasar/tidaknya, bukan laporan resmi presisi kontrak.
+const PACKING_AKSESORIS_PER_UNIT = 10000;
+const PAYOUT_INVESTOR_UOUT_PER_UNIT = 5000;
+
+// Gross Profit = Pendapatan - biaya platform (komisi/layanan/pembayaran/afiliasi/dinamis/pajak) -- ini yg
+// "otomatis mirip dgn hasil dari Shopee/TikTok" krn platform jg motong biaya2 itu sblm netSettlement.
+// Nett Profit = Gross Profit - Modal Konveksi - Packing&Aksesoris (flat) - Payout Investor (flat, brand UOUT saja).
+// Math.abs() di biaya platform krn field itu tersimpan negatif dari laporan settlement asli (lihat catatan di computePNL).
+function computeGrossNettProfitPerOrder(r) {
+  const qty = r.qty || 1;
+  const pendapatan = r.pendapatan || 0;
+  const biayaPlatform = Math.abs(r.komisiPlatform||0) + Math.abs(r.biayaLayanan||0) + Math.abs(r.biayaPembayaran||0) +
+    Math.abs(r.komisiAfiliasi||0) + Math.abs(r.komisiDinamis||0) + Math.abs(r.pajak||0);
+  const grossProfit = pendapatan - biayaPlatform;
+  const grossProfitPct = pendapatan > 0 ? (grossProfit / pendapatan * 100) : null;
+
+  const hargaKonveksi = r.hargaKonveksi != null ? r.hargaKonveksi : lookupHargaKonveksiBySku(r.sku);
+  const modal = hargaKonveksi != null ? qty * hargaKonveksi : 0;
+  const packingAksesoris = qty * PACKING_AKSESORIS_PER_UNIT;
+  const payoutInvestor = r.brand === 'URBAN OUTDOOR' ? qty * PAYOUT_INVESTOR_UOUT_PER_UNIT : 0;
+  const nettProfit = grossProfit - modal - packingAksesoris - payoutInvestor;
+  const nettProfitPct = pendapatan > 0 ? (nettProfit / pendapatan * 100) : null;
+
+  return { biayaPlatform, grossProfit, grossProfitPct, modal, packingAksesoris, payoutInvestor, nettProfit, nettProfitPct };
+}
+
+// Rekap rata-rata Pendapatan/Profit/persentase per JENIS PRODUK (bukan per SKU/warna) -- permintaan user 2026-09-18
+// spy bisa lgs lihat produk mana yg marginnya kekecilan, tanpa perlu buka rincian per warna/ukuran.
+// Diurutkan dari Nett % TERKECIL dulu, spy produk paling bermasalah lgs kelihatan di atas.
+function computeMarginPerJenisProduk(rows) {
+  const byProduk = {};
+  rows.forEach(r => {
+    const key = r.produk || '(tanpa produk)';
+    if (!byProduk[key]) byProduk[key] = { produk: key, nOrder: 0, qty: 0, pendapatan: 0, grossProfit: 0, nettProfit: 0 };
+    const g = byProduk[key];
+    const hasil = computeGrossNettProfitPerOrder(r);
+    g.nOrder += 1;
+    g.qty += r.qty || 1;
+    g.pendapatan += r.pendapatan || 0;
+    g.grossProfit += hasil.grossProfit;
+    g.nettProfit += hasil.nettProfit;
+  });
+  const list = Object.values(byProduk).map(g => ({
+    ...g,
+    rataPendapatan: g.nOrder > 0 ? g.pendapatan / g.nOrder : 0,
+    rataGrossProfit: g.nOrder > 0 ? g.grossProfit / g.nOrder : 0,
+    grossProfitPct: g.pendapatan > 0 ? (g.grossProfit / g.pendapatan * 100) : null,
+    rataNettProfit: g.nOrder > 0 ? g.nettProfit / g.nOrder : 0,
+    nettProfitPct: g.pendapatan > 0 ? (g.nettProfit / g.pendapatan * 100) : null,
+  }));
+  list.sort((a,b) => (a.nettProfitPct==null?999:a.nettProfitPct) - (b.nettProfitPct==null?999:b.nettProfitPct));
+  return list;
+}
+
 function renderDatabase(container) {
   const db = STATE.orderDb;
   const nPending = Object.keys(STATE.pendingOrderSku).length;
@@ -3680,6 +3736,24 @@ function renderDatabase(container) {
   const anyFilterActive = dbFilters.produk || dbFilters.brand || dbFilters.sumber || dbFilters.search ||
     dbFilters.tglPesanDari || dbFilters.tglPesanSampai || dbFilters.tglPenarikanDari || dbFilters.tglPenarikanSampai;
 
+  // Total Gross/Nett Profit (sesuai filter yg lagi aktif) -- pakai perhitungan yg SAMA persis dgn kolom per baris di bawah
+  const totalPendapatanFiltered = sumFiltered('pendapatan');
+  const totalGrossProfitFiltered = filtered.reduce((s,r) => s + computeGrossNettProfitPerOrder(r).grossProfit, 0);
+  const totalNettProfitFiltered = filtered.reduce((s,r) => s + computeGrossNettProfitPerOrder(r).nettProfit, 0);
+  const totalGrossPctFiltered = totalPendapatanFiltered > 0 ? (totalGrossProfitFiltered / totalPendapatanFiltered * 100) : null;
+  const totalNettPctFiltered = totalPendapatanFiltered > 0 ? (totalNettProfitFiltered / totalPendapatanFiltered * 100) : null;
+
+  // Rekap margin per Jenis Produk -- pakai filter yg sama spt tabel di bawah, KECUALI filter Produk sendiri
+  // (biar tetap bisa bandingkan semua jenis produk sekaligus, bukan cuma 1 produk yg lagi dipilih)
+  let filteredForMargin = db;
+  if (dbFilters.brand) filteredForMargin = filteredForMargin.filter(r => r.brand === dbFilters.brand);
+  if (dbFilters.sumber) filteredForMargin = filteredForMargin.filter(r => r.sumber === dbFilters.sumber);
+  if (dbFilters.tglPesanDari) filteredForMargin = filteredForMargin.filter(r => r.tanggalPesan && r.tanggalPesan.slice(0,10) >= dbFilters.tglPesanDari);
+  if (dbFilters.tglPesanSampai) filteredForMargin = filteredForMargin.filter(r => r.tanggalPesan && r.tanggalPesan.slice(0,10) <= dbFilters.tglPesanSampai);
+  if (dbFilters.tglPenarikanDari) filteredForMargin = filteredForMargin.filter(r => r.tanggalPenarikan && r.tanggalPenarikan.slice(0,10) >= dbFilters.tglPenarikanDari);
+  if (dbFilters.tglPenarikanSampai) filteredForMargin = filteredForMargin.filter(r => r.tanggalPenarikan && r.tanggalPenarikan.slice(0,10) <= dbFilters.tglPenarikanSampai);
+  const marginPerProduk = computeMarginPerJenisProduk(filteredForMargin);
+
   container.innerHTML = pendingPanel + `
     <div class="kpi-row">
       <div class="kpi"><div class="kpi-label">Total Baris</div><div class="kpi-value">${db.length.toLocaleString('id-ID')}</div></div>
@@ -3712,16 +3786,17 @@ function renderDatabase(container) {
         <div class="field"><label>Tgl Penarikan Sampai</label><input type="date" id="dbFilterTglPenarikanSampai" value="${dbFilters.tglPenarikanSampai}"></div>
       </div>
       <div class="desc" style="margin-top:10px;">${filtered.length.toLocaleString('id-ID')} baris cocok filter &middot; halaman ${dbFilters.page} dari ${totalPages}</div>
-      <div class="desc">Total (sesuai filter): Pendapatan <b>${fmtRp(sumFiltered('pendapatan'))}</b> &middot; Profit <b>${fmtRp(sumFiltered('profit'))}</b></div>
+      <div class="desc">Total (sesuai filter): Pendapatan <b>${fmtRp(totalPendapatanFiltered)}</b> &middot; Gross Profit <b>${fmtRp(totalGrossProfitFiltered)}</b> (${totalGrossPctFiltered!=null?totalGrossPctFiltered.toFixed(1)+'%':'-'}) &middot; Nett Profit <b>${fmtRp(totalNettProfitFiltered)}</b> (${totalNettPctFiltered!=null?totalNettPctFiltered.toFixed(1)+'%':'-'})</div>
       <div style="overflow-x:auto; margin-top:8px;">
       <table class="data compact">
         <thead><tr>
           <th>Order ID</th><th>Produk</th><th>SKU</th><th>Warna</th><th>Brand</th><th>Sumber</th>
           <th class="num">Qty</th><th class="num">Pendapatan</th><th class="num">Komisi Platform</th>
-          <th class="num">Afiliasi</th><th class="num">Profit</th><th>Tgl Pesanan</th><th>Tgl Penarikan</th>
+          <th class="num">Afiliasi</th><th class="num">Gross Profit</th><th class="num">Gross %</th>
+          <th class="num">Nett Profit</th><th class="num">Nett %</th><th>Tgl Pesanan</th><th>Tgl Penarikan</th>
         </tr></thead>
         <tbody>
-          ${pageRows.map(r => `<tr>
+          ${pageRows.map(r => { const hp = computeGrossNettProfitPerOrder(r); return `<tr>
             <td style="font-family:'IBM Plex Mono',monospace;font-size:10.5px;">${r.orderId}</td>
             <td>${r.produk||'-'}</td><td style="font-size:10.5px;">${r.sku||'-'}</td><td style="font-size:10.5px;">${r.warna||'-'}</td>
             <td>${r.brand||'-'}</td><td>${platformDot(r.sumber)}${r.sumber||'-'}</td>
@@ -3729,17 +3804,48 @@ function renderDatabase(container) {
             <td class="num">${r.pendapatan!=null?fmtRpCompact(r.pendapatan):'-'}</td>
             <td class="num">${r.komisiPlatform!=null?fmtRpCompact(r.komisiPlatform):'-'}</td>
             <td class="num">${r.komisiAfiliasi!=null?fmtRpCompact(r.komisiAfiliasi):'-'}</td>
-            <td class="num">${r.profit!=null?fmtRpCompact(r.profit):(r.netSettlement!=null?fmtRpCompact(r.netSettlement)+'*':'-')}</td>
+            <td class="num" style="font-weight:600;">${fmtRpCompact(hp.grossProfit)}</td>
+            <td class="num" style="color:var(--ink-soft);">${hp.grossProfitPct!=null?hp.grossProfitPct.toFixed(1)+'%':'-'}</td>
+            <td class="num" style="font-weight:600; color:${hp.nettProfit>=0?'var(--ok)':'var(--err)'};">${fmtRpCompact(hp.nettProfit)}</td>
+            <td class="num" style="color:var(--ink-soft);">${hp.nettProfitPct!=null?hp.nettProfitPct.toFixed(1)+'%':'-'}</td>
             <td style="font-size:10.5px;">${fmtTanggal(r.tanggalPesan)}</td>
             <td style="font-size:10.5px;">${fmtTanggal(r.tanggalPenarikan)}</td>
-          </tr>`).join('')}
+          </tr>`; }).join('')}
         </tbody>
       </table>
       </div>
+      <div class="desc" style="margin-top:8px;">Gross Profit = Pendapatan - biaya platform (komisi/layanan/pembayaran/afiliasi/dinamis/pajak) -- kurang lebih sama dgn hasil settlement Shopee/TikTok. Nett Profit = Gross Profit - Modal Konveksi - Packing&amp;Aksesoris (asumsi rata Rp ${PACKING_AKSESORIS_PER_UNIT.toLocaleString('id-ID')}/unit) - Payout Investor (asumsi rata Rp ${PAYOUT_INVESTOR_UOUT_PER_UNIT.toLocaleString('id-ID')}/unit, khusus brand URBAN OUTDOOR). Angka packing &amp; payout investor di sini ASUMSI PUKUL RATA -- utk angka presisi per kontrak, lihat tab PNL/Laporan Penarikan.</div>
       <div style="display:flex; justify-content:space-between; margin-top:12px;">
         <button class="btn btn-ghost" id="dbPrevPage" ${dbFilters.page<=1?'disabled':''}>&larr; Sebelumnya</button>
         <button class="btn btn-ghost" id="dbNextPage" ${dbFilters.page>=totalPages?'disabled':''}>Selanjutnya &rarr;</button>
       </div>
+    </div>
+    <div class="panel">
+      <h2>Margin per Jenis Produk</h2>
+      <div class="desc">Rata-rata Pendapatan, Gross Profit, dan Nett Profit per order, dikelompokkan per Jenis Produk (Oswald, Wilson, dst -- tanpa pecah warna/ukuran), supaya cepat kelihatan produk mana yg marginnya kekecilan. Ikut filter Brand/Sumber/Tanggal di atas, tapi TIDAK ikut filter Produk (biar semua jenis produk tetap bisa dibandingkan sekaligus). Diurutkan dari Nett % terkecil.</div>
+      ${!marginPerProduk.length ? '<div class="empty-note">Tidak ada data.</div>' : `
+      <div style="overflow-x:auto; margin-top:8px;">
+      <table class="data compact">
+        <thead><tr>
+          <th>Produk</th><th class="num">Jml Order</th><th class="num">Qty</th>
+          <th class="num">Rata-rata Pendapatan</th><th class="num">Rata-rata Gross Profit</th><th class="num">Gross %</th>
+          <th class="num">Rata-rata Nett Profit</th><th class="num">Nett %</th>
+        </tr></thead>
+        <tbody>
+          ${marginPerProduk.map(g => `<tr>
+            <td>${g.produk}</td>
+            <td class="num">${g.nOrder.toLocaleString('id-ID')}</td>
+            <td class="num">${g.qty.toLocaleString('id-ID')}</td>
+            <td class="num">${fmtRpCompact(g.rataPendapatan)}</td>
+            <td class="num">${fmtRpCompact(g.rataGrossProfit)}</td>
+            <td class="num" style="color:var(--ink-soft);">${g.grossProfitPct!=null?g.grossProfitPct.toFixed(1)+'%':'-'}</td>
+            <td class="num" style="font-weight:600; color:${g.nettProfitPct!=null && g.nettProfitPct<0?'var(--err)':'var(--ink)'};">${fmtRpCompact(g.rataNettProfit)}</td>
+            <td class="num" style="font-weight:600; color:${g.nettProfitPct!=null && g.nettProfitPct<0?'var(--err)':(g.nettProfitPct!=null && g.nettProfitPct<10?'#B8860B':'var(--ok)')};">${g.nettProfitPct!=null?g.nettProfitPct.toFixed(1)+'%':'-'}</td>
+          </tr>`).join('')}
+        </tbody>
+      </table>
+      </div>
+      `}
     </div>
   `;
   document.getElementById('dbFilterProduk').addEventListener('change', (e) => { dbFilters.produk = e.target.value; dbFilters.page = 1; renderDatabase(container); });
@@ -5449,12 +5555,13 @@ function computeProfitPerSku(dari, sampai, dateBasis) {
     const h = effectiveHarga(r);
     const modalBaris = h != null ? (r.qty||1) * h : 0;
     if (h != null) g.modal += modalBaris;
-    g.komisiPlatform += r.komisiPlatform||0;
-    g.biayaLayanan += r.biayaLayanan||0;
-    g.biayaPembayaran += r.biayaPembayaran||0;
-    g.komisiAfiliasi += r.komisiAfiliasi||0;
-    g.komisiDinamis += r.komisiDinamis||0;
-    g.pajak += r.pajak||0;
+    // Math.abs() krn komisi/biaya dari settlement Shopee/TikTok tersimpan sbg angka negatif (lihat catatan di computePNL)
+    g.komisiPlatform += Math.abs(r.komisiPlatform||0);
+    g.biayaLayanan += Math.abs(r.biayaLayanan||0);
+    g.biayaPembayaran += Math.abs(r.biayaPembayaran||0);
+    g.komisiAfiliasi += Math.abs(r.komisiAfiliasi||0);
+    g.komisiDinamis += Math.abs(r.komisiDinamis||0);
+    g.pajak += Math.abs(r.pajak||0);
     const toko = r.sumber || 'Tidak diketahui';
     g.byToko[toko] = (g.byToko[toko]||0) + (r.pendapatan||0);
     if (!g.produk && r.produk) g.produk = r.produk;
@@ -5469,7 +5576,7 @@ function computeProfitPerSku(dari, sampai, dateBasis) {
     o.qty += r.qty||1;
     o.pendapatan += r.pendapatan||0;
     o.modal += modalBaris;
-    o.bebanLangsung += (r.komisiPlatform||0) + (r.biayaLayanan||0) + (r.biayaPembayaran||0) + (r.komisiAfiliasi||0) + (r.komisiDinamis||0) + (r.pajak||0);
+    o.bebanLangsung += Math.abs(r.komisiPlatform||0) + Math.abs(r.biayaLayanan||0) + Math.abs(r.biayaPembayaran||0) + Math.abs(r.komisiAfiliasi||0) + Math.abs(r.komisiDinamis||0) + Math.abs(r.pajak||0);
   });
 
   const totalOmzetPerusahaan = rows.reduce((s,r) => s + (r.pendapatan||0), 0);
@@ -5575,12 +5682,17 @@ function computePNL(dari, sampai, dateBasis) {
     biayaModal = vendorRows.reduce((s,v) => s + (v.total||0), 0);
   }
 
-  const komisiPlatform = orderRows.reduce((s,r) => s + (r.komisiPlatform||0), 0);
-  const biayaLayanan = orderRows.reduce((s,r) => s + (r.biayaLayanan||0), 0);
-  const biayaPembayaran = orderRows.reduce((s,r) => s + (r.biayaPembayaran||0), 0);
-  const komisiAfiliasi = orderRows.reduce((s,r) => s + (r.komisiAfiliasi||0), 0);
-  const komisiDinamis = orderRows.reduce((s,r) => s + (r.komisiDinamis||0), 0);
-  const pajak = orderRows.reduce((s,r) => s + (r.pajak||0), 0);
+  // NB: komisiPlatform/biayaLayanan/biayaPembayaran/komisiAfiliasi/komisiDinamis/pajak diambil APA ADANYA dari
+  // laporan settlement Shopee/TikTok, yg menuliskan biaya² itu sbg angka NEGATIF (krn memang pengurang settlement).
+  // Data migrasi histori lama kadang malah menyimpannya POSITIF. Supaya konsisten dijumlahkan sbg "beban" (nilai
+  // yg lalu DIKURANGKAN dari margin), semua dibungkus Math.abs() di sini -- ditemukan 2026-09-18 stlh user lapor
+  // Total Beban Penjualan tampil NEGATIF (minus ketemu minus jadi nambah profit, bukan mengurangi).
+  const komisiPlatform = orderRows.reduce((s,r) => s + Math.abs(r.komisiPlatform||0), 0);
+  const biayaLayanan = orderRows.reduce((s,r) => s + Math.abs(r.biayaLayanan||0), 0);
+  const biayaPembayaran = orderRows.reduce((s,r) => s + Math.abs(r.biayaPembayaran||0), 0);
+  const komisiAfiliasi = orderRows.reduce((s,r) => s + Math.abs(r.komisiAfiliasi||0), 0);
+  const komisiDinamis = orderRows.reduce((s,r) => s + Math.abs(r.komisiDinamis||0), 0);
+  const pajak = orderRows.reduce((s,r) => s + Math.abs(r.pajak||0), 0);
   const adsRows = STATE.adsMingguan.filter(a => overlaps(a.tanggalDari, a.tanggalSampai));
   const biayaIklan = adsRows.reduce((s,a) => s + (a.biaya||0), 0);
   const returRows = STATE.biayaRetur.filter(r => inRange(r.tanggalDihitung));
@@ -5805,12 +5917,13 @@ function computeTokoBreakdown(namaToko, rowsForToko, dari, sampai) {
     missingBySku[key].qty += (r.qty||1);
   });
   const missingDetail = Object.values(missingBySku).sort((a,b) => b.qty - a.qty);
-  const komisiPlatform = rowsForToko.reduce((s,r) => s + (r.komisiPlatform||0), 0);
-  const biayaLayanan = rowsForToko.reduce((s,r) => s + (r.biayaLayanan||0), 0);
-  const biayaPembayaran = rowsForToko.reduce((s,r) => s + (r.biayaPembayaran||0), 0);
-  const komisiAfiliasi = rowsForToko.reduce((s,r) => s + (r.komisiAfiliasi||0), 0);
-  const komisiDinamis = rowsForToko.reduce((s,r) => s + (r.komisiDinamis||0), 0);
-  const pajak = rowsForToko.reduce((s,r) => s + (r.pajak||0), 0);
+  // Math.abs() krn komisi/biaya dari settlement Shopee/TikTok tersimpan sbg angka negatif (lihat catatan di computePNL)
+  const komisiPlatform = rowsForToko.reduce((s,r) => s + Math.abs(r.komisiPlatform||0), 0);
+  const biayaLayanan = rowsForToko.reduce((s,r) => s + Math.abs(r.biayaLayanan||0), 0);
+  const biayaPembayaran = rowsForToko.reduce((s,r) => s + Math.abs(r.biayaPembayaran||0), 0);
+  const komisiAfiliasi = rowsForToko.reduce((s,r) => s + Math.abs(r.komisiAfiliasi||0), 0);
+  const komisiDinamis = rowsForToko.reduce((s,r) => s + Math.abs(r.komisiDinamis||0), 0);
+  const pajak = rowsForToko.reduce((s,r) => s + Math.abs(r.pajak||0), 0);
   const adsRows = STATE.adsMingguan.filter(a => a.storeName === namaToko && overlaps(a.tanggalDari, a.tanggalSampai));
   const biayaIklan = adsRows.reduce((s,a) => s + (a.biaya||0), 0);
   const returRows = STATE.biayaRetur.filter(r => r.toko === namaToko && r.tanggalDihitung && (() => { const d = r.tanggalDihitung.slice(0,10); return (!dari || d >= dari) && (!sampai || d <= sampai); })());
