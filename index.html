@@ -2932,6 +2932,7 @@ function renderPerbaikanRolloverArea(el, container) {
   el.innerHTML = `
     <div style="border:1px solid var(--line); border-radius:6px; padding:14px; background:#F8F7F3;">
       <div style="font-weight:600; margin-bottom:8px;">Keputusan rollover utk kekurangan alokasi (${new Date(result.tanggalAsliIso).toLocaleDateString('id-ID')})</div>
+      <div class="desc" style="margin-bottom:10px;">Kontrak yang kamu masukkan dianggap "habis" krn SELURUH stok aslinya memang sudah terpakai utk order yang sungguhan (bukan kesalahan input kamu). Sesuai cara rollover yang sama spt biasa di app ini, sistem akan menggulung MODAL ASLI kontrak itu (bukan cuma senilai unit yang kurang) jadi 1 kontrak baru -- nanti cuma sejumlah unit yang kurang tadi yang langsung dipakai utk menutup kekurangannya sekarang, sisa stok kontrak barunya (kalau ada) jadi stok yang sah & bisa dipakai lagi di penarikan berikutnya, persis spt kontrak hasil rollover biasa.</div>
       ${perluKontrakBaru.map(a => renderRolloverCase(a, rolloverCaseKey(a), perbaikanRolloverResolutions)).join('')}
       <div style="margin-top:12px; display:flex; gap:8px;">
         <button class="btn btn-primary" id="btnTerapkanPerbaikanRollover" ${!semuaTerselesaikan?'disabled':''}>Terapkan</button>
@@ -4463,6 +4464,46 @@ function computeKelompokSummary(matchingPayouts) {
   return hasil;
 }
 
+// Cari harga konveksi HISTORIS (yg beneran berlaku saat payout itu terjadi) utk 1 SKU -- dipakai hitung Surplus
+// Perusahaan scr retroaktif (Rekap per Kontrak/Brand). BEDA dgn lookupHargaKonveksiBySku yg selalu ambil harga
+// TERKINI -- di sini kita cari dulu ke orderDb (harga yg beneran ke-lock waktu diproses dulu), supaya tidak
+// keliru kalau harga konveksi sudah berubah sejak payout itu dibuat. Prioritas: (1) baris orderDb sku ini yg
+// tanggalPenarikan-nya PERSIS sama dgn payout, (2) baris orderDb sku ini kapan saja, (3) fallback harga skrg.
+function cariHargaKonveksiHistoris(sku, tanggalDihitung) {
+  const tglKey = tanggalDihitung ? String(tanggalDihitung).slice(0,10) : null;
+  const rowsSku = STATE.orderDb.filter(r => r.sku === sku && r.hargaKonveksi != null);
+  if (tglKey) {
+    const sameDate = rowsSku.find(r => (r.tanggalPenarikan||'').slice(0,10) === tglKey);
+    if (sameDate) return sameDate.hargaKonveksi;
+  }
+  if (rowsSku.length) return rowsSku[0].hargaKonveksi;
+  return lookupHargaKonveksiBySku(sku);
+}
+
+// Ekstraksi murni Surplus Perusahaan (Nilai ke Investor - Nilai ke Konveksi) utk sekumpulan payout yg cocok
+// tanggal+kontrak/brand -- dipakai render layar & export Excel, pola sama spt computeKelompokSummary.
+// PENTING soal akurasi: qty per SKU diambil dari payout.skuBreakdown (BUKAN dihitung ulang dari baris orderDb)
+// krn 1 order bisa kepecah alokasinya ke LEBIH DARI 1 kontrak (mis. kasus rollover-berantai) -- orderDb di sini
+// HANYA dipakai utk cari HARGA konveksinya per SKU (via cariHargaKonveksiHistoris), bukan qty-nya, supaya unit yg
+// sama tidak ikut dihitung dobel kalau kebetulan 1 orderId muncul di orderIds lebih dari 1 payout.
+function computeSurplusPerusahaan(matchingPayouts) {
+  const byProduk = {};
+  matchingPayouts.forEach(p => {
+    const g = byProduk[p.produk] = byProduk[p.produk] || { produk: p.produk, qty: 0, nilaiInvestor: 0, nilaiKonveksi: 0 };
+    const { totalQty, totalRp } = kontrakDetailRows(p);
+    g.qty += totalQty;
+    g.nilaiInvestor += totalRp;
+    Object.entries(p.skuBreakdown || {}).forEach(([sku, qty]) => {
+      const harga = cariHargaKonveksiHistoris(sku, p.tanggalDihitung);
+      if (harga) g.nilaiKonveksi += qty * harga;
+    });
+  });
+  const rows = Object.values(byProduk).map(g => ({ ...g, surplus: g.nilaiInvestor - g.nilaiKonveksi }));
+  const grand = rows.reduce((acc,r) => ({ qty: acc.qty+r.qty, nilaiInvestor: acc.nilaiInvestor+r.nilaiInvestor, nilaiKonveksi: acc.nilaiKonveksi+r.nilaiKonveksi, surplus: acc.surplus+r.surplus }),
+    { qty:0, nilaiInvestor:0, nilaiKonveksi:0, surplus:0 });
+  return { rows, grand };
+}
+
 function renderLaporanDetailPanel(container) {
   const allDates = [...new Set(STATE.payouts.map(p => p.tanggalDihitung ? p.tanggalDihitung.slice(0,10) : null).filter(Boolean))].sort().reverse();
   const kontrakForDate = laporanDetail.tanggal ? STATE.payouts.filter(p => p.tanggalDihitung && p.tanggalDihitung.slice(0,10) === laporanDetail.tanggal) : [];
@@ -4498,6 +4539,23 @@ function renderLaporanDetailPanel(container) {
         </div>
       `;
     });
+    // Surplus Perusahaan (Nilai ke Investor dikurangi Nilai ke Konveksi) -- 1 blok gabungan lintas Kelompok,
+    // krn surplus ini milik perusahaan (Outmark), bukan hak investor mana pun jadi tidak perlu dipecah per Kelompok.
+    const surplus = computeSurplusPerusahaan(matchingPayouts);
+    if (surplus.rows.length) {
+      detailHtml += `
+        <div style="border:2px solid var(--ink); border-radius:3px; padding:12px; margin-top:6px;">
+          <div style="font-weight:600; margin-bottom:8px;">Surplus Perusahaan (Nilai ke Investor &minus; Nilai ke Konveksi)</div>
+          <table class="data compact">
+            <thead><tr><th>Produk</th><th class="num">Qty</th><th class="num">Nilai ke Investor</th><th class="num">Nilai ke Konveksi</th><th class="num">Surplus</th></tr></thead>
+            <tbody>
+              ${surplus.rows.map(r => `<tr><td>${r.produk}</td><td class="num">${r.qty}</td><td class="num">${fmtRp(r.nilaiInvestor)}</td><td class="num">${fmtRp(r.nilaiKonveksi)}</td><td class="num">${fmtRp(r.surplus)}</td></tr>`).join('')}
+              <tr style="font-weight:600; border-top:2px solid var(--ink);"><td>TOTAL SURPLUS</td><td class="num">${surplus.grand.qty}</td><td class="num">${fmtRp(surplus.grand.nilaiInvestor)}</td><td class="num">${fmtRp(surplus.grand.nilaiKonveksi)}</td><td class="num">${fmtRp(surplus.grand.surplus)}</td></tr>
+            </tbody>
+          </table>
+        </div>
+      `;
+    }
   }
 
   container.innerHTML = `
@@ -4805,32 +4863,33 @@ function exportVendorPayoutToExcel(filtered) {
     'Total': v.total || 0,
     'Status': v.tanggalDibayar ? 'Sudah Dibayar' : 'Belum Dibayar',
   }));
+  // Rincian per Produk-Ukuran -- tiap vendorPayout (1 tanggal+brand) dapat blok barisnya sendiri, DITUTUP dgn 1
+  // baris TOTAL (spt tabel rapi di layar/renderVendorDetailTable), bukan cuma daftar rata tanpa subtotal per grup.
   const rincian = [];
   filtered.forEach(v => {
-    const { rows } = vendorDetailRows(v);
+    const { rows, totalQty, totalRp } = vendorDetailRows(v);
+    const tgl = v.tanggalDihitung ? fmtTanggal(v.tanggalDihitung) : '-';
     rows.forEach(r => {
-      rincian.push({
-        'Tgl Dihitung': v.tanggalDihitung ? fmtTanggal(v.tanggalDihitung) : '-',
-        'Brand': v.brand || '-',
-        'Kode Produk': r.label,
-        'Harga': r.harga || 0,
-        'Qty': r.qty || 0,
-        'Total': r.total || 0,
-      });
+      rincian.push({ 'Tgl Dihitung': tgl, 'Konveksi': v.brand || '-', 'Kode Produk': r.label, 'Harga': r.harga || 0, 'Qty': r.qty || 0, 'Total': r.total || 0 });
     });
+    rincian.push({ 'Tgl Dihitung': tgl, 'Konveksi': v.brand || '-', 'Kode Produk': 'TOTAL', 'Harga': '', 'Qty': totalQty, 'Total': totalRp });
   });
   const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(ringkasan), 'Ringkasan');
+  // Sheet Rincian dijadikan sheet PERTAMA (aktif saat file dibuka) -- ini yg paling dibutuhkan user (rincian per
+  // produk-ukuran, bukan cuma total), Ringkasan tetap ada sbg sheet ke-2 utk rekap cepat lintas tanggal/brand.
   XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rincian), 'Rincian per Produk-Ukuran');
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(ringkasan), 'Ringkasan');
   downloadWorkbook(wb, 'Pembayaran_Konveksi_Supplier');
   return { nRingkasan: ringkasan.length, nRincian: rincian.length };
 }
 
 function exportRekapKontrakBrandToExcel(matchingPayouts) {
+  // Rincian per Kontrak -- tiap payout (1 kontrak) dapat blok barisnya sendiri, DITUTUP dgn 1 baris TOTAL MILIK
+  // INVESTOR (spt tabel rapi di layar/renderKontrakDetailTable), bukan cuma daftar rata tanpa subtotal per kontrak.
   const rincian = [];
   matchingPayouts.forEach(p => {
     const produk = findProduct(p.produk);
-    const { rows } = kontrakDetailRows(p);
+    const { rows, totalQty, totalRp } = kontrakDetailRows(p);
     rows.forEach(r => {
       rincian.push({
         'Kode Kontrak': p.kodeKontrak || '-',
@@ -4842,6 +4901,7 @@ function exportRekapKontrakBrandToExcel(matchingPayouts) {
         'Total': r.total || 0,
       });
     });
+    rincian.push({ 'Kode Kontrak': p.kodeKontrak || '-', 'Investor': p.namaInvestor || '-', 'Konveksi': '', 'Kode Produk': 'TOTAL MILIK INVESTOR', 'Harga': '', 'Qty': totalQty, 'Total': totalRp });
   });
   const rekap = [];
   computeKelompokSummary(matchingPayouts).forEach(({ kelompokNum, grandTotalQty, grandTotalRp, profitByKode2, totalProfitQty, totalProfitRp }) => {
@@ -4851,11 +4911,17 @@ function exportRekapKontrakBrandToExcel(matchingPayouts) {
     });
     rekap.push({ 'Kelompok': `Investor ${kelompokNum}`, 'Kode': 'TOTAL PROFIT', 'Qty': totalProfitQty, 'Nilai': totalProfitRp });
   });
+  // Surplus Perusahaan -- sheet baru, angka DIJAMIN sama persis dgn blok "Surplus Perusahaan" di layar
+  // (computeSurplusPerusahaan dipakai di 2 tempat itu).
+  const surplus = computeSurplusPerusahaan(matchingPayouts);
+  const surplusRows = surplus.rows.map(r => ({ 'Produk': r.produk, 'Qty': r.qty, 'Nilai ke Investor': r.nilaiInvestor, 'Nilai ke Konveksi': r.nilaiKonveksi, 'Surplus': r.surplus }));
+  if (surplusRows.length) surplusRows.push({ 'Produk': 'TOTAL SURPLUS', 'Qty': surplus.grand.qty, 'Nilai ke Investor': surplus.grand.nilaiInvestor, 'Nilai ke Konveksi': surplus.grand.nilaiKonveksi, 'Surplus': surplus.grand.surplus });
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rincian), 'Rincian per Kontrak');
   XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rekap), 'Rekap Kelompok');
+  if (surplusRows.length) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(surplusRows), 'Surplus Perusahaan');
   downloadWorkbook(wb, 'Rekap_Kontrak_Brand');
-  return { nRincian: rincian.length, nRekap: rekap.length };
+  return { nRincian: rincian.length, nRekap: rekap.length, nSurplus: surplusRows.length };
 }
 
 /* =========================================================================
