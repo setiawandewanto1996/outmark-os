@@ -5758,26 +5758,29 @@ function renderPnl(container) {
     </div>
 
     <div class="panel">
+      ${(() => { const pct = (rp) => p.pendapatan > 0 ? (rp / p.pendapatan * 100).toFixed(1) + '%' : '-'; return `
       <table class="data">
+        <thead><tr><th></th><th class="num">Rp</th><th class="num">% dari Pendapatan</th></tr></thead>
         <tbody>
-          <tr><td>Pendapatan</td><td class="num">${fmtRp(p.pendapatan)}</td></tr>
-          <tr><td style="padding-left:20px; color:var(--ink-soft);">Biaya Modal (Konveksi/Supplier)</td><td class="num">(${fmtRp(p.biayaModal)})</td></tr>
-          <tr style="font-weight:600; border-top:1px solid var(--ink);"><td>Gross Margin</td><td class="num">${fmtRp(p.grossMargin)}</td></tr>
-          <tr><td style="padding-top:14px; padding-left:20px; color:var(--ink-soft);">Komisi Platform</td><td class="num" style="padding-top:14px;">(${fmtRp(p.komisiPlatform)})</td></tr>
-          <tr><td style="padding-left:20px; color:var(--ink-soft);">Biaya Layanan</td><td class="num">(${fmtRp(p.biayaLayanan)})</td></tr>
-          <tr><td style="padding-left:20px; color:var(--ink-soft);">Biaya Pembayaran</td><td class="num">(${fmtRp(p.biayaPembayaran)})</td></tr>
-          <tr><td style="padding-left:20px; color:var(--ink-soft);">Komisi Afiliasi</td><td class="num">(${fmtRp(p.komisiAfiliasi)})</td></tr>
-          <tr><td style="padding-left:20px; color:var(--ink-soft);">Komisi Dinamis</td><td class="num">(${fmtRp(p.komisiDinamis)})</td></tr>
-          <tr><td style="padding-left:20px; color:var(--ink-soft);">Pajak</td><td class="num">(${fmtRp(p.pajak)})</td></tr>
-          <tr><td style="padding-left:20px; color:var(--ink-soft);">Biaya Iklan (Ads Mingguan)</td><td class="num">(${fmtRp(p.biayaIklan)})</td></tr>
-          <tr><td style="padding-left:20px; color:var(--ink-soft);">Biaya Retur/Refund</td><td class="num">(${fmtRp(p.biayaRetur)})</td></tr>
-          <tr style="font-weight:600;"><td style="padding-left:20px;">Total Beban Penjualan</td><td class="num">(${fmtRp(p.bebanPenjualan)})</td></tr>
-          <tr><td style="padding-left:20px; color:var(--ink-soft);">Biaya Operasional</td><td class="num">(${fmtRp(p.biayaOperasional)})</td></tr>
-          <tr style="font-weight:600; border-top:2px solid var(--ink); font-size:15px;"><td style="padding-top:10px;">Nett Margin</td><td class="num" style="padding-top:10px;">${fmtRp(p.nettMargin)}</td></tr>
-          <tr><td style="padding-top:14px; color:var(--ink-soft);">Payout Capital Partner</td><td class="num" style="padding-top:14px;">(${fmtRp(p.payoutInvestor)})</td></tr>
-          <tr style="font-weight:700; border-top:2px solid var(--ink); font-size:16px;"><td style="padding-top:10px;">Profit Akhir Perusahaan</td><td class="num" style="padding-top:10px;">${fmtRp(p.profitAkhir)}</td></tr>
+          <tr><td>Pendapatan</td><td class="num">${fmtRp(p.pendapatan)}</td><td class="num" style="color:var(--ink-soft); font-size:11px;">${pct(p.pendapatan)}</td></tr>
+          <tr><td style="padding-left:20px; color:var(--ink-soft);">Biaya Modal (Konveksi/Supplier)</td><td class="num">(${fmtRp(p.biayaModal)})</td><td class="num" style="color:var(--ink-soft); font-size:11px;">${pct(p.biayaModal)}</td></tr>
+          <tr style="font-weight:600; border-top:1px solid var(--ink);"><td>Gross Margin</td><td class="num">${fmtRp(p.grossMargin)}</td><td class="num" style="font-size:11px;">${pct(p.grossMargin)}</td></tr>
+          <tr><td style="padding-top:14px; padding-left:20px; color:var(--ink-soft);">Komisi Platform</td><td class="num" style="padding-top:14px;">(${fmtRp(p.komisiPlatform)})</td><td class="num" style="padding-top:14px; color:var(--ink-soft); font-size:11px;">${pct(p.komisiPlatform)}</td></tr>
+          <tr><td style="padding-left:20px; color:var(--ink-soft);">Biaya Layanan</td><td class="num">(${fmtRp(p.biayaLayanan)})</td><td class="num" style="color:var(--ink-soft); font-size:11px;">${pct(p.biayaLayanan)}</td></tr>
+          <tr><td style="padding-left:20px; color:var(--ink-soft);">Biaya Pembayaran</td><td class="num">(${fmtRp(p.biayaPembayaran)})</td><td class="num" style="color:var(--ink-soft); font-size:11px;">${pct(p.biayaPembayaran)}</td></tr>
+          <tr><td style="padding-left:20px; color:var(--ink-soft);">Komisi Afiliasi</td><td class="num">(${fmtRp(p.komisiAfiliasi)})</td><td class="num" style="color:var(--ink-soft); font-size:11px;">${pct(p.komisiAfiliasi)}</td></tr>
+          <tr><td style="padding-left:20px; color:var(--ink-soft);">Komisi Dinamis</td><td class="num">(${fmtRp(p.komisiDinamis)})</td><td class="num" style="color:var(--ink-soft); font-size:11px;">${pct(p.komisiDinamis)}</td></tr>
+          <tr><td style="padding-left:20px; color:var(--ink-soft);">Pajak</td><td class="num">(${fmtRp(p.pajak)})</td><td class="num" style="color:var(--ink-soft); font-size:11px;">${pct(p.pajak)}</td></tr>
+          <tr><td style="padding-left:20px; color:var(--ink-soft);">Biaya Iklan (Ads Mingguan)</td><td class="num">(${fmtRp(p.biayaIklan)})</td><td class="num" style="color:var(--ink-soft); font-size:11px;">${pct(p.biayaIklan)}</td></tr>
+          <tr><td style="padding-left:20px; color:var(--ink-soft);">Biaya Retur/Refund</td><td class="num">(${fmtRp(p.biayaRetur)})</td><td class="num" style="color:var(--ink-soft); font-size:11px;">${pct(p.biayaRetur)}</td></tr>
+          <tr style="font-weight:600;"><td style="padding-left:20px;">Total Beban Penjualan</td><td class="num">(${fmtRp(p.bebanPenjualan)})</td><td class="num" style="font-size:11px;">${pct(p.bebanPenjualan)}</td></tr>
+          <tr><td style="padding-left:20px; color:var(--ink-soft);">Biaya Operasional</td><td class="num">(${fmtRp(p.biayaOperasional)})</td><td class="num" style="color:var(--ink-soft); font-size:11px;">${pct(p.biayaOperasional)}</td></tr>
+          <tr style="font-weight:600; border-top:2px solid var(--ink); font-size:15px;"><td style="padding-top:10px;">Nett Margin</td><td class="num" style="padding-top:10px;">${fmtRp(p.nettMargin)}</td><td class="num" style="padding-top:10px; font-size:11px;">${pct(p.nettMargin)}</td></tr>
+          <tr><td style="padding-top:14px; color:var(--ink-soft);">Payout Capital Partner</td><td class="num" style="padding-top:14px;">(${fmtRp(p.payoutInvestor)})</td><td class="num" style="padding-top:14px; color:var(--ink-soft); font-size:11px;">${pct(p.payoutInvestor)}</td></tr>
+          <tr style="font-weight:700; border-top:2px solid var(--ink); font-size:16px;"><td style="padding-top:10px;">Profit Akhir Perusahaan</td><td class="num" style="padding-top:10px;">${fmtRp(p.profitAkhir)}</td><td class="num" style="padding-top:10px; font-size:12px;">${pct(p.profitAkhir)}</td></tr>
         </tbody>
       </table>
+      `; })()}
     </div>
 
     ${renderProfitPerSkuPanel()}
