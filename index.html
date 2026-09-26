@@ -4596,22 +4596,32 @@ function cariHargaKonveksiHistoris(sku, tanggalDihitung) {
 // krn 1 order bisa kepecah alokasinya ke LEBIH DARI 1 kontrak (mis. kasus rollover-berantai) -- orderDb di sini
 // HANYA dipakai utk cari HARGA konveksinya per SKU (via cariHargaKonveksiHistoris), bukan qty-nya, supaya unit yg
 // sama tidak ikut dihitung dobel kalau kebetulan 1 orderId muncul di orderIds lebih dari 1 payout.
+// Diminta Setiawan 2026-09-26: dipecah per Kelompok Investor (1/2), sama spt computeKelompokSummary, BUKAN lagi
+// 1 blok gabungan -- meski surplus ini scr konsep tetap milik perusahaan (bukan hak investor manapun), Setiawan
+// tetap mau lihatnya terpisah per kongsi/kelompok. Return array (bisa 0/1/2 elemen), 1 elemen per kelompok yg ada datanya.
 function computeSurplusPerusahaan(matchingPayouts) {
-  const byProduk = {};
-  matchingPayouts.forEach(p => {
-    const g = byProduk[p.produk] = byProduk[p.produk] || { produk: p.produk, qty: 0, nilaiInvestor: 0, nilaiKonveksi: 0 };
-    const { totalQty, totalRp } = kontrakDetailRows(p);
-    g.qty += totalQty;
-    g.nilaiInvestor += totalRp;
-    Object.entries(p.skuBreakdown || {}).forEach(([sku, qty]) => {
-      const harga = cariHargaKonveksiHistoris(sku, p.tanggalDihitung);
-      if (harga) g.nilaiKonveksi += qty * harga;
+  const kelompokOfKode2 = (kode2) => { const p = findPartnerByKode2(kode2); return (p && p.kelompok) || 1; };
+  const hasil = [];
+  [1, 2].forEach(kelompokNum => {
+    const payoutsKelompok = matchingPayouts.filter(p => kelompokOfKode2(p.kode2) === kelompokNum);
+    if (!payoutsKelompok.length) return;
+    const byProduk = {};
+    payoutsKelompok.forEach(p => {
+      const g = byProduk[p.produk] = byProduk[p.produk] || { produk: p.produk, qty: 0, nilaiInvestor: 0, nilaiKonveksi: 0 };
+      const { totalQty, totalRp } = kontrakDetailRows(p);
+      g.qty += totalQty;
+      g.nilaiInvestor += totalRp;
+      Object.entries(p.skuBreakdown || {}).forEach(([sku, qty]) => {
+        const harga = cariHargaKonveksiHistoris(sku, p.tanggalDihitung);
+        if (harga) g.nilaiKonveksi += qty * harga;
+      });
     });
+    const rows = Object.values(byProduk).map(g => ({ ...g, surplus: g.nilaiInvestor - g.nilaiKonveksi }));
+    const grand = rows.reduce((acc,r) => ({ qty: acc.qty+r.qty, nilaiInvestor: acc.nilaiInvestor+r.nilaiInvestor, nilaiKonveksi: acc.nilaiKonveksi+r.nilaiKonveksi, surplus: acc.surplus+r.surplus }),
+      { qty:0, nilaiInvestor:0, nilaiKonveksi:0, surplus:0 });
+    hasil.push({ kelompokNum, rows, grand });
   });
-  const rows = Object.values(byProduk).map(g => ({ ...g, surplus: g.nilaiInvestor - g.nilaiKonveksi }));
-  const grand = rows.reduce((acc,r) => ({ qty: acc.qty+r.qty, nilaiInvestor: acc.nilaiInvestor+r.nilaiInvestor, nilaiKonveksi: acc.nilaiKonveksi+r.nilaiKonveksi, surplus: acc.surplus+r.surplus }),
-    { qty:0, nilaiInvestor:0, nilaiKonveksi:0, surplus:0 });
-  return { rows, grand };
+  return hasil;
 }
 
 function renderLaporanDetailPanel(container) {
@@ -4649,23 +4659,22 @@ function renderLaporanDetailPanel(container) {
         </div>
       `;
     });
-    // Surplus Perusahaan (Nilai ke Investor dikurangi Nilai ke Konveksi) -- 1 blok gabungan lintas Kelompok,
-    // krn surplus ini milik perusahaan (Outmark), bukan hak investor mana pun jadi tidak perlu dipecah per Kelompok.
-    const surplus = computeSurplusPerusahaan(matchingPayouts);
-    if (surplus.rows.length) {
+    // Surplus Perusahaan (Nilai ke Investor dikurangi Nilai ke Konveksi) -- dipecah per Kelompok Investor (1/2)
+    // spt "TOTAL MILIK INVESTOR" di atas (permintaan Setiawan 2026-09-26), 1 blok terpisah per kelompok yg ada datanya.
+    computeSurplusPerusahaan(matchingPayouts).forEach(({ kelompokNum, rows, grand }) => {
       detailHtml += `
         <div style="border:2px solid var(--ink); border-radius:3px; padding:12px; margin-top:6px;">
-          <div style="font-weight:600; margin-bottom:8px;">Surplus Perusahaan (Nilai ke Investor &minus; Nilai ke Konveksi)</div>
+          <div style="font-weight:600; margin-bottom:8px;">Surplus Perusahaan Kelompok ${kelompokNum} (Nilai ke Investor &minus; Nilai ke Konveksi)</div>
           <table class="data compact">
             <thead><tr><th>Produk</th><th class="num">Qty</th><th class="num">Nilai ke Investor</th><th class="num">Nilai ke Konveksi</th><th class="num">Surplus</th></tr></thead>
             <tbody>
-              ${surplus.rows.map(r => `<tr><td>${r.produk}</td><td class="num">${r.qty}</td><td class="num">${fmtRp(r.nilaiInvestor)}</td><td class="num">${fmtRp(r.nilaiKonveksi)}</td><td class="num">${fmtRp(r.surplus)}</td></tr>`).join('')}
-              <tr style="font-weight:600; border-top:2px solid var(--ink);"><td>TOTAL SURPLUS</td><td class="num">${surplus.grand.qty}</td><td class="num">${fmtRp(surplus.grand.nilaiInvestor)}</td><td class="num">${fmtRp(surplus.grand.nilaiKonveksi)}</td><td class="num">${fmtRp(surplus.grand.surplus)}</td></tr>
+              ${rows.map(r => `<tr><td>${r.produk}</td><td class="num">${r.qty}</td><td class="num">${fmtRp(r.nilaiInvestor)}</td><td class="num">${fmtRp(r.nilaiKonveksi)}</td><td class="num">${fmtRp(r.surplus)}</td></tr>`).join('')}
+              <tr style="font-weight:600; border-top:2px solid var(--ink);"><td>TOTAL SURPLUS KELOMPOK ${kelompokNum}</td><td class="num">${grand.qty}</td><td class="num">${fmtRp(grand.nilaiInvestor)}</td><td class="num">${fmtRp(grand.nilaiKonveksi)}</td><td class="num">${fmtRp(grand.surplus)}</td></tr>
             </tbody>
           </table>
         </div>
       `;
-    }
+    });
   }
 
   container.innerHTML = `
@@ -5080,11 +5089,14 @@ function exportRekapKontrakBrandToExcel(matchingPayouts) {
     });
     rekap.push({ 'Kelompok': `Investor ${kelompokNum}`, 'Kode': 'TOTAL PROFIT', 'Qty': totalProfitQty, 'Nilai': totalProfitRp });
   });
-  // Surplus Perusahaan -- sheet baru, angka DIJAMIN sama persis dgn blok "Surplus Perusahaan" di layar
+  // Surplus Perusahaan -- sheet baru, dipecah per Kelompok Investor (kolom 'Kelompok', pola sama spt sheet
+  // 'Rekap Kelompok' di atas), angka DIJAMIN sama persis dgn blok "Surplus Perusahaan Kelompok N" di layar
   // (computeSurplusPerusahaan dipakai di 2 tempat itu).
-  const surplus = computeSurplusPerusahaan(matchingPayouts);
-  const surplusRows = surplus.rows.map(r => ({ 'Produk': r.produk, 'Qty': r.qty, 'Nilai ke Investor': r.nilaiInvestor, 'Nilai ke Konveksi': r.nilaiKonveksi, 'Surplus': r.surplus }));
-  if (surplusRows.length) surplusRows.push({ 'Produk': 'TOTAL SURPLUS', 'Qty': surplus.grand.qty, 'Nilai ke Investor': surplus.grand.nilaiInvestor, 'Nilai ke Konveksi': surplus.grand.nilaiKonveksi, 'Surplus': surplus.grand.surplus });
+  const surplusRows = [];
+  computeSurplusPerusahaan(matchingPayouts).forEach(({ kelompokNum, rows, grand }) => {
+    rows.forEach(r => surplusRows.push({ 'Kelompok': `Investor ${kelompokNum}`, 'Produk': r.produk, 'Qty': r.qty, 'Nilai ke Investor': r.nilaiInvestor, 'Nilai ke Konveksi': r.nilaiKonveksi, 'Surplus': r.surplus }));
+    surplusRows.push({ 'Kelompok': `Investor ${kelompokNum}`, 'Produk': `TOTAL SURPLUS KELOMPOK ${kelompokNum}`, 'Qty': grand.qty, 'Nilai ke Investor': grand.nilaiInvestor, 'Nilai ke Konveksi': grand.nilaiKonveksi, 'Surplus': grand.surplus });
+  });
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rincian), 'Rincian per Kontrak');
   XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rekap), 'Rekap Kelompok');
