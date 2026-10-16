@@ -3890,6 +3890,33 @@ function wirePendingHandlers(container) {
   if (next) next.addEventListener('click', () => { pendingPage++; renderDatabase(container); });
 }
 
+// Dipakai panel "Modal Terjual + Profit per Kelompok" di tab Kontrak (renderKontrak) -- "contracts" yg dioper
+// masuk HARUS sudah di-filter sesuai yg mau ditampilkan (mis. activeContracts yg sudah kena filter Produk/Capital
+// Partner di layar), supaya angka rekap kelompok ini SELALU sinkron dgn tabel Kontrak Aktif di atasnya. Modal
+// Terjual = Terjual (stockAwal-stockAkhir) x Harga/Pcs (porsi modal yg sudah "kembali" dari unit yg sudah laku),
+// Profit = Terjual x Margin (SAMA PERSIS dgn kolom "Profit Berjalan" di tabel kontrak). Kelompok diambil dari
+// capitalPartners[i].kelompok (sama pola spt computeKelompokSummary/computeSurplusPerusahaan), default 1 kalau
+// belum diisi. Hanya kelompok yg benar2 py kontrak di set ini yg dimasukkan ke hasil (kalau filter lagi nyempit
+// ke 1 partner, kelompok lainnya otomatis tidak muncul -- bukan ditampilkan Rp0).
+function computeModalTerjualProfitPerKelompok(contracts) {
+  const byKelompok = {};
+  contracts.forEach(c => {
+    const partner = findPartnerById(c.capitalPartnerId);
+    const kelompokNum = (partner && partner.kelompok) || 1;
+    const terjual = (c.stockAwal||0) - (c.stockAkhir||0);
+    const modalTerjual = terjual * (c.hargaModalPcs||0);
+    const profit = terjual * (c.nilaiMargin||0);
+    if (!byKelompok[kelompokNum]) byKelompok[kelompokNum] = { kelompokNum, nKontrak: 0, modalTerjual: 0, profit: 0 };
+    byKelompok[kelompokNum].nKontrak += 1;
+    byKelompok[kelompokNum].modalTerjual += modalTerjual;
+    byKelompok[kelompokNum].profit += profit;
+  });
+  return [1, 2].filter(k => byKelompok[k]).map(k => {
+    const h = byKelompok[k];
+    return { ...h, total: h.modalTerjual + h.profit };
+  });
+}
+
 function renderKontrak(container) {
   const allActiveContracts = STATE.contracts.filter(c => c.status === 'DANA BELUM CAIR')
     .sort((a,b) => (a.produk||'').localeCompare(b.produk||'') || new Date(a.tanggalMasuk) - new Date(b.tanggalMasuk));
@@ -3899,6 +3926,10 @@ function renderKontrak(container) {
     (!kontrakAktifFilters.produk || c.produk === kontrakAktifFilters.produk) &&
     (!kontrakAktifFilters.capitalPartnerId || c.capitalPartnerId === kontrakAktifFilters.capitalPartnerId)
   );
+  const modalProfitKelompok = computeModalTerjualProfitPerKelompok(activeContracts);
+  const modalProfitGrand = modalProfitKelompok.reduce((s,h) => ({
+    modalTerjual: s.modalTerjual + h.modalTerjual, profit: s.profit + h.profit, total: s.total + h.total,
+  }), { modalTerjual: 0, profit: 0, total: 0 });
 
   container.innerHTML = `
     <div class="panel">
@@ -3988,6 +4019,27 @@ function renderKontrak(container) {
         </tbody>
       </table>
       </div>`}
+    </div>
+
+    <div class="panel">
+      <h2>Modal Terjual + Profit per Kelompok</h2>
+      <div class="desc">Dari kontrak aktif yg cocok dgn filter di atas. Modal Terjual = Terjual &times; Harga/Pcs (porsi modal yg sudah kembali dari unit yg sudah laku), Profit = Terjual &times; Margin (sama dgn kolom Profit Berjalan di tabel di atas). Total = Modal Terjual + Profit.</div>
+      ${!modalProfitKelompok.length ? '<div class="empty-note">Belum ada kontrak aktif yg cocok dgn filter ini.</div>' : `
+      <table class="data compact">
+        <thead><tr><th>Kelompok</th><th class="num">Jml Kontrak</th><th class="num">Modal Terjual</th><th class="num">Profit</th><th class="num">Total</th></tr></thead>
+        <tbody>
+          ${modalProfitKelompok.map(h => `<tr>
+            <td>Kelompok ${h.kelompokNum}</td><td class="num">${h.nKontrak}</td>
+            <td class="num">${fmtRp(h.modalTerjual)}</td><td class="num">${fmtRp(h.profit)}</td>
+            <td class="num" style="font-weight:600;">${fmtRp(h.total)}</td>
+          </tr>`).join('')}
+          ${modalProfitKelompok.length > 1 ? `<tr style="font-weight:700; border-top:2px solid var(--ink);">
+            <td colspan="2">TOTAL SEMUA KELOMPOK</td>
+            <td class="num">${fmtRp(modalProfitGrand.modalTerjual)}</td><td class="num">${fmtRp(modalProfitGrand.profit)}</td>
+            <td class="num">${fmtRp(modalProfitGrand.total)}</td>
+          </tr>` : ''}
+        </tbody>
+      </table>`}
     </div>
 
     <div class="panel">
@@ -5671,6 +5723,18 @@ function pnlDateRangeFromPreset(preset) {
 // kalau basisnya pesan). Iklan/Retur/Operasional/Payout Investor TETAP pakai tanggal & rentang aslinya
 // masing2 (overlap dgn dari/sampai yg sama) di KEDUA basis -- iklan mingguan SUDAH inheren berbasis "kapan
 // iklan itu jalan" (bukan kapan cair), jadi otomatis nyambung dgn pesanan yg dihasilkannya di periode yg sama.
+// Dipakai computePNL DAN panel rincian "Biaya Operasional" yg bisa diklik di tab PNL (renderPnl) -- "overlaps"
+// di sini SENGAJA sama persis logikanya dgn yg dipakai computePNL, supaya total baris rincian yg ditampilkan
+// SELALU sama persis dgn angka Biaya Operasional di tabel PNL (ekstraksi murni, 1 sumber kebenaran).
+function computeOpexRowsForPeriode(dari, sampai) {
+  const overlaps = (dariStr, sampaiStr) => {
+    if (!dariStr || !sampaiStr) return false;
+    const a1 = dariStr.slice(0,10), a2 = sampaiStr.slice(0,10);
+    return (!sampai || a1 <= sampai) && (!dari || a2 >= dari);
+  };
+  return STATE.biayaOperasional.filter(o => overlaps(o.tanggalDari, o.tanggalSampai));
+}
+
 function computePNL(dari, sampai, dateBasis) {
   const inRange = (isoStr) => { if (!isoStr) return false; const d = isoStr.slice(0,10); return (!dari || d >= dari) && (!sampai || d <= sampai); };
   const overlaps = (dariStr, sampaiStr) => { // utk entri ber-rentang (ads/opex): overlap dgn rentang filter
@@ -5713,7 +5777,7 @@ function computePNL(dari, sampai, dateBasis) {
 
   const grossMargin = pendapatan - biayaModal;
 
-  const opexRows = STATE.biayaOperasional.filter(o => overlaps(o.tanggalDari, o.tanggalSampai));
+  const opexRows = computeOpexRowsForPeriode(dari, sampai);
   const biayaOperasional = opexRows.reduce((s,o) => s + (o.jumlah||0), 0);
 
   const nettMargin = grossMargin - bebanPenjualan - biayaOperasional;
@@ -5731,6 +5795,30 @@ function renderPnl(container) {
     Object.assign(pnlFilter, pnlDateRangeFromPreset(pnlFilter.preset));
   }
   const p = computePNL(pnlFilter.dari, pnlFilter.sampai, pnlFilter.basis);
+
+  // Rincian "Biaya Operasional" -- dipakai baris yg bisa diklik di tabel PNL di bawah. "overlaps"-nya sama
+  // persis dgn computeOpexRowsForPeriode (dipakai computePNL juga), jadi total rincian = angka di tabel PNL.
+  const opexRowsForDetail = computeOpexRowsForPeriode(pnlFilter.dari, pnlFilter.sampai);
+  const opexByKategoriForDetail = {};
+  opexRowsForDetail.forEach(o => { opexByKategoriForDetail[o.kategori] = (opexByKategoriForDetail[o.kategori]||0) + (o.jumlah||0); });
+  const opexDetailHtml = !opexRowsForDetail.length
+    ? '<div class="empty-note">Tidak ada biaya operasional tercatat di periode ini.</div>'
+    : `<div style="background:#F4EFE2; border:1px solid var(--line); border-radius:3px; padding:10px; margin:4px 0 10px;">
+        <div class="desc" style="margin-bottom:6px;"><b>Rincian per kategori:</b> ${Object.entries(opexByKategoriForDetail).map(([k,t])=>`${k}: ${fmtRp(t)}`).join(' &middot; ')}</div>
+        <div style="overflow-x:auto;">
+        <table class="data compact">
+          <thead><tr><th>Tanggal</th><th>Kategori</th><th class="num">Jumlah</th><th>Catatan</th></tr></thead>
+          <tbody>
+            ${opexRowsForDetail.slice().sort((a,b) => new Date(b.tanggalDari||0) - new Date(a.tanggalDari||0)).map(o => `<tr>
+              <td style="font-size:10.5px;">${fmtTanggal(o.tanggalDari,{short:true})} - ${fmtTanggal(o.tanggalSampai,{short:true})}</td>
+              <td style="font-size:10.5px;">${o.kategori}</td>
+              <td class="num">${fmtRp(o.jumlah)}</td>
+              <td style="font-size:10.5px; color:var(--ink-soft);">${o.catatan||'-'}</td>
+            </tr>`).join('')}
+          </tbody>
+        </table>
+        </div>
+      </div>`;
 
   container.innerHTML = `
     <div class="panel">
@@ -5774,7 +5862,8 @@ function renderPnl(container) {
           <tr><td style="padding-left:20px; color:var(--ink-soft);">Biaya Iklan (Ads Mingguan)</td><td class="num">(${fmtRp(p.biayaIklan)})</td><td class="num" style="color:var(--ink-soft); font-size:11px;">${pct(p.biayaIklan)}</td></tr>
           <tr><td style="padding-left:20px; color:var(--ink-soft);">Biaya Retur/Refund</td><td class="num">(${fmtRp(p.biayaRetur)})</td><td class="num" style="color:var(--ink-soft); font-size:11px;">${pct(p.biayaRetur)}</td></tr>
           <tr style="font-weight:600;"><td style="padding-left:20px;">Total Beban Penjualan</td><td class="num">(${fmtRp(p.bebanPenjualan)})</td><td class="num" style="font-size:11px;">${pct(p.bebanPenjualan)}</td></tr>
-          <tr><td style="padding-left:20px; color:var(--ink-soft);">Biaya Operasional</td><td class="num">(${fmtRp(p.biayaOperasional)})</td><td class="num" style="color:var(--ink-soft); font-size:11px;">${pct(p.biayaOperasional)}</td></tr>
+          <tr class="opex-toggle" data-opex-detail="pnlOpexDetail" style="cursor:pointer;" title="Klik utk lihat rincian"><td style="padding-left:20px; color:var(--accent); text-decoration:underline;">Biaya Operasional</td><td class="num">(${fmtRp(p.biayaOperasional)})</td><td class="num" style="color:var(--ink-soft); font-size:11px;">${pct(p.biayaOperasional)}</td></tr>
+          <tr id="pnlOpexDetail" style="display:none;"><td colspan="3" style="padding:0 0 4px 0;">${opexDetailHtml}</td></tr>
           <tr style="font-weight:600; border-top:2px solid var(--ink); font-size:15px;"><td style="padding-top:10px;">Nett Margin</td><td class="num" style="padding-top:10px;">${fmtRp(p.nettMargin)}</td><td class="num" style="padding-top:10px; font-size:11px;">${pct(p.nettMargin)}</td></tr>
           <tr><td style="padding-top:14px; color:var(--ink-soft);">Payout Capital Partner</td><td class="num" style="padding-top:14px;">(${fmtRp(p.payoutInvestor)})</td><td class="num" style="padding-top:14px; color:var(--ink-soft); font-size:11px;">${pct(p.payoutInvestor)}</td></tr>
           <tr style="font-weight:700; border-top:2px solid var(--ink); font-size:16px;"><td style="padding-top:10px;">Profit Akhir Perusahaan</td><td class="num" style="padding-top:10px;">${fmtRp(p.profitAkhir)}</td><td class="num" style="padding-top:10px; font-size:12px;">${pct(p.profitAkhir)}</td></tr>
@@ -5795,6 +5884,13 @@ function renderPnl(container) {
   document.getElementById('pnlSampai').addEventListener('change', (e) => { pnlFilter.preset='custom'; pnlFilter.sampai = e.target.value; skuProfitFilter.page = 1; renderPnl(container); });
   document.getElementById('pnlBasis').addEventListener('change', (e) => { pnlFilter.basis = e.target.value; skuProfitFilter.page = 1; renderPnl(container); });
   wireProfitPerSkuHandlers(container);
+  const opexToggleEl = container.querySelector('[data-opex-detail]');
+  if (opexToggleEl) {
+    opexToggleEl.addEventListener('click', () => {
+      const target = document.getElementById(opexToggleEl.dataset.opexDetail);
+      if (target) target.style.display = target.style.display === 'none' ? 'table-row' : 'none';
+    });
+  }
 
   // ---- Panel "Profit per SKU" -- pakai periode & basis tanggal yg SAMA PERSIS dgn tabel PNL di atas ----
   function renderProfitPerSkuPanel() {
