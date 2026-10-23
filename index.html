@@ -659,6 +659,16 @@ function rowsToObjects(rows, headerRowIdx, dataStartIdx) {
   }).filter(o => Object.values(o).some(v => v !== null && v !== undefined));
 }
 
+// BUG SERIUS KEDUA ditemukan 2026-10-23 (laporan user, order Shopee "UOUT - Jaket Oswald Waterproof Big Size",
+// OSWARM04): "pajak: []" di bawah ini KOSONG TOTAL sejak awal -- bukan kategori baru spt kasus Growth Xtra di
+// TIKTOK_CATMAP, ini memang TIDAK PERNAH dipetakan sama sekali utk Shopee. Order itu nunjukkan kategori "Pajak"
+// berisi "PPh 22: -Rp1.795" di rincian biayanya (Total Penghasilan Rp270.030 = Rp359.000 - 37.330 - 17.950 -
+// 16.155 - 15.740 - 1.795, tervalidasi cocok persis dgn angka di layar Shopee) -- berarti PPh 22 ini SELALU
+// hilang diam2 dari totalBiaya/pajak utk SEMUA order Shopee yg kena PPh 22, sejak fitur import ini ada. 'PPh 22'
+// di bawah ini TEBAKAN TERBAIK berdasarkan label yg tampil di popup rincian Shopee (BUKAN dikonfirmasi dari nama
+// kolom asli di file Excel "Penghasilan" mentah, krn belum py file aslinya) -- kalau exact match-nya ternyata
+// beda, findUnrecognizedFeeColumns() akan tetap menangkapnya di preview batch impor Shopee berikutnya & nama
+// kolom aslinya akan kelihatan di situ utk dipetakan dgn presisi.
 const SHOPEE_CATMAP = {
   komisi_platform: ['Biaya Administrasi (termasuk PPN 11%)'],
   biaya_layanan: ['Biaya Proses Pesanan','Biaya Gratis Ongkir XTRA - Ukuran Biasa (Kategori F)','Biaya Layanan Promo XTRA','Biaya Layanan Shopee Live XTRA'],
@@ -666,15 +676,23 @@ const SHOPEE_CATMAP = {
   komisi_afiliasi: ['Biaya Komisi AMS'], // AMS = Affiliate Marketing Solutions
   komisi_dinamis: [],
   biaya_iklan: ['Biaya Kampanye'],
-  pajak: [],
+  pajak: ['PPh 22'],
   lainnya: ['Premi','FBS Fee','Biaya Isi Saldo Otomatis (dari Penghasilan)'],
 };
+// BUG NYATA ditemukan 2026-10-23 (laporan user, order 586646593913783688): kolom "Biaya layanan Program Growth
+// Xtra" (Rp14.236 di order itu) TIDAK ADA di daftar biaya_layanan di bawah ini -- sumCategory() cuma membaca
+// kolom yg NAMANYA PERSIS ada di daftar, jadi kolom ini TIDAK PERNAH dibaca sama sekali (bukan dibaca lalu
+// dijumlah 0), hilang total dari totalBiaya/biayaLayanan tanpa peringatan apa pun, bikin Gross/Nett Profit
+// tampil lebih besar dari yg sebenarnya utk SETIAP order yg kena biaya Growth Xtra ini sejak kategori itu mulai
+// muncul di laporan TikTok/Tokopedia. Ditambahkan di sini SEKARANG, TAPI ini cuma menutup 1 nama kolom yg sudah
+// ketahuan -- lihat findUnrecognizedFeeColumns() di bawah utk jaring pengaman supaya kategori baru LAIN yg
+// platform tambahkan di masa depan tidak lolos diam-diam lagi dgn cara yg sama.
 const TIKTOK_CATMAP = {
   komisi_platform: ['Biaya komisi platform'],
   biaya_layanan: ['Biaya layanan pre-order','Biaya layanan Mall','Biaya layanan logistik','Biaya layanan Program Bebas Ongkir',
     'Biaya layanan cashback bonus','Biaya layanan Khusus LIVE','Biaya akses keuntungan eksklusif','Biaya layanan Program EAMS',
     'Biaya layanan Brands Crazy Deal/Flash Sale','Biaya Dilayani Tokopedia','Biaya penanganan Dilayani Tokopedia',
-    'Biaya layanan penginstalan','Biaya layanan khusus platform','Biaya pemrosesan pesanan'],
+    'Biaya layanan penginstalan','Biaya layanan khusus platform','Biaya pemrosesan pesanan','Biaya layanan Program Growth Xtra'],
   biaya_pembayaran: ['Biaya Pembayaran','Biaya program PayLater'],
   komisi_afiliasi: ['Komisi Afiliasi','Komisi mitra afiliasi','Komisi Iklan Toko afiliasi','Komisi iklan toko Mitra Afiliasi'],
   komisi_dinamis: ['Komisi dinamis'],
@@ -683,6 +701,27 @@ const TIKTOK_CATMAP = {
   lainnya: ['Biaya asuransi','Program layanan terkelola (Biaya per pesanan)'],
 };
 function sumCategory(row, cols) { return cols.reduce((s,c) => s + (Number(row[c])||0), 0); }
+
+// Kolom non-biaya yg SUDAH diketahui & dipakai langsung dari file Income (ID order, tanggal, status, dll) --
+// dipakai findUnrecognizedFeeColumns() di bawah supaya kolom2 ini TIDAK ikut dilaporkan sbg "kolom tak dikenal".
+const SHOPEE_NONFEE_COLS = ['No. Pesanan', 'Lihat berdasarkan', 'Harga Produk', 'Total Penghasilan', 'Tanggal Dana Dilepaskan'];
+const TIKTOK_NONFEE_COLS = ['ID Pesanan/Penyesuaian', 'Jenis transaksi', 'Total Pendapatan', 'Jumlah penyelesaian pembayaran', 'Waktu pembayaran pesanan'];
+
+// JARING PENGAMAN (ditambahkan 2026-10-23 setelah bug "Biaya layanan Program Growth Xtra" di atas): cari kolom
+// apa pun di baris header file Income yg (a) BUKAN salah satu kolom biaya yg sudah dikenal di *_CATMAP, (b)
+// BUKAN salah satu kolom non-biaya yg sudah dikenal (SHOPEE_NONFEE_COLS/TIKTOK_NONFEE_COLS), DAN (c) punya
+// nilai numerik tidak-nol di sedikitnya 1 baris data -- kolom spt ini SANGAT MUNGKIN kategori biaya baru yg
+// platform tambahkan tapi belum sempat dipetakan ke *_CATMAP, persis spt kasus Growth Xtra. Dilaporkan sbg
+// peringatan di preview batch (lihat renderImportPreview) SEBELUM user sempat menyimpan, supaya kejadian
+// "hilang diam-diam" spt ini tidak bisa terulang tanpa sepengetahuan user.
+function findUnrecognizedFeeColumns(headerRow, catmap, knownNonFeeCols, dataRows) {
+  const known = new Set([...Object.values(catmap).flat(), ...knownNonFeeCols]);
+  const candidateCols = (headerRow || []).filter(h => h && !known.has(h));
+  return candidateCols.filter(col => dataRows.some(r => {
+    const v = Number(r[col]);
+    return r[col] != null && r[col] !== '' && !Number.isNaN(v) && v !== 0;
+  }));
+}
 
 // Alokasi largest-remainder method: floor tiap kode2, sisa dikasih ke fraksi desimal terbesar (tervalidasi Fase 1)
 function allocateLargestRemainder(qtyTotal, pctMap) {
@@ -866,12 +905,24 @@ async function processWeeklyBatch(storeImports) {
   // Order berstatus "Pesanan" tapi Settlement=0 (tdk pernah settle sama sekali, mis. batal sblm bayar) --
   // DICATAT di sini (bukan cuma dilewati diam2) spy tetap KELIHATAN di ringkasan hasil batch, bukan hilang tanpa jejak.
   const zeroSettlementSkipped = [];
+  // Kolom biaya yg TIDAK dikenali *_CATMAP sama sekali tapi punya nilai -- lihat findUnrecognizedFeeColumns().
+  const unrecognizedFeeColumns = [];
 
   // ---- Shopee ----
   const shopeeFinance = {};
   shopeeImports.forEach(si => {
-    const objsI = rowsToObjects(sheetToRows(si.incomeWb.Sheets['Penghasilan']), 2, 3);
-    objsI.filter(o => o['Lihat berdasarkan'] === 'Order').forEach(o => {
+    const allRowsRaw = sheetToRows(si.incomeWb.Sheets['Penghasilan']);
+    const headerRow = allRowsRaw[2];
+    const objsI = rowsToObjects(allRowsRaw, 2, 3);
+    const pesananRowsForCheck = objsI.filter(o => o['Lihat berdasarkan'] === 'Order');
+    findUnrecognizedFeeColumns(headerRow, SHOPEE_CATMAP, SHOPEE_NONFEE_COLS, pesananRowsForCheck).forEach(kolom => {
+      unrecognizedFeeColumns.push({
+        platform: 'Shopee', toko: si.store.nama, kolom,
+        totalNilai: pesananRowsForCheck.reduce((s,r) => s + (Number(r[kolom])||0), 0),
+        nOrder: pesananRowsForCheck.filter(r => Number(r[kolom])).length,
+      });
+    });
+    pesananRowsForCheck.forEach(o => {
       const id = String(o['No. Pesanan']);
       const pendapatan = Number(o['Harga Produk'])||0;
       const netSettlement = Number(o['Total Penghasilan'])||0;
@@ -905,8 +956,18 @@ async function processWeeklyBatch(storeImports) {
   // persis 2 order yg dilaporkan hilang).
   const tiktokFinance = {};
   tiktokImports.forEach(si => {
-    const objsI = rowsToObjects(sheetToRows(si.incomeWb.Sheets['Detail pesanan']), 0, 1);
-    objsI.filter(o => o['Jenis transaksi'] === 'Pesanan').forEach(o => {
+    const allRowsRaw = sheetToRows(si.incomeWb.Sheets['Detail pesanan']);
+    const headerRow = allRowsRaw[0];
+    const objsI = rowsToObjects(allRowsRaw, 0, 1);
+    const pesananRowsForCheck = objsI.filter(o => o['Jenis transaksi'] === 'Pesanan');
+    findUnrecognizedFeeColumns(headerRow, TIKTOK_CATMAP, TIKTOK_NONFEE_COLS, pesananRowsForCheck).forEach(kolom => {
+      unrecognizedFeeColumns.push({
+        platform: 'TikTok/Tokopedia', toko: si.store.nama, kolom,
+        totalNilai: pesananRowsForCheck.reduce((s,r) => s + (Number(r[kolom])||0), 0),
+        nOrder: pesananRowsForCheck.filter(r => Number(r[kolom])).length,
+      });
+    });
+    pesananRowsForCheck.forEach(o => {
       const id = String(o['ID Pesanan/Penyesuaian']);
       const pendapatan = Number(o['Total Pendapatan'])||0;
       const netSettlement = Number(o['Jumlah penyelesaian pembayaran'])||0;
@@ -1022,7 +1083,7 @@ async function processWeeklyBatch(storeImports) {
     return { produk, qty: Math.round(qtyTotal), hargaInvestor, totalKonveksi, totalSurplus, surplusPerUnit: totalSurplus/qtyDenganHarga };
   });
 
-  return { cairSkuRows: newCairSkuRows, qtyPerProduk, allocations, vendorPayments, surplusRows, matchStats, nSkippedAlreadyRecorded: skippedAlreadyRecorded.length, returAdjustments, notFoundOrderIds, zeroSettlementSkipped, timestamp: new Date().toISOString() };
+  return { cairSkuRows: newCairSkuRows, qtyPerProduk, allocations, vendorPayments, surplusRows, matchStats, nSkippedAlreadyRecorded: skippedAlreadyRecorded.length, returAdjustments, notFoundOrderIds, zeroSettlementSkipped, unrecognizedFeeColumns, timestamp: new Date().toISOString() };
 }
 
 /* =========================================================================
@@ -3090,6 +3151,19 @@ function renderImportPreview(el, result) {
       <div class="status-box show info">Angka mencakup semua order cair di file yg diupload -- kalau rentangnya lebih dari 1 periode penarikan biasamu, hasilnya otomatis gabungan.</div>
       <h2 style="margin-top:14px;">Ringkasan Rekonsiliasi <span class="pill">${grandTotal} baris "Pesanan" total di semua file Income</span></h2>
       <div class="desc">Semua kategori di bawah ini kalau dijumlah HARUS sama dengan total di atas -- supaya kamu bisa lihat sendiri tidak ada yang hilang diam-diam.</div>
+      ${(result.unrecognizedFeeColumns && result.unrecognizedFeeColumns.length) ? `<div class="status-box show err" style="margin-top:10px; border-width:2px;">
+        <b>&#9888; ${result.unrecognizedFeeColumns.length} KOLOM BIAYA TIDAK DIKENALI di file Income -- nilainya BELUM ikut dikurangi ke mana pun (Gross/Nett Profit bisa tampil lebih besar dari yg sebenarnya):</b>
+        <table class="data compact" style="margin-top:8px; background:#fff;">
+          <thead><tr><th>Platform</th><th>Toko</th><th>Nama Kolom di File</th><th class="num">Total Nilai</th><th class="num">Jml Order Kena</th></tr></thead>
+          <tbody>
+            ${result.unrecognizedFeeColumns.map(u => `<tr>
+              <td>${u.platform}</td><td>${u.toko}</td><td style="font-family:'IBM Plex Mono',monospace; font-size:11px;">${u.kolom}</td>
+              <td class="num">${fmtRp(u.totalNilai)}</td><td class="num">${u.nOrder}</td>
+            </tr>`).join('')}
+          </tbody>
+        </table>
+        <div style="margin-top:6px; font-size:11.5px;">Kemungkinan besar ini kategori biaya baru dari platform yg belum dipetakan di sistem (sama seperti kasus "Biaya layanan Program Growth Xtra"). Laporkan kolom ini supaya bisa ditambahkan ke pemetaan biayanya -- kalau tetap dilanjutkan Simpan sekarang, biaya di kolom ini TIDAK ikut mengurangi profit sampai pemetaannya diperbaiki.</div>
+      </div>` : ''}
       <table class="data compact" style="margin-top:8px;">
         <tbody>
           <tr><td>Diproses sbg cair (SKU ketemu)</td><td class="num">${result.matchStats.shopeeFound + result.matchStats.tiktokFound}</td></tr>
