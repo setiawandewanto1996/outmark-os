@@ -1083,7 +1083,80 @@ async function processWeeklyBatch(storeImports) {
     return { produk, qty: Math.round(qtyTotal), hargaInvestor, totalKonveksi, totalSurplus, surplusPerUnit: totalSurplus/qtyDenganHarga };
   });
 
-  return { cairSkuRows: newCairSkuRows, qtyPerProduk, allocations, vendorPayments, surplusRows, matchStats, nSkippedAlreadyRecorded: skippedAlreadyRecorded.length, returAdjustments, notFoundOrderIds, zeroSettlementSkipped, unrecognizedFeeColumns, timestamp: new Date().toISOString() };
+  // allCairSkuRows: versi cairSkuRows SEBELUM disaring alreadyRecorded (dipakai khusus oleh alat "Perbaiki
+  // Biaya Fee dari File Income Lama" di bawah -- BUKAN ditambahkan ke orderDb di sini, murni data mentah hasil
+  // hitung ulang fee per order+SKU dari file yg diupload, termasuk order yg SUDAH tercatat sebelumnya).
+  return { cairSkuRows: newCairSkuRows, allCairSkuRows: cairSkuRows, qtyPerProduk, allocations, vendorPayments, surplusRows, matchStats, nSkippedAlreadyRecorded: skippedAlreadyRecorded.length, returAdjustments, notFoundOrderIds, zeroSettlementSkipped, unrecognizedFeeColumns, timestamp: new Date().toISOString() };
+}
+
+// ---------------------------------------------------------------------------
+// ALAT: Perbaiki Biaya Fee yang Salah dari File Income Lama (ditambahkan 2026-10-23, laporan user: kategori
+// biaya "Growth Xtra" TikTok & "PPh 22" Shopee hilang total dari perhitungan sejak awal, lihat SHOPEE_CATMAP/
+// TIKTOK_CATMAP di atas). Order yg SUDAH tercatat sebelumnya DILEWATI oleh pipeline Import Mingguan biasa
+// (dianggap "sudah settle", lihat alreadyRecorded di processWeeklyBatch) -- jadi nilai fee yg salah di baris
+// LAMA itu TIDAK PERNAH otomatis terkoreksi hanya dgn upload ulang file yg sama lewat jalur normal. Alat ini
+// khusus utk itu: baca ulang file Income LAMA yg sudah pernah diproses, hitung ulang fee pakai *_CATMAP yg
+// SEKARANG (sudah termasuk perbaikan), lalu TIMPA HANYA field fee (FEE_PATCH_FIELDS) pada baris orderDb yg
+// sudah ada -- qty, hargaKonveksi, status, kontrak, payout, stok, tanggal, produk/sku/orderId/brand/warna
+// SAMA SEKALI TIDAK disentuh/dihitung ulang. Order yg belum ada di orderDb TIDAK ditambahkan (bukan jalur
+// import, cuma koreksi) -- dicatat di notFoundInOrderDb saja.
+const FEE_PATCH_FIELDS = ['komisiPlatform','biayaLayanan','biayaPembayaran','komisiAfiliasi','komisiDinamis','biayaIklan','pajak','totalBiaya'];
+const FEE_PATCH_LABELS = {
+  komisiPlatform: 'Komisi Platform', biayaLayanan: 'Biaya Layanan', biayaPembayaran: 'Biaya Pembayaran',
+  komisiAfiliasi: 'Komisi Afiliasi', komisiDinamis: 'Komisi Dinamis', biayaIklan: 'Biaya Iklan',
+  pajak: 'Pajak', totalBiaya: 'Total Biaya',
+};
+
+// TAHAP 1 (preview, READ-ONLY -- belum ada mutasi apapun ke STATE.orderDb).
+async function cariKoreksiFeeHistoris(storeImports) {
+  const result = await processWeeklyBatch(storeImports);
+  const rowByKey = {};
+  STATE.orderDb.forEach(r => {
+    // hanya baris hasil Import Mingguan biasa yg kena bug kategori ini -- baris migrasi_penjualan punya
+    // struktur & sumber data yg berbeda (totalBiaya selalu null di sana), bukan target alat ini.
+    if (r.sumberData !== 'import_mingguan') return;
+    if (r.pendapatan == null || r.status === 'Gagal') return; // bukan baris yg beneran settle
+    rowByKey[r.orderId + '|' + (r.sku||'')] = r;
+  });
+  const diffs = [];
+  const notFoundInOrderDb = [];
+  result.allCairSkuRows.forEach(fresh => {
+    const key = fresh.orderId + '|' + (fresh.sku||'');
+    const row = rowByKey[key];
+    if (!row) { notFoundInOrderDb.push({ orderId: fresh.orderId, sku: fresh.sku, toko: fresh.sumber }); return; }
+    const fieldDiffs = FEE_PATCH_FIELDS.filter(f => Math.abs((row[f]||0) - (fresh[f]||0)) >= 1) // toleransi pembulatan Rp1
+      .map(f => ({ field: f, label: FEE_PATCH_LABELS[f], old: row[f], new: fresh[f] }));
+    // pendapatan & netSettlement SENGAJA TIDAK diperbaiki -- keduanya dibaca LANGSUNG dari kolom asli file
+    // Income (bukan hasil sumCategory() thd *_CATMAP), jadi harusnya selalu sama dari awal; kalau beda, itu
+    // tanda file/order salah cocok, bukan bug kategori -- cuma ditampilkan sbg peringatan, tidak ditimpa.
+    const pendapatanWarning = Math.abs((row.pendapatan||0) - (fresh.pendapatan||0)) >= 1 ? { old: row.pendapatan, new: fresh.pendapatan } : null;
+    const netSettlementWarning = Math.abs((row.netSettlement||0) - (fresh.netSettlement||0)) >= 1 ? { old: row.netSettlement, new: fresh.netSettlement } : null;
+    if (!fieldDiffs.length && !pendapatanWarning && !netSettlementWarning) return; // tidak ada bedanya, lewati
+    diffs.push({
+      orderId: fresh.orderId, sku: fresh.sku, toko: fresh.sumber, produk: row.produk||'-',
+      row, fieldDiffs, deltaTotalBiaya: (fresh.totalBiaya||0) - (row.totalBiaya||0),
+      pendapatanWarning, netSettlementWarning,
+    });
+  });
+  // skuNotFound: order di file yg SKU-nya sendiri gagal dicari (tidak ketemu di pendingOrderSku MAUPUN
+  // historicalOrderSku, lihat processWeeklyBatch) -- order spt ini tidak pernah sampai ke allCairSkuRows sama
+  // sekali, jadi beda dari notFoundInOrderDb (SKU ketemu, tapi barisnya sendiri tidak ada/tidak cocok di orderDb).
+  return { diffs, notFoundInOrderDb, skuNotFound: result.notFoundOrderIds, unrecognizedFeeColumns: result.unrecognizedFeeColumns };
+}
+
+// TAHAP 2 (eksekusi -- MUTASI): lewat referensi langsung d.row dari cariKoreksiFeeHistoris (BUKAN cari ulang
+// by key) supaya persis baris yg sama yg sudah dipreview user. Baris yg cuma punya peringatan pendapatan/
+// netSettlement (tanpa fieldDiffs sama sekali) dilewati -- tidak ada fee yg perlu/boleh ditimpa di baris itu.
+async function terapkanKoreksiFeeHistoris(diffs) {
+  let nBarisDiperbarui = 0, totalDeltaBiaya = 0;
+  diffs.forEach(d => {
+    if (!d.fieldDiffs.length) return;
+    d.fieldDiffs.forEach(fd => { d.row[fd.field] = fd.new; });
+    totalDeltaBiaya += d.deltaTotalBiaya;
+    nBarisDiperbarui++;
+  });
+  await saveState();
+  return { nBarisDiperbarui, totalDeltaBiaya };
 }
 
 /* =========================================================================
@@ -1997,6 +2070,8 @@ let kontrakDuplikatPreview = null; // hasil cariKontrakRolloverDuplikatKosong() 
 let hargaKonveksiRefreshPreview = null; // hasil cariOrderTanpaHargaKonveksiYangBisaDiperbaiki() -- tahap konfirmasi, blm ada mutasi
 let hargaModalPayoutRefreshPreview = null; // hasil cariPayoutHargaModalKosongYangBisaDiperbaiki() -- tahap konfirmasi, blm ada mutasi
 let tanggalPesanRefreshPreview = null; // hasil cariOrderTanpaTanggalPesanYangBisaDiperbaiki() -- tahap konfirmasi, blm ada mutasi
+let pendingFeeCorrectionImports = []; // [{store, incomeFile}] -- batch khusus alat "Perbaiki Biaya Fee dari File Income Lama"
+let feeCorrectionResult = null; // hasil cariKoreksiFeeHistoris() -- tahap konfirmasi, blm ada mutasi
 // Perbaikan manual "kasus lama" (sebelum bug rollover-berantai 2026-09-11 diperbaiki): { allocations:[kasus], dateStr, tanggalAsliIso }
 let perbaikanRolloverPreview = null;
 let perbaikanRolloverResolutions = {};
@@ -2574,6 +2649,34 @@ function renderImport(container) {
     </div>
 
     <div class="panel">
+      <h2>Perbaiki Biaya Fee yang Salah dari File Income Lama &#9888;</h2>
+      <div class="desc">KHUSUS utk order yang SUDAH tercatat lewat Import Mingguan tapi beberapa kategori biaya platform (mis. "Biaya layanan Program Growth Xtra" TikTok, atau "PPh 22" Shopee) belum terhitung sewaktu diimport dulu (lihat laporan &amp; perbaikan 2026-10-23). Upload LAGI file Income minggu/periode yang SAMA yang mau diperiksa -- sistem akan menghitung ulang biayanya pakai kategori yang SEKARANG sudah benar, lalu menampilkan perbedaannya dulu sebelum disimpan. &#9888; HANYA menimpa kolom biaya (Komisi Platform, Biaya Layanan, Biaya Pembayaran, Komisi Afiliasi, Komisi Dinamis, Biaya Iklan, Pajak, Total Biaya) pada baris yang SUDAH ADA di Database Penjualan -- qty, harga konveksi, status, kontrak, payout, stok, dan semua tanggal TIDAK PERNAH disentuh/dihitung ulang sama sekali. Order yang belum tercatat TIDAK ditambahkan lewat alat ini (bukan jalur import).</div>
+      ${!activeStores.length ? '<div class="empty-note">Belum ada toko terdaftar.</div>' : `
+      <div class="field"><label>Toko</label>
+        <select id="fc_store"><option value="">Pilih toko</option>${activeStores.map(s=>`<option value="${s.id}">${s.nama} (${s.platform})</option>`).join('')}</select>
+      </div>
+      <div id="fc_fileFields" style="display:none;">
+        <div class="field" style="margin-top:10px;"><label id="fc_incomeLabel">File Income</label><input type="file" id="fc_incomeFile" accept=".xlsx"></div>
+        <button class="btn btn-ghost" id="btnAddToFeeCorrectionBatch" style="margin-top:8px;">+ Tambah ke Batch</button>
+      </div>
+      <div class="status-box" id="fcAddBatchMsg"></div>
+      ${pendingFeeCorrectionImports.length ? `
+      <table class="data compact" style="margin-top:10px;">
+        <thead><tr><th>Toko</th><th>Platform</th><th>File Income</th><th></th></tr></thead>
+        <tbody>
+          ${pendingFeeCorrectionImports.map((si,i) => `<tr>
+            <td>${si.store.nama}</td><td>${si.store.platform}</td><td style="font-size:11px;">${si.incomeFile.name}</td>
+            <td><button class="icon-del" data-remove-fc-batch="${i}">✕</button></td>
+          </tr>`).join('')}
+        </tbody>
+      </table>` : ''}
+      <button class="btn btn-primary" id="btnCekKoreksiFee" style="margin-top:10px;" ${!pendingFeeCorrectionImports.length ? 'disabled' : ''}>Cek Perbedaan</button>
+      <div class="status-box" id="feeCorrectionMsg"></div>
+      <div id="feeCorrectionArea" style="margin-top:10px;"></div>
+      `}
+    </div>
+
+    <div class="panel">
       <h2>1. Pilih Toko &amp; Upload File Income (untuk Proses Cair Mingguan)</h2>
       <div class="desc">SKU dicari otomatis dari daftar pesanan yang sudah diupload di panel atas (atau histori sebelumnya). Tidak perlu upload file Order lagi di sini.</div>
       ${!activeStores.length ? '<div class="empty-note">Belum ada toko terdaftar. Tambah di tab Data Master dulu.</div>' : `
@@ -2839,13 +2942,58 @@ function renderImport(container) {
       pendingStoreImports.push({ store, incomeFile });
       renderImport(container);
     });
+
+    const fcStoreSelect = document.getElementById('fc_store');
+    if (fcStoreSelect) fcStoreSelect.addEventListener('change', () => {
+      const store = activeStores.find(s => s.id === fcStoreSelect.value);
+      const fields = document.getElementById('fc_fileFields');
+      if (!store) { fields.style.display = 'none'; return; }
+      fields.style.display = 'block';
+      const lbl = labelForPlatform(store.platform);
+      document.getElementById('fc_incomeLabel').textContent = 'File ' + lbl.income;
+    });
+    const btnAddToFeeCorrectionBatch = document.getElementById('btnAddToFeeCorrectionBatch');
+    if (btnAddToFeeCorrectionBatch) btnAddToFeeCorrectionBatch.addEventListener('click', () => {
+      const msg = document.getElementById('fcAddBatchMsg');
+      const store = activeStores.find(s => s.id === fcStoreSelect.value);
+      const incomeFile = document.getElementById('fc_incomeFile').files[0];
+      if (!store || !incomeFile) { showMsg(msg, 'err', 'Pilih toko dan file Income dulu.'); return; }
+      pendingFeeCorrectionImports.push({ store, incomeFile });
+      renderImport(container);
+    });
+    const btnCekKoreksiFee = document.getElementById('btnCekKoreksiFee');
+    if (btnCekKoreksiFee) btnCekKoreksiFee.addEventListener('click', async () => {
+      const msg = document.getElementById('feeCorrectionMsg');
+      if (!pendingFeeCorrectionImports.length) { showMsg(msg, 'err', 'Tambah minimal 1 toko ke batch dulu.'); return; }
+      showMsg(msg, 'info', 'Memproses file...');
+      try {
+        const readWB = async (f) => XLSX.read(await f.arrayBuffer(), { type:'array' });
+        const storeImports = await Promise.all(pendingFeeCorrectionImports.map(async si => ({
+          store: si.store, incomeWb: await readWB(si.incomeFile),
+        })));
+        feeCorrectionResult = await cariKoreksiFeeHistoris(storeImports);
+        pendingFeeCorrectionImports = [];
+        if (!feeCorrectionResult.diffs.length) {
+          showMsg(msg, 'ok', 'Tidak ada perbedaan biaya yang ditemukan -- baris-baris dari file ini sudah sesuai dgn yg tersimpan.' + (feeCorrectionResult.notFoundInOrderDb.length ? ` (${feeCorrectionResult.notFoundInOrderDb.length} order di file ini belum/tidak tercatat di Database Penjualan, tidak diapa-apakan.)` : ''));
+        } else {
+          showMsg(msg, 'info', `${feeCorrectionResult.diffs.length} order ditemukan bedanya. Cek rincian di bawah sebelum konfirmasi.`);
+        }
+        renderImport(container);
+      } catch (e) {
+        showMsg(msg, 'err', 'Gagal: ' + e.message);
+      }
+    });
   }
   container.querySelectorAll('[data-remove-batch]').forEach(btn => {
     btn.addEventListener('click', () => { pendingStoreImports.splice(Number(btn.dataset.removeBatch), 1); renderImport(container); });
   });
+  container.querySelectorAll('[data-remove-fc-batch]').forEach(btn => {
+    btn.addEventListener('click', () => { pendingFeeCorrectionImports.splice(Number(btn.dataset.removeFcBatch), 1); renderImport(container); });
+  });
   const btnRun = document.getElementById('btnRunImport');
   if (btnRun) btnRun.addEventListener('click', runWeeklyImport);
   if (lastBatchResult) renderImportPreview(document.getElementById('importPreview'), lastBatchResult);
+  if (feeCorrectionResult) renderFeeCorrectionArea(document.getElementById('feeCorrectionArea'), container);
   if (manualPreviewResult) renderManualPreview(document.getElementById('manualPreviewArea'), container);
   if (recomputeSummary || recomputePreviewResult) renderRecomputeArea(document.getElementById('recomputeArea'), container);
   if (koreksiTanggalPreview) renderKoreksiTanggalArea(document.getElementById('koreksiTanggalArea'), container);
@@ -2887,6 +3035,52 @@ function renderHargaKonveksiRefreshArea(el, container) {
   document.getElementById('btnBatalHargaKonveksiRefresh').addEventListener('click', () => {
     hargaKonveksiRefreshPreview = null;
     renderHargaKonveksiRefreshArea(el, container);
+  });
+}
+
+function renderFeeCorrectionArea(el, container) {
+  const result = feeCorrectionResult;
+  if (!result || !result.diffs.length) { el.innerHTML = ''; return; }
+  const { diffs, notFoundInOrderDb, skuNotFound, unrecognizedFeeColumns } = result;
+  const patchable = diffs.filter(d => d.fieldDiffs.length);
+  const totalDelta = patchable.reduce((s,d) => s + d.deltaTotalBiaya, 0);
+  el.innerHTML = `
+    <div style="border:1px solid var(--line); border-radius:6px; padding:14px; background:#F8F7F3;">
+      <div style="font-weight:600; margin-bottom:8px;">Ditemukan ${diffs.length} order dgn perbedaan -- ${patchable.length} order akan diperbaiki (Total Biaya bertambah ${fmtRp(totalDelta)}, profit tercatat berkurang sebesar itu)</div>
+      ${(unrecognizedFeeColumns && unrecognizedFeeColumns.length) ? `<div class="status-box show err" style="margin-bottom:10px;">
+        <b>&#9888; ${unrecognizedFeeColumns.length} kolom biaya di file ini MASIH tidak dikenali</b> -- kemungkinan kategori baru lain yg belum dipetakan: ${unrecognizedFeeColumns.map(u => `${u.kolom} (${u.platform}, ${fmtRp(u.totalNilai)})`).join('; ')}
+      </div>` : ''}
+      <table class="data compact" style="background:#fff;">
+        <thead><tr><th>Order ID</th><th>SKU</th><th>Toko</th><th>Produk</th><th>Perubahan Fee</th><th class="num">Delta Total Biaya</th></tr></thead>
+        <tbody>${diffs.map(d => `<tr>
+          <td style="font-family:'IBM Plex Mono',monospace; font-size:11px;">${d.orderId}</td><td>${d.sku||'-'}</td><td>${d.toko||'-'}</td><td>${d.produk}</td>
+          <td style="font-size:11.5px;">
+            ${d.fieldDiffs.map(fd => `${fd.label}: ${fmtRp(fd.old)} &rarr; ${fmtRp(fd.new)}`).join('<br>')}
+            ${d.pendapatanWarning ? `<br><span style="color:var(--err);">&#9888; Pendapatan beda: tersimpan ${fmtRp(d.pendapatanWarning.old)}, di file ${fmtRp(d.pendapatanWarning.new)} (TIDAK ditimpa, cek manual)</span>` : ''}
+            ${d.netSettlementWarning ? `<br><span style="color:var(--err);">&#9888; Net Settlement beda: tersimpan ${fmtRp(d.netSettlementWarning.old)}, di file ${fmtRp(d.netSettlementWarning.new)} (TIDAK ditimpa, cek manual)</span>` : ''}
+          </td>
+          <td class="num">${d.fieldDiffs.length ? fmtRp(d.deltaTotalBiaya) : '-'}</td>
+        </tr>`).join('')}</tbody>
+      </table>
+      ${notFoundInOrderDb.length ? `<div class="desc" style="margin-top:8px;">${notFoundInOrderDb.length} order di file ini belum/tidak tercatat di Database Penjualan -- tidak diapa-apakan (bukan jalur import).</div>` : ''}
+      ${(skuNotFound && skuNotFound.length) ? `<div class="desc" style="margin-top:4px;">&#9888; ${skuNotFound.length} order di file ini SKU-nya tidak ketemu sama sekali (bukan via Database Penjualan maupun daftar pesanan) -- tidak bisa dicek, coba "Update Daftar Pesanan Saja" dulu di panel atas kalau order ini seharusnya ada.</div>` : ''}
+      <div style="margin-top:12px; display:flex; gap:8px;">
+        <button class="btn btn-primary" id="btnTerapkanKoreksiFee" ${!patchable.length ? 'disabled' : ''}>Ya, Perbaiki ${patchable.length} Order Ini</button>
+        <button class="btn btn-ghost" id="btnBatalKoreksiFee">Batal</button>
+      </div>
+    </div>
+  `;
+  const btnTerapkan = document.getElementById('btnTerapkanKoreksiFee');
+  if (btnTerapkan) btnTerapkan.addEventListener('click', async () => {
+    const msg = document.getElementById('feeCorrectionMsg');
+    const { nBarisDiperbarui, totalDeltaBiaya } = await terapkanKoreksiFeeHistoris(diffs);
+    feeCorrectionResult = null;
+    showMsg(msg, 'ok', `${nBarisDiperbarui} baris order berhasil diperbaiki fee-nya (Total Biaya bertambah ${fmtRp(totalDeltaBiaya)}). PNL/Dashboard akan otomatis ikut lebih akurat.`);
+    renderFeeCorrectionArea(el, container);
+  });
+  document.getElementById('btnBatalKoreksiFee').addEventListener('click', () => {
+    feeCorrectionResult = null;
+    renderFeeCorrectionArea(el, container);
   });
 }
 
