@@ -8,51 +8,55 @@
 <script src="https://accounts.google.com/gsi/client" async defer></script>
 <script src="https://apis.google.com/js/api.js" async defer></script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <style>
   :root {
-    --ink: #16181D; --paper: #F5F4F0; --surface: #FFFFFF; --line: #D8D6CE;
-    --ok: #2E6B4F; --err: #A83A2E; --accent: #3457D5; --ink-soft: #6B6A63;
-    --sidebar-bg: #1B1D24; --sidebar-text: #A9A8A2; --gold: #B8863B;
+    --ink: #101828; --paper: #F7F8FA; --surface: #FFFFFF; --line: #E4E7EC;
+    --ok: #059669; --err: #DC2626; --accent: #4F46E5; --ink-soft: #667085;
+    --sidebar-bg: #FFFFFF; --sidebar-text: #475467; --gold: #D97706;
     --shopee: #EE4D2D; --tiktok: #17181A; --tokopedia: #42B549;
   }
   * { box-sizing: border-box; }
-  body { margin: 0; background: linear-gradient(150deg, #F7F1E8 0%, #F2F0EE 35%, #EDF0F6 70%, #E9EEF9 100%); color: var(--ink); font-family: 'Inter', sans-serif; min-height: 100vh; }
+  body { margin: 0; background: var(--paper); color: var(--ink); font-family: 'Inter', sans-serif; min-height: 100vh; }
 
   .app-shell { display: flex; min-height: 100vh; }
   .sidebar {
     width: 232px; flex-shrink: 0; background: var(--sidebar-bg); color: var(--sidebar-text);
     display: flex; flex-direction: column; padding: 18px 12px; position: sticky; top: 0; height: 100vh; overflow-y: auto;
+    border-right: 1px solid var(--line);
   }
-  .sidebar-wordmark { font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 19px; color: #fff; padding: 8px 8px 22px; letter-spacing: -0.3px; }
-  .sidebar-wordmark span { color: #7C96EE; }
+  .sidebar-wordmark { font-family: 'Inter', sans-serif; font-weight: 700; font-size: 16px; color: var(--ink); padding: 8px 8px 18px; letter-spacing: -0.2px; display: flex; align-items: center; gap: 10px; border-bottom: 1px solid #EEF0F3; margin-bottom: 10px; }
+  .sidebar-wordmark::before { content: 'O'; width: 32px; height: 32px; border-radius: 9px; background: var(--accent); color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 15px; flex-shrink: 0; }
+  .sidebar-wordmark span { color: var(--ink-soft); font-weight: 600; }
   .sidebar-nav { display: flex; flex-direction: column; gap: 2px; flex: 1; }
   .sidebar-nav button {
-    display: flex; align-items: center; text-align: left; background: none; border: none; width: 100%;
-    color: var(--sidebar-text); font-family: 'Inter', sans-serif; font-size: 13px; font-weight: 500;
-    padding: 10px 12px; border-radius: 6px; cursor: pointer; border-left: 3px solid transparent;
+    display: flex; align-items: center; gap: 10px; text-align: left; background: none; border: none; width: 100%;
+    color: var(--sidebar-text); font-family: 'Inter', sans-serif; font-size: 13.5px; font-weight: 500;
+    padding: 9px 10px; border-radius: 8px; cursor: pointer;
   }
-  .sidebar-nav button:hover { background: rgba(255,255,255,0.06); color: #fff; }
-  .sidebar-nav button.active { background: rgba(124,150,238,0.16); color: #fff; border-left-color: #7C96EE; font-weight: 600; }
-  .sidebar-nav button:disabled { opacity: 0.3; cursor: not-allowed; }
-  .sidebar-group-label { font-family: 'IBM Plex Mono', monospace; font-size: 9.5px; letter-spacing: 1px; text-transform: uppercase; color: #6B6A76; padding: 16px 12px 6px; }
+  .sidebar-nav button svg { flex-shrink: 0; width: 18px; height: 18px; }
+  .sidebar-nav button:hover { background: #F9FAFB; color: var(--ink); }
+  .sidebar-nav button.active { background: #EEF2FF; color: #4338CA; font-weight: 600; }
+  .sidebar-nav button:disabled { opacity: 0.35; cursor: not-allowed; }
+  .sidebar-group-label { font-family: 'Inter', sans-serif; font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: #98A2B3; padding: 14px 10px 6px; }
   .sidebar-group-label:first-child { padding-top: 4px; }
-  .sidebar-footer { border-top: 1px solid rgba(255,255,255,0.1); padding-top: 12px; margin-top: 10px; font-family: 'IBM Plex Mono', monospace; font-size: 10.5px; }
-  .sidebar-footer .email { color: #8FD9B6; }
-  .sidebar-footer button { background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.15); color: #fff; border-radius: 4px; padding: 6px 10px; font-family: 'IBM Plex Mono', monospace; font-size: 10.5px; cursor: pointer; margin-top: 8px; width: 100%; }
+  .sidebar-footer { border-top: 1px solid var(--line); padding-top: 12px; margin-top: 10px; font-family: 'Inter', sans-serif; font-size: 12.5px; }
+  .sidebar-footer .email { color: #067647; font-weight: 500; }
+  .sidebar-footer button { background: #fff; border: 1px solid var(--line); color: var(--ink-soft); border-radius: 8px; padding: 7px 10px; font-family: 'Inter', sans-serif; font-size: 12px; font-weight: 500; cursor: pointer; margin-top: 8px; width: 100%; }
+  .sidebar-footer button:hover { border-color: var(--accent); color: var(--accent); }
 
   .main-content { flex: 1; min-width: 0; padding: 30px 44px 90px; }
   .mobile-topbar { display: none; }
   .sidebar-overlay { display: none; }
   @media (max-width: 900px) {
-    .sidebar { position: fixed; left: -252px; top: 0; z-index: 50; transition: left 0.2s ease; box-shadow: 4px 0 24px rgba(0,0,0,0.25); }
+    .sidebar { position: fixed; left: -252px; top: 0; z-index: 50; transition: left 0.2s ease; box-shadow: 4px 0 24px rgba(16,24,40,0.18); }
     .sidebar.open { left: 0; }
-    .sidebar-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.42); z-index: 40; }
+    .sidebar-overlay { display: none; position: fixed; inset: 0; background: rgba(16,24,40,0.42); z-index: 40; }
     .sidebar-overlay.show { display: block; }
-    .mobile-topbar { display: flex; align-items: center; gap: 12px; padding: 14px 16px; background: var(--sidebar-bg); position: sticky; top: 0; z-index: 30; }
-    .mobile-topbar .wordmark { color: #fff; font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 17px; }
-    .mobile-topbar .wordmark span { color: #7C96EE; }
-    .hamburger-btn { background: none; border: none; color: #fff; font-size: 22px; cursor: pointer; padding: 2px 6px; line-height: 1; }
+    .mobile-topbar { display: flex; align-items: center; gap: 12px; padding: 14px 16px; background: var(--surface); border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 30; }
+    .mobile-topbar .wordmark { color: var(--ink); font-family: 'Inter', sans-serif; font-weight: 700; font-size: 17px; }
+    .mobile-topbar .wordmark span { color: var(--accent); }
+    .hamburger-btn { background: none; border: none; color: var(--ink); font-size: 22px; cursor: pointer; padding: 2px 6px; line-height: 1; }
     .main-content { padding: 18px 14px 90px; max-width: none; }
   }
   .platform-dot { display:inline-block; width:7px; height:7px; border-radius:50%; margin-right:6px; vertical-align:middle; }
@@ -61,66 +65,63 @@
   .platform-dot.tokopedia { background: var(--tokopedia); }
   .platform-dot.lainnya { background: var(--ink-soft); }
 
-  .wordmark { font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 26px; letter-spacing: -0.5px; }
+  .wordmark { font-family: 'Inter', sans-serif; font-weight: 700; font-size: 24px; letter-spacing: -0.3px; }
 
 
-  .panel { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 22px; margin-bottom: 20px; box-shadow: 0 1px 3px rgba(20,20,20,0.045); }
-  .panel h2 { font-family: 'Space Grotesk', sans-serif; font-size: 17px; margin: 0 0 6px; }
+  .panel { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 22px; margin-bottom: 20px; box-shadow: 0 1px 2px rgba(16,24,40,0.04); }
+  .panel h2 { font-family: 'Inter', sans-serif; font-weight: 700; font-size: 16.5px; margin: 0 0 6px; color: var(--ink); }
   .panel .desc { font-size: 13px; color: var(--ink-soft); margin-bottom: 16px; line-height: 1.5; }
 
   .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
   @media (max-width: 640px) { .grid2 { grid-template-columns: 1fr; } }
   .field { display: flex; flex-direction: column; gap: 5px; margin-bottom: 12px; }
-  label { font-family: 'IBM Plex Mono', monospace; font-size: 10.5px; letter-spacing: 0.8px; text-transform: uppercase; color: var(--ink-soft); }
-  input, select, textarea { font-family: 'Inter', sans-serif; font-size: 14px; padding: 9px 10px; border: 1px solid var(--line); border-radius: 7px; }
-  input:focus, select:focus, textarea:focus { outline: none; border-color: var(--accent); }
+  label { font-family: 'Inter', sans-serif; font-size: 11.5px; font-weight: 600; letter-spacing: 0.02em; text-transform: uppercase; color: var(--ink-soft); }
+  input, select, textarea { font-family: 'Inter', sans-serif; font-size: 14px; padding: 9px 10px; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
+  input:focus, select:focus, textarea:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(79,70,229,0.12); }
   textarea { font-family: 'IBM Plex Mono', monospace; font-size: 12px; resize: vertical; }
 
-  .btn { font-family: 'Space Grotesk', sans-serif; font-weight: 600; font-size: 14px; border: none; border-radius: 7px; padding: 11px 18px; cursor: pointer; box-shadow: 0 1px 2px rgba(52,87,213,0.15); }
+  .btn { font-family: 'Inter', sans-serif; font-weight: 600; font-size: 13.5px; border: none; border-radius: 8px; padding: 10px 18px; cursor: pointer; box-shadow: 0 1px 2px rgba(79,70,229,0.15); }
   .btn-primary { background: var(--accent); color: #fff; }
-  .btn-primary:hover { background: #2A45AD; }
-  .btn-primary:disabled { background: #B8B6AC; box-shadow: none; cursor: not-allowed; }
-  .btn-ghost { background: transparent; color: var(--ink-soft); border: 1px solid var(--line); font-size: 12.5px; padding: 7px 12px; box-shadow: none; }
+  .btn-primary:hover { background: #4338CA; }
+  .btn-primary:disabled { background: #D0D5DD; box-shadow: none; cursor: not-allowed; }
+  .btn-ghost { background: #fff; color: var(--ink-soft); border: 1px solid var(--line); font-size: 12.5px; padding: 7px 12px; box-shadow: none; }
   .btn-ghost:hover { border-color: var(--accent); color: var(--accent); }
 
   table.data { width: 100%; border-collapse: collapse; font-size: 13px; }
-  table.data th { font-family: 'IBM Plex Mono', monospace; font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.6px; color: var(--ink-soft); text-align: left; border-bottom: 2px solid var(--ink); padding: 8px 6px; white-space: nowrap; }
+  table.data th { font-family: 'Inter', sans-serif; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em; color: #98A2B3; text-align: left; background: #FAFAFB; border-bottom: 1px solid var(--line); padding: 9px 8px; white-space: nowrap; }
   table.data.compact th, table.data.compact td { padding: 6px 8px; font-size: 12px; white-space: nowrap; }
-  table.data td { padding: 9px 6px; border-bottom: 1px solid var(--line); }
-  .pill { display: inline-block; font-family: 'IBM Plex Mono', monospace; font-size: 10.5px; padding: 2px 8px; border-radius: 20px; background: var(--line); color: var(--ink-soft); }
-  .pill.ok { background: #E3EFE8; color: var(--ok); }
-  .pill.off { background: #F3E5E2; color: var(--err); }
-  .pill.pending { background: #FBF0DC; color: #96650F; }
+  table.data td { padding: 9px 8px; border-bottom: 1px solid #F1F2F5; }
+  .pill { display: inline-block; font-family: 'Inter', sans-serif; font-weight: 600; font-size: 11px; padding: 3px 9px; border-radius: 999px; background: var(--line); color: var(--ink-soft); }
+  .pill.ok { background: #ECFDF3; color: var(--ok); }
+  .pill.off { background: #FEF3F2; color: var(--err); }
+  .pill.pending { background: #FFFAEB; color: #B54708; }
 
-  .status-box { font-family: 'IBM Plex Mono', monospace; font-size: 12px; padding: 10px 12px; border-radius: 7px; margin-top: 10px; display: none; }
+  .status-box { font-family: 'Inter', sans-serif; font-size: 12.5px; padding: 10px 12px; border-radius: 8px; margin-top: 10px; display: none; }
   .status-box.show { display: block; }
-  .status-box.ok { background: #EEF3EC; color: var(--ok); border: 1px solid #C9D8C4; }
-  .status-box.err { background: #FBEDE9; color: var(--err); border: 1px solid #E8C2B8; }
-  .status-box.info { background: #F2EEE0; color: var(--ink-soft); border: 1px solid var(--line); }
+  .status-box.ok { background: #ECFDF3; color: var(--ok); border: 1px solid #ABEFC6; }
+  .status-box.err { background: #FEF3F2; color: var(--err); border: 1px solid #FDA29B; }
+  .status-box.info { background: #F9FAFB; color: var(--ink-soft); border: 1px solid var(--line); }
 
-  .empty-note { text-align: center; padding: 30px; color: var(--ink-soft); font-size: 13px; border: 1.5px dashed var(--line); border-radius: 7px; }
+  .empty-note { text-align: center; padding: 30px; color: var(--ink-soft); font-size: 13px; border: 1.5px dashed var(--line); border-radius: 8px; }
   .gate { text-align: center; padding: 80px 20px; }
-  .gate .wordmark { font-size: 34px; margin-bottom: 6px; }
+  .gate .wordmark { font-size: 30px; margin-bottom: 6px; }
   .gate p { color: var(--ink-soft); font-size: 14px; margin-bottom: 24px; }
-  .gate button { font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 15px; background: var(--ink); color: var(--paper); border: none; border-radius: 7px; padding: 13px 26px; cursor: pointer; }
-  .loading-wrap { text-align: center; padding: 60px 20px; color: var(--ink-soft); font-family: 'IBM Plex Mono', monospace; font-size: 13px; }
+  .gate button { font-family: 'Inter', sans-serif; font-weight: 700; font-size: 15px; background: var(--accent); color: #fff; border: none; border-radius: 9px; padding: 13px 26px; cursor: pointer; }
+  .loading-wrap { text-align: center; padding: 60px 20px; color: var(--ink-soft); font-family: 'Inter', sans-serif; font-size: 13px; }
   button.icon-del { background: none; border: none; cursor: pointer; color: var(--ink-soft); font-size: 13px; }
   button.icon-del:hover { color: var(--err); }
-  .drop-zone { border: 2px dashed var(--line); border-radius: 7px; padding: 18px; text-align: center; cursor: pointer; background: #fff; }
+  .drop-zone { border: 2px dashed var(--line); border-radius: 8px; padding: 18px; text-align: center; cursor: pointer; background: #F9FAFB; }
   .drop-zone:hover { border-color: var(--accent); }
-  .drop-label { font-family: 'IBM Plex Mono', monospace; font-size: 11px; text-transform: uppercase; letter-spacing: 0.6px; color: var(--ink-soft); margin-bottom: 6px; }
+  .drop-label { font-family: 'Inter', sans-serif; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: var(--ink-soft); margin-bottom: 6px; }
   .drop-filename { font-size: 12.5px; font-weight: 500; }
   .kpi-row { display: grid; grid-template-columns: repeat(3,1fr); gap: 12px; }
   @media (max-width: 640px) { .kpi-row { grid-template-columns: 1fr 1fr; } }
-  .kpi { background: var(--surface); border: 1px solid var(--line); border-top: 3px solid var(--accent); border-radius: 10px; padding: 16px 18px; box-shadow: 0 1px 3px rgba(20,20,20,0.045); }
-  .kpi-row .kpi:nth-child(2) { border-top-color: var(--gold); }
-  .kpi-row .kpi:nth-child(3) { border-top-color: var(--ok); }
-  .kpi-row .kpi:nth-child(4) { border-top-color: #8A5FBF; }
-  .kpi-label { font-family: 'IBM Plex Mono', monospace; font-size: 10px; text-transform: uppercase; letter-spacing: 1px; color: var(--ink-soft); margin-bottom: 5px; }
-  .kpi-value { font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 20px; }
-  .btn-subtab { font-family: 'IBM Plex Mono', monospace; font-size: 12px; background: none; border: none; padding: 8px 14px; cursor: pointer; color: var(--ink-soft); border-bottom: 2px solid transparent; margin-bottom: -1px; }
-  .btn-subtab.active { color: var(--ink); border-bottom-color: var(--accent); font-weight: 600; }
-  .row-drilldown:hover td { background: #F4EFE2; }
+  .kpi { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 16px 18px; box-shadow: 0 1px 2px rgba(16,24,40,0.04); }
+  .kpi-label { font-family: 'Inter', sans-serif; font-size: 12px; font-weight: 500; color: var(--ink-soft); margin-bottom: 8px; }
+  .kpi-value { font-family: 'Inter', sans-serif; font-weight: 700; font-size: 21px; color: var(--ink); }
+  .btn-subtab { font-family: 'Inter', sans-serif; font-size: 13px; font-weight: 500; background: none; border: none; padding: 8px 14px; cursor: pointer; color: var(--ink-soft); border-bottom: 2px solid transparent; margin-bottom: -1px; }
+  .btn-subtab.active { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
+  .row-drilldown:hover td { background: #FAFAFB; }
 </style>
 </head>
 <body>
@@ -130,26 +131,26 @@
     <div class="sidebar-wordmark">Outmark <span>OS</span></div>
     <div class="sidebar-nav" id="tabs" style="display:none;">
       <div class="sidebar-group-label">Menu Utama</div>
-      <button data-tab="dashboard" class="active">Dashboard</button>
-      <button data-tab="import">Import Mingguan</button>
-      <button data-tab="database">Database Penjualan</button>
-      <button data-tab="laporan">Laporan Penarikan</button>
+      <button data-tab="dashboard" class="active"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1.5"></rect><rect x="14" y="3" width="7" height="7" rx="1.5"></rect><rect x="3" y="14" width="7" height="7" rx="1.5"></rect><rect x="14" y="14" width="7" height="7" rx="1.5"></rect></svg><span>Dashboard</span></button>
+      <button data-tab="import"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15V4"></path><path d="M7 9l5-5 5 5"></path><path d="M4 16v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"></path></svg><span>Import Mingguan</span></button>
+      <button data-tab="database"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="8" ry="3"></ellipse><path d="M4 5v6c0 1.7 3.6 3 8 3s8-1.3 8-3V5"></path><path d="M4 11v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"></path></svg><span>Database Penjualan</span></button>
+      <button data-tab="laporan"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3h12v18l-3-2-3 2-3-2-3 2V3z"></path><path d="M9 8h6M9 12h6"></path></svg><span>Laporan Penarikan</span></button>
       <div class="sidebar-group-label">Operasional</div>
-      <button data-tab="ads">Ads Mingguan</button>
-      <button data-tab="opex">Biaya Operasional</button>
-      <button data-tab="pnl">PNL</button>
+      <button data-tab="ads"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9v6h3l9 4V5L6 9H3z"></path><path d="M16 9a4 4 0 0 1 0 6"></path></svg><span>Ads Mingguan</span></button>
+      <button data-tab="opex"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="6" width="18" height="13" rx="2"></rect><path d="M3 10h18"></path><circle cx="16.5" cy="14" r="1"></circle></svg><span>Biaya Operasional</span></button>
+      <button data-tab="pnl"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20V10"></path><path d="M12 20V4"></path><path d="M20 20v-6"></path></svg><span>PNL</span></button>
       <div class="sidebar-group-label">Karyawan</div>
-      <button data-tab="gaji">Slip Gaji</button>
+      <button data-tab="gaji"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.2"></circle><path d="M3.5 19a5.5 5.5 0 0 1 11 0"></path><circle cx="17" cy="9" r="2.6"></circle><path d="M15.5 13.2A4.6 4.6 0 0 1 20.5 19"></path></svg><span>Slip Gaji</span></button>
       <div class="sidebar-group-label">Pengaturan</div>
-      <button data-tab="kontrak">Produk &amp; Kontrak</button>
-      <button data-tab="master">Data Master</button>
+      <button data-tab="kontrak"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8l-9-5-9 5 9 5 9-5z"></path><path d="M3 8v8l9 5 9-5V8"></path><path d="M12 13v8"></path></svg><span>Produk &amp; Kontrak</span></button>
+      <button data-tab="master"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h10"></path><path d="M17 7h3"></path><circle cx="14" cy="7" r="2"></circle><path d="M4 17h3"></path><path d="M10 17h10"></path><circle cx="7" cy="17" r="2"></circle></svg><span>Data Master</span></button>
     </div>
     <div class="sidebar-footer" id="authStatus"></div>
   </nav>
   <div class="main-content">
     <div class="mobile-topbar">
       <button class="hamburger-btn" id="hamburgerBtn">&#9776;</button>
-      <div class="wordmark">Outmark <span style="color:#7C96EE">OS</span></div>
+      <div class="wordmark">Outmark <span style="color:var(--accent)">OS</span></div>
     </div>
     <div id="app"></div>
   </div>
@@ -3833,7 +3834,7 @@ let kontrakAktifFilters = { produk: '', capitalPartnerId: '' };
 
 function renderProdukDetailHtml(p) {
   return `
-    <div style="background:#F4EFE2; border:1px solid var(--line); border-radius:3px; padding:14px; margin:4px 0;">
+    <div style="background:#FAFAFB; border:1px solid var(--line); border-radius:3px; padding:14px; margin:4px 0;">
       <div style="font-weight:600; margin-bottom:10px;">Kelola Harga -- ${p.nama}</div>
       <div class="grid2">
         ${SIZES.map(s => {
@@ -3910,7 +3911,7 @@ function renderOrderFeeDetail(r) {
   const hp = computeGrossNettProfitPerOrder(r);
   const feeRow = (label, val) => `<tr><td style="padding-left:16px; color:var(--ink-soft);">${label}</td><td class="num">${val!=null?'('+fmtRp(Math.abs(val))+')':'-'}</td></tr>`;
   return `
-  <div style="background:#F4EFE2; border:1px solid var(--line); border-radius:3px; padding:10px; margin:4px 0 10px;">
+  <div style="background:#FAFAFB; border:1px solid var(--line); border-radius:3px; padding:10px; margin:4px 0 10px;">
     <div class="desc" style="margin-bottom:6px;">Rincian biaya platform utk order ${r.orderId} (SKU ${r.sku||'-'}) -- SEMUA kategori di bawah ini sudah ikut dikurangkan dari Pendapatan utk hasilkan Gross Profit, bukan cuma Komisi Platform yg tampil di kolom tabel utama.</div>
     <div style="overflow-x:auto;">
     <table class="data compact" style="background:#fff;">
@@ -4387,7 +4388,7 @@ function renderKontrak(container) {
           <div class="field"><label>Tanggal Masuk</label><input type="date" id="k_tanggal" required></div>
         </div>
         <div class="field"><label>Harga Modal/Pcs (Rp)</label><input type="number" id="k_harga" required min="0"></div>
-        <div style="background:#F4EFE2; border:1px solid var(--line); border-radius:3px; padding:10px; margin:10px 0;">
+        <div style="background:#FAFAFB; border:1px solid var(--line); border-radius:3px; padding:10px; margin:10px 0;">
           <div style="font-size:11.5px; font-weight:600; margin-bottom:6px;">Opsional: Hitung Stock Awal dari Dana Tunai Masuk (bisa digabung dgn Saldo Luar Kontrak partner ini)</div>
           <div class="grid2">
             <div class="field"><label>Dana Tunai Baru Masuk (Rp)</label><input type="number" id="k_danaBaru" min="0" placeholder="0"></div>
@@ -4676,7 +4677,7 @@ function renderKontrak(container) {
       if (!rows.length) return '';
       return `
         <div style="margin-bottom:20px;">
-          <div style="font-weight:600; font-family:'Space Grotesk',sans-serif; margin-bottom:6px;">${produk}</div>
+          <div style="font-weight:700; font-family:'Inter',sans-serif; margin-bottom:6px;">${produk}</div>
           <table class="data compact">
             <thead><tr><th>Kode</th><th>Nama</th><th class="num">Qty</th><th class="num">%</th><th class="num">Harga</th><th class="num">Total</th></tr></thead>
             <tbody>
@@ -4783,7 +4784,7 @@ function renderKontrakDetailTable(payout) {
           </tr>
         </tbody>
       </table>
-      <div id="drilldown_${payout.id}" style="display:none; margin-top:8px; font-size:11px; font-family:'IBM Plex Mono',monospace; color:var(--ink-soft); background:#F4EFE2; padding:8px; border-radius:3px;"></div>
+      <div id="drilldown_${payout.id}" style="display:none; margin-top:8px; font-size:11px; font-family:'IBM Plex Mono',monospace; color:var(--ink-soft); background:#FAFAFB; padding:8px; border-radius:3px;"></div>
     </div>
   `;
 }
@@ -6112,7 +6113,7 @@ function renderPnl(container) {
   opexRowsForDetail.forEach(o => { opexByKategoriForDetail[o.kategori] = (opexByKategoriForDetail[o.kategori]||0) + (o.jumlah||0); });
   const opexDetailHtml = !opexRowsForDetail.length
     ? '<div class="empty-note">Tidak ada biaya operasional tercatat di periode ini.</div>'
-    : `<div style="background:#F4EFE2; border:1px solid var(--line); border-radius:3px; padding:10px; margin:4px 0 10px;">
+    : `<div style="background:#FAFAFB; border:1px solid var(--line); border-radius:3px; padding:10px; margin:4px 0 10px;">
         <div class="desc" style="margin-bottom:6px;"><b>Rincian per kategori:</b> ${Object.entries(opexByKategoriForDetail).map(([k,t])=>`${k}: ${fmtRp(t)}`).join(' &middot; ')}</div>
         <div style="overflow-x:auto;">
         <table class="data compact">
@@ -6218,7 +6219,7 @@ function renderPnl(container) {
     function renderOrderDetailTable(g) {
       if (!g.orders.length) return '<div class="empty-note">Tidak ada rincian order.</div>';
       return `
-      <div style="background:#F4EFE2; border:1px solid var(--line); border-radius:3px; padding:10px; margin:4px 0 10px;">
+      <div style="background:#FAFAFB; border:1px solid var(--line); border-radius:3px; padding:10px; margin:4px 0 10px;">
         <div class="desc" style="margin-bottom:6px;">Rincian per nomor pesanan utk SKU ${g.sku}. Pendapatan/Modal/Beban Langsung EKSAK per order; Iklan/Retur/Opex/Payout Investor dialokasikan proporsional dari omzet order ini thdp omzet SKU -- jumlah semua baris di bawah = angka SKU di atas.</div>
         <div style="overflow-x:auto;">
         <table class="data compact">
@@ -6431,7 +6432,7 @@ function renderDashboard(container) {
         <div style="background:var(--line); border-radius:2px; height:8px;"><div style="background:${color}; height:100%; border-radius:2px; width:${(qty/max*100).toFixed(1)}%;"></div></div>
       </div>`;
     return `
-      <div style="background:#F4EFE2; border:1px solid var(--line); border-radius:3px; padding:14px; margin:6px 0 14px;">
+      <div style="background:#FAFAFB; border:1px solid var(--line); border-radius:3px; padding:14px; margin:6px 0 14px;">
         <div class="grid2">
           <div>
             <div style="font-weight:600; font-size:12px; margin-bottom:8px;">Warna Terlaris</div>
@@ -6457,7 +6458,7 @@ function renderDashboard(container) {
       </tr>`;
     };
     return `
-      <div style="background:#F4EFE2; border:1px solid var(--line); border-radius:3px; padding:14px; margin:6px 0 4px;">
+      <div style="background:#FAFAFB; border:1px solid var(--line); border-radius:3px; padding:14px; margin:6px 0 4px;">
         <table class="data compact">
           <thead><tr><th>Komponen</th><th class="num">Rp</th><th class="num">% dari Omzet</th></tr></thead>
           <tbody>
@@ -7164,8 +7165,10 @@ function switchTab(tab) {
   renderers[tab](document.getElementById('app'));
 }
 document.getElementById('tabs').addEventListener('click', (e) => {
-  if (e.target.tagName === 'BUTTON' && !e.target.disabled) {
-    switchTab(e.target.dataset.tab);
+  const btn = e.target.closest('button'); // closest(), bukan tagName langsung -- tombol menu sidebar sekarang
+                                            // berisi <svg>/<span> ikon+label di dalamnya, jadi klik bisa kena child itu
+  if (btn && !btn.disabled) {
+    switchTab(btn.dataset.tab);
     closeSidebar(); // di mobile, tutup sidebar begitu pilih menu
   }
 });
