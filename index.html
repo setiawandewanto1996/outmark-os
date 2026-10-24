@@ -122,6 +122,14 @@
   .btn-subtab { font-family: 'Inter', sans-serif; font-size: 13px; font-weight: 500; background: none; border: none; padding: 8px 14px; cursor: pointer; color: var(--ink-soft); border-bottom: 2px solid transparent; margin-bottom: -1px; }
   .btn-subtab.active { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
   .row-drilldown:hover td { background: #FAFAFB; }
+  .tools-collapse { border: 1px solid var(--line); border-radius: 12px; margin-bottom: 20px; background: var(--surface); overflow: hidden; }
+  .tools-collapse > summary { list-style: none; cursor: pointer; padding: 16px 22px; display: flex; align-items: center; gap: 10px; font-weight: 600; font-size: 14.5px; color: var(--ink); }
+  .tools-collapse > summary::-webkit-details-marker { display: none; }
+  .tools-collapse > summary::before { content: '›'; display: inline-block; font-size: 18px; color: var(--ink-soft); transition: transform 0.15s; transform: rotate(0deg); }
+  .tools-collapse[open] > summary::before { transform: rotate(90deg); }
+  .tools-collapse > summary .desc { font-weight: 400; font-size: 12.5px; color: var(--ink-soft); margin-left: 4px; }
+  .tools-collapse > .tools-collapse-body { padding: 4px 22px 22px; border-top: 1px solid var(--line); }
+  .tools-collapse > .tools-collapse-body .panel { box-shadow: none; }
 </style>
 </head>
 <body>
@@ -2525,6 +2533,38 @@ function renderImport(container) {
   const nPending = Object.keys(STATE.pendingOrderSku).length;
   container.innerHTML = `
     <div class="panel">
+      <h2>1. Pilih Toko &amp; Upload File Income (untuk Proses Cair Mingguan)</h2>
+      <div class="desc">SKU dicari otomatis dari daftar pesanan yang sudah diupload sebelumnya (atau histori lama). Tidak perlu upload file Order lagi di sini.</div>
+      ${!activeStores.length ? '<div class="empty-note">Belum ada toko terdaftar. Tambah di tab Data Master dulu.</div>' : `
+      <div class="field"><label>Toko</label>
+        <select id="imp_store"><option value="">Pilih toko</option>${activeStores.map(s=>`<option value="${s.id}">${s.nama} (${s.platform})</option>`).join('')}</select>
+      </div>
+      <div id="imp_fileFields" style="display:none;">
+        <div class="field" style="margin-top:10px;"><label id="imp_incomeLabel">File Income</label><input type="file" id="imp_incomeFile" accept=".xlsx"></div>
+        <button class="btn btn-ghost" id="btnAddToBatch" style="margin-top:8px;">+ Tambah ke Batch</button>
+      </div>
+      <div class="status-box" id="addBatchMsg"></div>
+      `}
+    </div>
+
+    <div class="panel">
+      <h2>2. Toko dalam Batch Ini <span class="pill">${pendingStoreImports.length}</span></h2>
+      ${!pendingStoreImports.length ? '<div class="empty-note">Belum ada toko ditambahkan.</div>' : `
+      <table class="data">
+        <thead><tr><th>Toko</th><th>Platform</th><th>File Income</th><th></th></tr></thead>
+        <tbody>
+          ${pendingStoreImports.map((si,i) => `<tr>
+            <td>${si.store.nama}</td><td>${si.store.platform}</td><td style="font-size:11px;">${si.incomeFile.name}</td>
+            <td><button class="icon-del" data-remove-batch="${i}">✕</button></td>
+          </tr>`).join('')}
+        </tbody>
+      </table>`}
+      <button class="btn btn-primary" id="btnRunImport" style="margin-top:14px;" ${!pendingStoreImports.length ? 'disabled' : ''}>Proses Batch Ini</button>
+      <div class="status-box" id="importStatus"></div>
+    </div>
+    <div id="importPreview"></div>
+
+    <div class="panel">
       <h2>Update Daftar Pesanan Saja <span class="pill">${nPending} pesanan diingat</span></h2>
       <div class="desc">Upload file Order All/Semua Pesanan SAJA (tanpa Income) -- untuk "refresh" daftar pesanan supaya SKU-nya diingat sistem, walau belum cair. Bisa diulang tiap saat, tidak perlu tunggu Income.</div>
       ${!activeStores.length ? '<div class="empty-note">Belum ada toko terdaftar.</div>' : `
@@ -2563,151 +2603,126 @@ function renderImport(container) {
       `}
     </div>
 
-    <div class="panel">
-      <h2>Batalkan Alokasi ke Kontrak</h2>
-      <div class="desc">Utk order yang SUDAH tercatat (mis. lewat Tambah Transaksi Manual tadi) tapi ternyata SALAH dialokasikan ke kontrak investor -- order TETAP tercatat sbg penjualan, tapi stok kontrak dikembalikan &amp; payout terkait dihapus. Hanya aman utk order yg payout-nya berdiri sendiri (bukan gabungan batch banyak order).</div>
-      <div class="field"><label>Order ID (satu per baris, bisa lebih dari satu)</label><textarea id="ra_orderIds" rows="4" placeholder="260728T2D1AFG1&#10;260804EGGFF1KX&#10;585414689456096370"></textarea></div>
-      <button class="btn btn-ghost" id="btnReverseAllocation" style="margin-top:8px;">Batalkan Alokasi</button>
-      <div class="status-box" id="reverseAllocationMsg"></div>
-    </div>
+    <details class="tools-collapse">
+      <summary>Alat &amp; Perbaikan Data (Lanjutan) <span class="pill">10</span><span class="desc">-- dipakai sesekali kalau ada yang perlu dikoreksi, bukan bagian dari proses mingguan rutin</span></summary>
+      <div class="tools-collapse-body">
 
-    <div class="panel">
-      <h2>Koreksi Tanggal Penarikan (Salah Input)</h2>
-      <div class="desc">Utk order yang Tanggal Penarikan-nya SALAH tercatat di Database Penjualan (mis. seharusnya 28/08 tapi kesimpan 27/08). HANYA mengubah tanggal di Database Penjualan, TIDAK menyentuh payout. Kalau order ini SUDAH punya payout investor, akan diblokir dulu -- selesaikan/pindahkan payoutnya dulu (mis. lewat "Batalkan Alokasi" atau "Hitung Ulang Alokasi" di tanggal lama) sebelum koreksi tanggal di sini.</div>
-      <div class="grid2">
-        <div class="field"><label>Order ID (satu per baris, bisa lebih dari satu)</label><textarea id="kt_orderIds" rows="3" placeholder="585620049046766664"></textarea></div>
-        <div class="field"><label>Tanggal Penarikan yang BENAR</label><input type="date" id="kt_tanggalBaru"></div>
+        <div class="panel">
+          <h2>Batalkan Alokasi ke Kontrak</h2>
+          <div class="desc">Utk order yang SUDAH tercatat (mis. lewat Tambah Transaksi Manual tadi) tapi ternyata SALAH dialokasikan ke kontrak investor -- order TETAP tercatat sbg penjualan, tapi stok kontrak dikembalikan &amp; payout terkait dihapus. Hanya aman utk order yg payout-nya berdiri sendiri (bukan gabungan batch banyak order).</div>
+          <div class="field"><label>Order ID (satu per baris, bisa lebih dari satu)</label><textarea id="ra_orderIds" rows="4" placeholder="260728T2D1AFG1&#10;260804EGGFF1KX&#10;585414689456096370"></textarea></div>
+          <button class="btn btn-ghost" id="btnReverseAllocation" style="margin-top:8px;">Batalkan Alokasi</button>
+          <div class="status-box" id="reverseAllocationMsg"></div>
+        </div>
+
+        <div class="panel">
+          <h2>Koreksi Tanggal Penarikan (Salah Input)</h2>
+          <div class="desc">Utk order yang Tanggal Penarikan-nya SALAH tercatat di Database Penjualan (mis. seharusnya 28/08 tapi kesimpan 27/08). HANYA mengubah tanggal di Database Penjualan, TIDAK menyentuh payout. Kalau order ini SUDAH punya payout investor, akan diblokir dulu -- selesaikan/pindahkan payoutnya dulu (mis. lewat "Batalkan Alokasi" atau "Hitung Ulang Alokasi" di tanggal lama) sebelum koreksi tanggal di sini.</div>
+          <div class="grid2">
+            <div class="field"><label>Order ID (satu per baris, bisa lebih dari satu)</label><textarea id="kt_orderIds" rows="3" placeholder="585620049046766664"></textarea></div>
+            <div class="field"><label>Tanggal Penarikan yang BENAR</label><input type="date" id="kt_tanggalBaru"></div>
+          </div>
+          <button class="btn btn-ghost" id="btnCekKoreksiTanggal" style="margin-top:8px;">Cek Dulu</button>
+          <div class="status-box" id="koreksiTanggalMsg"></div>
+          <div id="koreksiTanggalArea" style="margin-top:10px;"></div>
+        </div>
+
+        <div class="panel">
+          <h2>Pindahkan Pembayaran Konveksi yang Ketinggalan (Manual)</h2>
+          <div class="desc">Kalau setelah Koreksi Tanggal Penarikan di atas ternyata entri Pembayaran Konveksi/Supplier masih nyangkut di tanggal lama (mis. notifikasi "Pindahkan Juga" kelewatan atau belum sempat diklik), pakai panel ini utk cek &amp; pindahkan langsung. Tetap dijaga aman: HANYA akan ditemukan/dipindah kalau tanggal lama itu sudah benar-benar tidak dipakai baris Database Penjualan manapun lagi (jadi tidak mungkin tercampur order lain).</div>
+          <div class="grid2">
+            <div class="field"><label>Tanggal Lama (yang ketinggalan)</label><input type="date" id="vo_tanggalLama"></div>
+            <div class="field"><label>Tanggal Baru (tujuan)</label><input type="date" id="vo_tanggalBaru"></div>
+          </div>
+          <button class="btn btn-ghost" id="btnCekVendorOrphanManual" style="margin-top:8px;">Cek Dulu</button>
+          <div class="status-box" id="vendorOrphanManualMsg"></div>
+          <div id="vendorOrphanManualArea" style="margin-top:10px;"></div>
+        </div>
+
+        <div class="panel">
+          <h2>Hitung Ulang Alokasi per Tanggal Penarikan</h2>
+          <div class="desc">Utk order yang SUDAH tercatat sbg penjualan di Database Penjualan (produk Urban Outdoor) tapi TIDAK punya alokasi investor sama sekali di suatu Tanggal Penarikan (mis. habis dibatalkan lewat panel "Batalkan Alokasi" di atas) -- terutama order isi BANYAK produk sekaligus, yg tidak bisa dibetulkan dgn memilih 1 kontrak saja. Fitur ini menghapus SEMUA payout investor di tanggal yg dipilih, lalu menghitung ulang dari nol dari SEMUA order Urban Outdoor yang tercatat di tanggal tsb (persentase &amp; FIFO antar kontrak dihitung otomatis, sama seperti Import Mingguan biasa). ⚠ Payout yang sudah ditandai "Sudah Dibayar" di tanggal ini akan HILANG status itu &amp; perlu ditandai ulang manual setelah hitung ulang.</div>
+          <div class="field" style="max-width:260px;"><label>Tanggal Penarikan</label><input type="date" id="rc_tanggal"></div>
+          <button class="btn btn-ghost" id="btnCekRecompute" style="margin-top:8px;">Cek Tanggal Ini</button>
+          <div class="status-box" id="recomputeMsg"></div>
+          <div id="recomputeArea" style="margin-top:10px;"></div>
+        </div>
+
+        <div class="panel">
+          <h2>Bersihkan Kontrak Rollover Duplikat yang Belum Pernah Dipakai</h2>
+          <div class="desc">Kalau tanggal yang sama sempat di-"Hitung Ulang" berkali-kali (mis. sambil mencoba beberapa perbaikan berturut-turut), bisa numpuk beberapa kontrak hasil rollover yang identik dari sumber yang sama tapi belum pernah kejual sama sekali (mis. IDO049, IDO050, IDO051 semua dari IDO047) -- ini keliru ikut dihitung sbg modal investor & mengambil jatah investor lain. Alat ini HANYA menghapus kontrak yang benar-benar belum pernah kepakai (stock awal = stock akhir, tidak ada payout apapun yang mereferensikannya), menyisakan 1 saja per sumber.</div>
+          <button class="btn btn-ghost" id="btnCekKontrakDuplikat">Cek Sekarang</button>
+          <div class="status-box" id="kontrakDuplikatMsg"></div>
+          <div id="kontrakDuplikatArea" style="margin-top:10px;"></div>
+        </div>
+
+        <div class="panel">
+          <h2>Perbarui Harga Konveksi yang Kosong dari Data Master</h2>
+          <div class="desc">Kalau sebuah order pernah tercatat (Import Mingguan) SEBELUM harga konveksi SKU-nya diisi di Data Master, baris itu permanen tersimpan tanpa harga konveksi (Modal jadi kurang tercatat di Dashboard/PNL) walaupun harganya sudah diisi belakangan -- field ini dihitung sekali sewaktu import, tidak otomatis ikut update. Alat ini mencari baris2 seperti itu yang SEKARANG sudah bisa ditemukan harganya di Data Master, lalu mengisinya. Baris yang harganya memang masih genuinely belum ada di Data Master TIDAK akan disentuh (tetap tampil di rincian Dashboard).</div>
+          <button class="btn btn-ghost" id="btnCekHargaKonveksiKosong">Cek Sekarang</button>
+          <div class="status-box" id="hargaKonveksiRefreshMsg"></div>
+          <div id="hargaKonveksiRefreshArea" style="margin-top:10px;"></div>
+        </div>
+
+        <div class="panel">
+          <h2>Perbaiki Harga Modal Payout yang Kosong (Rollover)</h2>
+          <div class="desc">Utk payout investor yang tercipta dari kontrak hasil rollover (Putar Penuh/Putar Modal Saja) tapi kolom Harga-nya tampil "-" dan Total Rp0 di Laporan Penarikan, walau qty-nya nyata ada -- ini gejala bug lama (sudah diperbaiki) di mana harga modal kontrak baru lupa ikut ditempelkan ke payout-nya. Alat ini mencari payout seperti itu yang kontraknya SEKARANG sudah punya harga modal yang jelas, lalu mengisi ulang. Jumlah Rp yang dibayar ke investor (payout) TIDAK berubah sama sekali -- cuma kolom Harga/Total di laporan yang diperbaiki.</div>
+          <button class="btn btn-ghost" id="btnCekHargaModalPayoutKosong">Cek Sekarang</button>
+          <div class="status-box" id="hargaModalPayoutRefreshMsg"></div>
+          <div id="hargaModalPayoutRefreshArea" style="margin-top:10px;"></div>
+        </div>
+
+        <div class="panel">
+          <h2>Perbaiki Tanggal Pesan yang Kosong dari Daftar Pesanan</h2>
+          <div class="desc">Utk order yang SUDAH cair/tercatat di Database Penjualan tapi Tanggal Pesan-nya kosong (dashboard jadi harus pakai tanggal cair sbg cadangan) -- padahal SEKARANG di "Update Daftar Pesanan Saja" di atas sudah ada tanggal pesannya (mis. baru diupload/refresh belakangan, setelah order itu keburu cair). Ini terjadi karena tanggal pesan cuma ditarik SEKALI waktu order disettle -- upload daftar pesanan setelahnya tidak otomatis menoleh balik ke baris lama. Alat ini mencari baris seperti itu &amp; mengisinya. Baris yang memang genuinely tidak pernah ada di file Order List manapun TIDAK akan disentuh.</div>
+          <button class="btn btn-ghost" id="btnCekTanggalPesanKosong">Cek Sekarang</button>
+          <div class="status-box" id="tanggalPesanRefreshMsg"></div>
+          <div id="tanggalPesanRefreshArea" style="margin-top:10px;"></div>
+        </div>
+
+        <div class="panel">
+          <h2>Perbaiki Kekurangan Alokasi Rollover (Kasus Lama)</h2>
+          <div class="desc">Utk kasus SPESIFIK yang sudah terlanjur tersimpan: kontrak hasil rollover ternyata TIDAK CUKUP menampung semua unit yang cair sekaligus (mis. kontrak lama cuma 20pcs tapi yang cair sekaligus 23pcs) -- dulu sisa unitnya HILANG tanpa jejak (bug, sudah diperbaiki utk kasus BARU ke depannya, tapi kasus LAMA yang sudah terlanjur tersimpan perlu diperbaiki manual lewat sini). Masukkan kode kontrak BARU hasil rollovernya (mis. IDS003, bukan kontrak lamanya/IDS002), jumlah unit yang kurang, dan tanggal penarikan asalnya -- nanti kamu diminta memutuskan lagi (Putar Penuh/Modal Saja/Stop) persis seperti keputusan rollover biasa, khusus untuk sisa unit itu.</div>
+          <div class="grid2">
+            <div class="field"><label>Kode Kontrak Baru (hasil rollover yang kurang cukup)</label><input type="text" id="pr_kodeKontrakLama" placeholder="mis. IDS003"></div>
+            <div class="field"><label>Jumlah Unit yang Kurang</label><input type="number" id="pr_qty" min="1"></div>
+          </div>
+          <div class="field" style="max-width:220px;"><label>Tanggal Penarikan Asal</label><input type="date" id="pr_tanggal"></div>
+          <button class="btn btn-ghost" id="btnCekKekuranganRollover" style="margin-top:8px;">Lanjutkan</button>
+          <div class="status-box" id="perbaikanRolloverMsg"></div>
+          <div id="perbaikanRolloverArea" style="margin-top:10px;"></div>
+        </div>
+
+        <div class="panel">
+          <h2>Perbaiki Biaya Fee yang Salah dari File Income Lama &#9888;</h2>
+          <div class="desc">KHUSUS utk order yang SUDAH tercatat lewat Import Mingguan tapi beberapa kategori biaya platform (mis. "Biaya layanan Program Growth Xtra" TikTok, atau "PPh 22" Shopee) belum terhitung sewaktu diimport dulu (lihat laporan &amp; perbaikan 2026-10-23). Upload LAGI file Income minggu/periode yang SAMA yang mau diperiksa -- sistem akan menghitung ulang biayanya pakai kategori yang SEKARANG sudah benar, lalu menampilkan perbedaannya dulu sebelum disimpan. &#9888; HANYA menimpa kolom biaya (Komisi Platform, Biaya Layanan, Biaya Pembayaran, Komisi Afiliasi, Komisi Dinamis, Biaya Iklan, Pajak, Total Biaya) pada baris yang SUDAH ADA di Database Penjualan -- qty, harga konveksi, status, kontrak, payout, stok, dan semua tanggal TIDAK PERNAH disentuh/dihitung ulang sama sekali. Order yang belum tercatat TIDAK ditambahkan lewat alat ini (bukan jalur import).</div>
+          ${!activeStores.length ? '<div class="empty-note">Belum ada toko terdaftar.</div>' : `
+          <div class="field"><label>Toko</label>
+            <select id="fc_store"><option value="">Pilih toko</option>${activeStores.map(s=>`<option value="${s.id}">${s.nama} (${s.platform})</option>`).join('')}</select>
+          </div>
+          <div id="fc_fileFields" style="display:none;">
+            <div class="field" style="margin-top:10px;"><label id="fc_incomeLabel">File Income</label><input type="file" id="fc_incomeFile" accept=".xlsx"></div>
+            <button class="btn btn-ghost" id="btnAddToFeeCorrectionBatch" style="margin-top:8px;">+ Tambah ke Batch</button>
+          </div>
+          <div class="status-box" id="fcAddBatchMsg"></div>
+          ${pendingFeeCorrectionImports.length ? `
+          <table class="data compact" style="margin-top:10px;">
+            <thead><tr><th>Toko</th><th>Platform</th><th>File Income</th><th></th></tr></thead>
+            <tbody>
+              ${pendingFeeCorrectionImports.map((si,i) => `<tr>
+                <td>${si.store.nama}</td><td>${si.store.platform}</td><td style="font-size:11px;">${si.incomeFile.name}</td>
+                <td><button class="icon-del" data-remove-fc-batch="${i}">✕</button></td>
+              </tr>`).join('')}
+            </tbody>
+          </table>` : ''}
+          <button class="btn btn-primary" id="btnCekKoreksiFee" style="margin-top:10px;" ${!pendingFeeCorrectionImports.length ? 'disabled' : ''}>Cek Perbedaan</button>
+          <div class="status-box" id="feeCorrectionMsg"></div>
+          <div id="feeCorrectionArea" style="margin-top:10px;"></div>
+          `}
+        </div>
+
       </div>
-      <button class="btn btn-ghost" id="btnCekKoreksiTanggal" style="margin-top:8px;">Cek Dulu</button>
-      <div class="status-box" id="koreksiTanggalMsg"></div>
-      <div id="koreksiTanggalArea" style="margin-top:10px;"></div>
-    </div>
-
-    <div class="panel">
-      <h2>Pindahkan Pembayaran Konveksi yang Ketinggalan (Manual)</h2>
-      <div class="desc">Kalau setelah Koreksi Tanggal Penarikan di atas ternyata entri Pembayaran Konveksi/Supplier masih nyangkut di tanggal lama (mis. notifikasi "Pindahkan Juga" kelewatan atau belum sempat diklik), pakai panel ini utk cek &amp; pindahkan langsung. Tetap dijaga aman: HANYA akan ditemukan/dipindah kalau tanggal lama itu sudah benar-benar tidak dipakai baris Database Penjualan manapun lagi (jadi tidak mungkin tercampur order lain).</div>
-      <div class="grid2">
-        <div class="field"><label>Tanggal Lama (yang ketinggalan)</label><input type="date" id="vo_tanggalLama"></div>
-        <div class="field"><label>Tanggal Baru (tujuan)</label><input type="date" id="vo_tanggalBaru"></div>
-      </div>
-      <button class="btn btn-ghost" id="btnCekVendorOrphanManual" style="margin-top:8px;">Cek Dulu</button>
-      <div class="status-box" id="vendorOrphanManualMsg"></div>
-      <div id="vendorOrphanManualArea" style="margin-top:10px;"></div>
-    </div>
-
-    <div class="panel">
-      <h2>Hitung Ulang Alokasi per Tanggal Penarikan</h2>
-      <div class="desc">Utk order yang SUDAH tercatat sbg penjualan di Database Penjualan (produk Urban Outdoor) tapi TIDAK punya alokasi investor sama sekali di suatu Tanggal Penarikan (mis. habis dibatalkan lewat panel "Batalkan Alokasi" di atas) -- terutama order isi BANYAK produk sekaligus, yg tidak bisa dibetulkan dgn memilih 1 kontrak saja. Fitur ini menghapus SEMUA payout investor di tanggal yg dipilih, lalu menghitung ulang dari nol dari SEMUA order Urban Outdoor yang tercatat di tanggal tsb (persentase &amp; FIFO antar kontrak dihitung otomatis, sama seperti Import Mingguan biasa). ⚠ Payout yang sudah ditandai "Sudah Dibayar" di tanggal ini akan HILANG status itu &amp; perlu ditandai ulang manual setelah hitung ulang.</div>
-      <div class="field" style="max-width:260px;"><label>Tanggal Penarikan</label><input type="date" id="rc_tanggal"></div>
-      <button class="btn btn-ghost" id="btnCekRecompute" style="margin-top:8px;">Cek Tanggal Ini</button>
-      <div class="status-box" id="recomputeMsg"></div>
-      <div id="recomputeArea" style="margin-top:10px;"></div>
-    </div>
-
-    <div class="panel">
-      <h2>Bersihkan Kontrak Rollover Duplikat yang Belum Pernah Dipakai</h2>
-      <div class="desc">Kalau tanggal yang sama sempat di-"Hitung Ulang" berkali-kali (mis. sambil mencoba beberapa perbaikan berturut-turut), bisa numpuk beberapa kontrak hasil rollover yang identik dari sumber yang sama tapi belum pernah kejual sama sekali (mis. IDO049, IDO050, IDO051 semua dari IDO047) -- ini keliru ikut dihitung sbg modal investor & mengambil jatah investor lain. Alat ini HANYA menghapus kontrak yang benar-benar belum pernah kepakai (stock awal = stock akhir, tidak ada payout apapun yang mereferensikannya), menyisakan 1 saja per sumber.</div>
-      <button class="btn btn-ghost" id="btnCekKontrakDuplikat">Cek Sekarang</button>
-      <div class="status-box" id="kontrakDuplikatMsg"></div>
-      <div id="kontrakDuplikatArea" style="margin-top:10px;"></div>
-    </div>
-
-    <div class="panel">
-      <h2>Perbarui Harga Konveksi yang Kosong dari Data Master</h2>
-      <div class="desc">Kalau sebuah order pernah tercatat (Import Mingguan) SEBELUM harga konveksi SKU-nya diisi di Data Master, baris itu permanen tersimpan tanpa harga konveksi (Modal jadi kurang tercatat di Dashboard/PNL) walaupun harganya sudah diisi belakangan -- field ini dihitung sekali sewaktu import, tidak otomatis ikut update. Alat ini mencari baris2 seperti itu yang SEKARANG sudah bisa ditemukan harganya di Data Master, lalu mengisinya. Baris yang harganya memang masih genuinely belum ada di Data Master TIDAK akan disentuh (tetap tampil di rincian Dashboard).</div>
-      <button class="btn btn-ghost" id="btnCekHargaKonveksiKosong">Cek Sekarang</button>
-      <div class="status-box" id="hargaKonveksiRefreshMsg"></div>
-      <div id="hargaKonveksiRefreshArea" style="margin-top:10px;"></div>
-    </div>
-
-    <div class="panel">
-      <h2>Perbaiki Harga Modal Payout yang Kosong (Rollover)</h2>
-      <div class="desc">Utk payout investor yang tercipta dari kontrak hasil rollover (Putar Penuh/Putar Modal Saja) tapi kolom Harga-nya tampil "-" dan Total Rp0 di Laporan Penarikan, walau qty-nya nyata ada -- ini gejala bug lama (sudah diperbaiki) di mana harga modal kontrak baru lupa ikut ditempelkan ke payout-nya. Alat ini mencari payout seperti itu yang kontraknya SEKARANG sudah punya harga modal yang jelas, lalu mengisi ulang. Jumlah Rp yang dibayar ke investor (payout) TIDAK berubah sama sekali -- cuma kolom Harga/Total di laporan yang diperbaiki.</div>
-      <button class="btn btn-ghost" id="btnCekHargaModalPayoutKosong">Cek Sekarang</button>
-      <div class="status-box" id="hargaModalPayoutRefreshMsg"></div>
-      <div id="hargaModalPayoutRefreshArea" style="margin-top:10px;"></div>
-    </div>
-
-    <div class="panel">
-      <h2>Perbaiki Tanggal Pesan yang Kosong dari Daftar Pesanan</h2>
-      <div class="desc">Utk order yang SUDAH cair/tercatat di Database Penjualan tapi Tanggal Pesan-nya kosong (dashboard jadi harus pakai tanggal cair sbg cadangan) -- padahal SEKARANG di "Update Daftar Pesanan Saja" di atas sudah ada tanggal pesannya (mis. baru diupload/refresh belakangan, setelah order itu keburu cair). Ini terjadi karena tanggal pesan cuma ditarik SEKALI waktu order disettle -- upload daftar pesanan setelahnya tidak otomatis menoleh balik ke baris lama. Alat ini mencari baris seperti itu &amp; mengisinya. Baris yang memang genuinely tidak pernah ada di file Order List manapun TIDAK akan disentuh.</div>
-      <button class="btn btn-ghost" id="btnCekTanggalPesanKosong">Cek Sekarang</button>
-      <div class="status-box" id="tanggalPesanRefreshMsg"></div>
-      <div id="tanggalPesanRefreshArea" style="margin-top:10px;"></div>
-    </div>
-
-    <div class="panel">
-      <h2>Perbaiki Kekurangan Alokasi Rollover (Kasus Lama)</h2>
-      <div class="desc">Utk kasus SPESIFIK yang sudah terlanjur tersimpan: kontrak hasil rollover ternyata TIDAK CUKUP menampung semua unit yang cair sekaligus (mis. kontrak lama cuma 20pcs tapi yang cair sekaligus 23pcs) -- dulu sisa unitnya HILANG tanpa jejak (bug, sudah diperbaiki utk kasus BARU ke depannya, tapi kasus LAMA yang sudah terlanjur tersimpan perlu diperbaiki manual lewat sini). Masukkan kode kontrak BARU hasil rollovernya (mis. IDS003, bukan kontrak lamanya/IDS002), jumlah unit yang kurang, dan tanggal penarikan asalnya -- nanti kamu diminta memutuskan lagi (Putar Penuh/Modal Saja/Stop) persis seperti keputusan rollover biasa, khusus untuk sisa unit itu.</div>
-      <div class="grid2">
-        <div class="field"><label>Kode Kontrak Baru (hasil rollover yang kurang cukup)</label><input type="text" id="pr_kodeKontrakLama" placeholder="mis. IDS003"></div>
-        <div class="field"><label>Jumlah Unit yang Kurang</label><input type="number" id="pr_qty" min="1"></div>
-      </div>
-      <div class="field" style="max-width:220px;"><label>Tanggal Penarikan Asal</label><input type="date" id="pr_tanggal"></div>
-      <button class="btn btn-ghost" id="btnCekKekuranganRollover" style="margin-top:8px;">Lanjutkan</button>
-      <div class="status-box" id="perbaikanRolloverMsg"></div>
-      <div id="perbaikanRolloverArea" style="margin-top:10px;"></div>
-    </div>
-
-    <div class="panel">
-      <h2>Perbaiki Biaya Fee yang Salah dari File Income Lama &#9888;</h2>
-      <div class="desc">KHUSUS utk order yang SUDAH tercatat lewat Import Mingguan tapi beberapa kategori biaya platform (mis. "Biaya layanan Program Growth Xtra" TikTok, atau "PPh 22" Shopee) belum terhitung sewaktu diimport dulu (lihat laporan &amp; perbaikan 2026-10-23). Upload LAGI file Income minggu/periode yang SAMA yang mau diperiksa -- sistem akan menghitung ulang biayanya pakai kategori yang SEKARANG sudah benar, lalu menampilkan perbedaannya dulu sebelum disimpan. &#9888; HANYA menimpa kolom biaya (Komisi Platform, Biaya Layanan, Biaya Pembayaran, Komisi Afiliasi, Komisi Dinamis, Biaya Iklan, Pajak, Total Biaya) pada baris yang SUDAH ADA di Database Penjualan -- qty, harga konveksi, status, kontrak, payout, stok, dan semua tanggal TIDAK PERNAH disentuh/dihitung ulang sama sekali. Order yang belum tercatat TIDAK ditambahkan lewat alat ini (bukan jalur import).</div>
-      ${!activeStores.length ? '<div class="empty-note">Belum ada toko terdaftar.</div>' : `
-      <div class="field"><label>Toko</label>
-        <select id="fc_store"><option value="">Pilih toko</option>${activeStores.map(s=>`<option value="${s.id}">${s.nama} (${s.platform})</option>`).join('')}</select>
-      </div>
-      <div id="fc_fileFields" style="display:none;">
-        <div class="field" style="margin-top:10px;"><label id="fc_incomeLabel">File Income</label><input type="file" id="fc_incomeFile" accept=".xlsx"></div>
-        <button class="btn btn-ghost" id="btnAddToFeeCorrectionBatch" style="margin-top:8px;">+ Tambah ke Batch</button>
-      </div>
-      <div class="status-box" id="fcAddBatchMsg"></div>
-      ${pendingFeeCorrectionImports.length ? `
-      <table class="data compact" style="margin-top:10px;">
-        <thead><tr><th>Toko</th><th>Platform</th><th>File Income</th><th></th></tr></thead>
-        <tbody>
-          ${pendingFeeCorrectionImports.map((si,i) => `<tr>
-            <td>${si.store.nama}</td><td>${si.store.platform}</td><td style="font-size:11px;">${si.incomeFile.name}</td>
-            <td><button class="icon-del" data-remove-fc-batch="${i}">✕</button></td>
-          </tr>`).join('')}
-        </tbody>
-      </table>` : ''}
-      <button class="btn btn-primary" id="btnCekKoreksiFee" style="margin-top:10px;" ${!pendingFeeCorrectionImports.length ? 'disabled' : ''}>Cek Perbedaan</button>
-      <div class="status-box" id="feeCorrectionMsg"></div>
-      <div id="feeCorrectionArea" style="margin-top:10px;"></div>
-      `}
-    </div>
-
-    <div class="panel">
-      <h2>1. Pilih Toko &amp; Upload File Income (untuk Proses Cair Mingguan)</h2>
-      <div class="desc">SKU dicari otomatis dari daftar pesanan yang sudah diupload di panel atas (atau histori sebelumnya). Tidak perlu upload file Order lagi di sini.</div>
-      ${!activeStores.length ? '<div class="empty-note">Belum ada toko terdaftar. Tambah di tab Data Master dulu.</div>' : `
-      <div class="field"><label>Toko</label>
-        <select id="imp_store"><option value="">Pilih toko</option>${activeStores.map(s=>`<option value="${s.id}">${s.nama} (${s.platform})</option>`).join('')}</select>
-      </div>
-      <div id="imp_fileFields" style="display:none;">
-        <div class="field" style="margin-top:10px;"><label id="imp_incomeLabel">File Income</label><input type="file" id="imp_incomeFile" accept=".xlsx"></div>
-        <button class="btn btn-ghost" id="btnAddToBatch" style="margin-top:8px;">+ Tambah ke Batch</button>
-      </div>
-      <div class="status-box" id="addBatchMsg"></div>
-      `}
-    </div>
-
-    <div class="panel">
-      <h2>2. Toko dalam Batch Ini <span class="pill">${pendingStoreImports.length}</span></h2>
-      ${!pendingStoreImports.length ? '<div class="empty-note">Belum ada toko ditambahkan.</div>' : `
-      <table class="data">
-        <thead><tr><th>Toko</th><th>Platform</th><th>File Income</th><th></th></tr></thead>
-        <tbody>
-          ${pendingStoreImports.map((si,i) => `<tr>
-            <td>${si.store.nama}</td><td>${si.store.platform}</td><td style="font-size:11px;">${si.incomeFile.name}</td>
-            <td><button class="icon-del" data-remove-batch="${i}">✕</button></td>
-          </tr>`).join('')}
-        </tbody>
-      </table>`}
-      <button class="btn btn-primary" id="btnRunImport" style="margin-top:14px;" ${!pendingStoreImports.length ? 'disabled' : ''}>Proses Batch Ini</button>
-      <div class="status-box" id="importStatus"></div>
-    </div>
-    <div id="importPreview"></div>
+    </details>
   `;
 
   if (activeStores.length) {
@@ -4717,6 +4732,13 @@ function fmtTanggal(isoString, opts) {
   if (opts && opts.short) return `${d}/${m}/${y.slice(2)}`;
   return `${d}/${m}/${y}`;
 }
+// Dipakai di tabel Biaya Operasional (& rincian opex di PNL): kalau tanggalDari & tanggalSampai sama (hari
+// yg sama -- kasus paling umum sejak form Tambah Biaya Operasional defaultnya 1 tanggal saja), tampil 1
+// tanggal saja, tidak perlu "23/10/26 - 23/10/26" yg berulang & bikin tabel ramai tanpa guna.
+function fmtRentangTanggal(dari, sampai, opts) {
+  if (dari && sampai && String(dari).slice(0,10) === String(sampai).slice(0,10)) return fmtTanggal(dari, opts);
+  return `${fmtTanggal(dari, opts)} - ${fmtTanggal(sampai, opts)}`;
+}
 function fmtRpCompact(n) {
   if (n==null||isNaN(n)) return '-';
   n = Math.round(n);
@@ -5775,13 +5797,15 @@ function renderOpex(container) {
   container.innerHTML = `
     <div class="panel">
       <h2>Tambah Biaya Operasional</h2>
-      <div class="desc">Catat biaya non-produksi (gaji, sewa, listrik, dll) untuk 1 periode.</div>
+      <div class="desc">Catat biaya non-produksi (gaji, sewa, listrik, dll). Biasanya cukup 1 tanggal -- pakai rentang tanggal cuma kalau biayanya memang utk 1 periode (mis. gaji/sewa bulanan).</div>
       <form id="formOpex">
         <div class="grid2">
-          <div class="field"><label>Tanggal Dari</label><input type="date" id="opex_tglDari" required></div>
-          <div class="field"><label>Tanggal Sampai</label><input type="date" id="opex_tglSampai" required></div>
+          <div class="field" id="opex_tglSatuWrap"><label>Tanggal</label><input type="date" id="opex_tglSatu" required></div>
+          <div class="field" id="opex_tglDariWrap" style="display:none;"><label>Tanggal Dari</label><input type="date" id="opex_tglDari"></div>
+          <div class="field" id="opex_tglSampaiWrap" style="display:none;"><label>Tanggal Sampai</label><input type="date" id="opex_tglSampai"></div>
         </div>
-        <div class="grid2">
+        <button type="button" class="btn-ghost" id="btnTogglelOpexRentang" style="border:none; background:none; padding:4px 0; font-size:12.5px; color:var(--accent); cursor:pointer; box-shadow:none;">+ Jadikan rentang tanggal (mis. gaji/sewa bulanan)</button>
+        <div class="grid2" style="margin-top:12px;">
           <div class="field"><label>Kategori</label>
             <select id="opex_kategori" required><option value="">Pilih kategori</option>${OPEX_KATEGORI.map(k=>`<option value="${k}">${k}</option>`).join('')}</select>
           </div>
@@ -5816,7 +5840,7 @@ function renderOpex(container) {
         <thead><tr><th>Tanggal</th><th>Kategori</th><th class="num">Jumlah</th><th>Catatan</th><th></th></tr></thead>
         <tbody>
           ${filtered.map(o => `<tr>
-            <td>${fmtTanggal(o.tanggalDari,{short:true})} - ${fmtTanggal(o.tanggalSampai,{short:true})}</td>
+            <td>${fmtRentangTanggal(o.tanggalDari,o.tanggalSampai,{short:true})}</td>
             <td>${o.kategori}</td><td class="num">${fmtRp(o.jumlah)}</td>
             <td style="font-size:11px; color:var(--ink-soft);">${o.catatan||'-'}</td>
             <td><button class="icon-del" data-del-opex="${o.id}">✕</button></td>
@@ -5827,11 +5851,31 @@ function renderOpex(container) {
     </div>
   `;
 
+  document.getElementById('btnTogglelOpexRentang').addEventListener('click', () => {
+    const dariWrap = document.getElementById('opex_tglDariWrap');
+    const aktifkanRentang = dariWrap.style.display === 'none';
+    document.getElementById('opex_tglSatuWrap').style.display = aktifkanRentang ? 'none' : '';
+    dariWrap.style.display = aktifkanRentang ? '' : 'none';
+    document.getElementById('opex_tglSampaiWrap').style.display = aktifkanRentang ? '' : 'none';
+    document.getElementById('btnTogglelOpexRentang').textContent = aktifkanRentang
+      ? '- Kembali ke 1 tanggal saja' : '+ Jadikan rentang tanggal (mis. gaji/sewa bulanan)';
+  });
   document.getElementById('formOpex').addEventListener('submit', async (ev) => {
     ev.preventDefault();
     const msg = document.getElementById('opexMsg');
-    const tglDari = document.getElementById('opex_tglDari').value;
-    const tglSampai = document.getElementById('opex_tglSampai').value;
+    // Default: 1 tanggal saja (tanggalDari = tanggalSampai = tanggal itu) -- rentang beda cuma kalau toggle
+    // "+ Jadikan rentang tanggal" di atas diaktifkan (utk kasus spt gaji/sewa bulanan). Field yg disimpan ke
+    // STATE tetap tanggalDari/tanggalSampai spt sebelumnya (overlaps() di computeOpexRowsForPeriode tdk berubah).
+    const rentangAktif = document.getElementById('opex_tglDariWrap').style.display !== 'none';
+    let tglDari, tglSampai;
+    if (rentangAktif) {
+      tglDari = document.getElementById('opex_tglDari').value;
+      tglSampai = document.getElementById('opex_tglSampai').value;
+      if (!tglDari || !tglSampai) { showMsg(msg, 'err', 'Isi Tanggal Dari dan Tanggal Sampai dulu.'); return; }
+    } else {
+      tglDari = tglSampai = document.getElementById('opex_tglSatu').value;
+      if (!tglDari) { showMsg(msg, 'err', 'Isi tanggal dulu.'); return; }
+    }
     const kategori = document.getElementById('opex_kategori').value;
     const jumlah = Number(document.getElementById('opex_jumlah').value);
     const catatan = document.getElementById('opex_catatan').value.trim();
@@ -6120,7 +6164,7 @@ function renderPnl(container) {
           <thead><tr><th>Tanggal</th><th>Kategori</th><th class="num">Jumlah</th><th>Catatan</th></tr></thead>
           <tbody>
             ${opexRowsForDetail.slice().sort((a,b) => new Date(b.tanggalDari||0) - new Date(a.tanggalDari||0)).map(o => `<tr>
-              <td style="font-size:10.5px;">${fmtTanggal(o.tanggalDari,{short:true})} - ${fmtTanggal(o.tanggalSampai,{short:true})}</td>
+              <td style="font-size:10.5px;">${fmtRentangTanggal(o.tanggalDari,o.tanggalSampai,{short:true})}</td>
               <td style="font-size:10.5px;">${o.kategori}</td>
               <td class="num">${fmtRp(o.jumlah)}</td>
               <td style="font-size:10.5px; color:var(--ink-soft);">${o.catatan||'-'}</td>
