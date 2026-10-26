@@ -11,8 +11,11 @@
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <style>
   :root {
-    --ink: #101828; --paper: #F7F8FA; --surface: #FFFFFF; --line: #E4E7EC;
-    --ok: #059669; --err: #DC2626; --accent: #4F46E5; --ink-soft: #667085;
+    /* 2026-10-26: --line & --ink-soft digelapkan (dari #E4E7EC/#667085) dan --line-soft ditambah --
+       user melaporkan garis pembatas & teks sekunder terlalu mirip putih, jadi capek dibaca. --line-soft
+       dipakai utk garis pembatas internal (antar baris list/margin-bar/recent-row) yg dulu hardcode #F1F2F5. */
+    --ink: #101828; --paper: #F7F8FA; --surface: #FFFFFF; --line: #CFD4DC; --line-soft: #E6E8EC;
+    --ok: #059669; --err: #DC2626; --accent: #4F46E5; --ink-soft: #566070;
     --sidebar-bg: #FFFFFF; --sidebar-text: #475467; --gold: #D97706;
     --shopee: #EE4D2D; --tiktok: #17181A; --tokopedia: #42B549;
   }
@@ -68,7 +71,7 @@
   .wordmark { font-family: 'Inter', sans-serif; font-weight: 700; font-size: 24px; letter-spacing: -0.3px; }
 
 
-  .panel { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 22px; margin-bottom: 20px; box-shadow: 0 1px 2px rgba(16,24,40,0.04); }
+  .panel { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 22px; margin-bottom: 16px; box-shadow: 0 1px 2px rgba(16,24,40,0.04); }
   .panel h2 { font-family: 'Inter', sans-serif; font-weight: 700; font-size: 16.5px; margin: 0 0 6px; color: var(--ink); }
   .panel .desc { font-size: 13px; color: var(--ink-soft); margin-bottom: 16px; line-height: 1.5; }
 
@@ -90,7 +93,7 @@
   table.data { width: 100%; border-collapse: collapse; font-size: 13px; }
   table.data th { font-family: 'Inter', sans-serif; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em; color: #98A2B3; text-align: left; background: #FAFAFB; border-bottom: 1px solid var(--line); padding: 9px 8px; white-space: nowrap; }
   table.data.compact th, table.data.compact td { padding: 6px 8px; font-size: 12px; white-space: nowrap; }
-  table.data td { padding: 9px 8px; border-bottom: 1px solid #F1F2F5; }
+  table.data td { padding: 9px 8px; border-bottom: 1px solid var(--line-soft); }
   .pill { display: inline-block; font-family: 'Inter', sans-serif; font-weight: 600; font-size: 11px; padding: 3px 9px; border-radius: 999px; background: var(--line); color: var(--ink-soft); }
   .pill.ok { background: #ECFDF3; color: var(--ok); }
   .pill.off { background: #FEF3F2; color: var(--err); }
@@ -135,44 +138,44 @@
      tiap layar yg di-redesign konsisten satu sama lain -- bukan tiap layar bikin gaya sendiri2. ===== */
   .page-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-bottom: 18px; }
   .page-header h1 { margin: 0; font-family: 'Inter', sans-serif; font-size: 22px; font-weight: 700; color: var(--ink); }
-  .page-header .page-sub { margin: 4px 0 0; font-size: 13px; color: var(--ink-soft); }
-  .kpi-row-auto { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px,1fr)); gap: 14px; margin-bottom: 20px; }
+  .page-header .page-sub { margin: 4px 0 0; font-size: 13.5px; color: var(--ink-soft); }
+  .kpi-row-auto { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px,1fr)); gap: 14px; margin-bottom: 16px; }
   .kpi-top-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; gap: 8px; }
   .kpi-icon-badge { width: 28px; height: 28px; border-radius: 8px; background: #F1F2F5; color: var(--ink-soft); display: flex; align-items: center; justify-content: center; flex: none; }
   .kpi-icon-badge.accent { background: #EEF2FF; color: var(--accent); }
-  .pct-badge { font-size: 11.5px; font-weight: 600; border-radius: 999px; padding: 2px 8px; white-space: nowrap; }
+  .pct-badge { font-size: 12px; font-weight: 600; border-radius: 999px; padding: 2px 8px; white-space: nowrap; }
   .pct-badge.ok { color: var(--ok); background: #ECFDF5; }
   .pct-badge.err { color: var(--err); background: #FEF2F2; }
-  .two-col-row { display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-start; margin-bottom: 20px; }
+  .two-col-row { display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-start; margin-bottom: 16px; }
   .two-col-row > .panel { margin-bottom: 0; }
-  .margin-bar-row { display: grid; grid-template-columns: 112px 1fr 92px 64px; align-items: center; gap: 12px; padding: 10px 0; border-top: 1px solid #F1F2F5; }
+  .margin-bar-row { display: grid; grid-template-columns: 112px 1fr 92px 64px; align-items: center; gap: 12px; padding: 9px 0; border-top: 1px solid var(--line-soft); }
   .margin-bar-row:first-child { border-top: none; }
   @media (max-width: 560px) { .margin-bar-row { grid-template-columns: 76px 1fr 56px; } .margin-bar-row .margin-bar-rp { display: none; } }
   .margin-bar-track { height: 6px; border-radius: 999px; background: #F1F2F5; overflow: hidden; }
   .margin-bar-fill { height: 100%; border-radius: 999px; }
-  .recent-row { display: flex; align-items: center; gap: 10px; padding: 9px 2px; border-top: 1px solid #F1F2F5; cursor: pointer; }
+  .recent-row { display: flex; align-items: center; gap: 10px; padding: 9px 2px; border-top: 1px solid var(--line-soft); cursor: pointer; }
   .recent-row:first-child { border-top: none; }
   .recent-row:hover { background: #FAFAFB; }
   .link-btn { background: none; border: none; padding: 0; font-family: 'Inter', sans-serif; font-size: 12.5px; font-weight: 600; color: var(--accent); cursor: pointer; }
 
   /* ===== List-row (pengganti tabel panjang, dipakai Database Penjualan & menu lain selanjutnya) ===== */
-  .list-card { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; margin-bottom: 20px; }
-  .list-head { display: flex; align-items: center; gap: 12px; padding: 10px 14px; border-bottom: 1px solid var(--line); background: #FAFAFB; font-size: 11px; font-weight: 600; color: var(--ink-soft); letter-spacing: .03em; text-transform: uppercase; }
-  .list-row { display: flex; align-items: center; gap: 12px; padding: 12px 14px; border-top: 1px solid #F1F2F5; cursor: pointer; }
+  .list-card { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; margin-bottom: 16px; }
+  .list-head { display: flex; align-items: center; gap: 12px; padding: 10px 14px; border-bottom: 1px solid var(--line); background: #FAFAFB; font-size: 12px; font-weight: 600; color: var(--ink-soft); letter-spacing: .03em; text-transform: uppercase; }
+  .list-row { display: flex; align-items: center; gap: 12px; padding: 12px 14px; border-top: 1px solid var(--line-soft); cursor: pointer; }
   .list-card .list-row:first-child { border-top: none; }
   .list-row:hover { background: #FAFAFB; }
   .list-row-chevron { flex: none; color: var(--ink-soft); transition: transform .15s; }
   .list-row-chevron.open { transform: rotate(90deg); }
   .list-row-main { flex: 1 1 200px; min-width: 0; display: flex; flex-direction: column; line-height: 1.3; }
-  .list-row-title { font-size: 13px; font-weight: 600; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .list-row-sub { font-size: 11px; color: var(--ink-soft); font-family: 'IBM Plex Mono', monospace; }
-  .list-row-toko { flex: 0 0 150px; font-size: 12.5px; color: var(--ink-soft); display: flex; align-items: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .list-row-num { flex: 0 0 108px; text-align: right; font-size: 13px; }
-  .list-row-small { flex: 0 0 86px; text-align: right; font-size: 11.5px; color: var(--ink-soft); }
+  .list-row-title { font-size: 13.5px; font-weight: 600; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .list-row-sub { font-size: 12px; color: var(--ink-soft); font-family: 'IBM Plex Mono', monospace; }
+  .list-row-toko { flex: 0 0 150px; font-size: 13px; color: var(--ink-soft); display: flex; align-items: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .list-row-num { flex: 0 0 108px; text-align: right; font-size: 13.5px; }
+  .list-row-small { flex: 0 0 86px; text-align: right; font-size: 12.5px; color: var(--ink-soft); }
   @media (max-width: 760px) { .list-row-toko, .list-row-small { display: none; } .list-row-num { flex: 0 0 92px; } }
-  .list-detail { padding: 18px 20px 22px 44px; background: #FAFAFB; border-top: 1px solid #F1F2F5; display: flex; gap: 28px; flex-wrap: wrap; }
+  .list-detail { padding: 18px 20px 22px 44px; background: #FAFAFB; border-top: 1px solid var(--line-soft); display: flex; gap: 28px; flex-wrap: wrap; }
   .breakdown-bar { display: flex; height: 26px; border-radius: 7px; overflow: hidden; margin-bottom: 12px; background: #F1F2F5; }
-  .breakdown-legend-row { display: flex; justify-content: space-between; align-items: baseline; font-size: 12.5px; padding: 6px 0; }
+  .breakdown-legend-row { display: flex; justify-content: space-between; align-items: baseline; font-size: 13px; padding: 6px 0; }
   .breakdown-legend-row .dot3 { width: 9px; height: 9px; border-radius: 3px; display: inline-block; margin-right: 7px; flex: none; }
 </style>
 </head>
@@ -4243,12 +4246,12 @@ function renderDatabase(container) {
       ${!marginPerProduk.length ? '<div class="empty-note">Tidak ada data.</div>' : marginPerProduk.map(g => `
       <div class="margin-bar-row">
         <div style="min-width:0; display:flex; flex-direction:column; line-height:1.3;">
-          <span style="font-size:13px; font-weight:600; color:var(--ink); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${g.produk}</span>
-          <span style="font-size:10.5px; color:var(--ink-soft);">${g.nOrder.toLocaleString('id-ID')} order &middot; ${g.qty.toLocaleString('id-ID')} unit</span>
+          <span style="font-size:13.5px; font-weight:600; color:var(--ink); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${g.produk}</span>
+          <span style="font-size:12px; color:var(--ink-soft);">${g.nOrder.toLocaleString('id-ID')} order &middot; ${g.qty.toLocaleString('id-ID')} unit</span>
         </div>
         <div class="margin-bar-track"><div class="margin-bar-fill" style="width:${g.nettProfitPct!=null?Math.max(0,Math.min(100,g.nettProfitPct)).toFixed(1):0}%; background:${marginColor(g.nettProfitPct)};"></div></div>
-        <span class="margin-bar-rp tnum" style="font-size:12px; color:var(--ink-soft); text-align:right;">${fmtRpCompact(g.rataPendapatan)}</span>
-        <span class="tnum" style="font-size:12px; font-weight:600; text-align:right; color:${marginColor(g.nettProfitPct)};">${g.nettProfitPct!=null?g.nettProfitPct.toFixed(1)+'%':'-'}</span>
+        <span class="margin-bar-rp tnum" style="font-size:12.5px; color:var(--ink-soft); text-align:right;">${fmtRpCompact(g.rataPendapatan)}</span>
+        <span class="tnum" style="font-size:12.5px; font-weight:600; text-align:right; color:${marginColor(g.nettProfitPct)};">${g.nettProfitPct!=null?g.nettProfitPct.toFixed(1)+'%':'-'}</span>
       </div>
       `).join('')}
     </div>
@@ -6713,10 +6716,10 @@ function renderDashboard(container) {
         <div class="desc">Estimasi rata-rata per order (asumsi pukul rata packing &amp; payout investor) -- metodologi &amp; angka SAMA PERSIS dgn panel di tab Database Penjualan, bukan angka baru. Tanpa pecah warna/ukuran.</div>
         ${!margePerProdukDash.length ? '<div class="empty-note">Tidak ada data di periode ini.</div>' : margePerProdukDash.map(g => `
         <div class="margin-bar-row">
-          <span style="font-size:13px; font-weight:600; color:var(--ink); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${g.produk}</span>
+          <span style="font-size:13.5px; font-weight:600; color:var(--ink); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${g.produk}</span>
           <div class="margin-bar-track"><div class="margin-bar-fill" style="width:${g.nettProfitPct!=null?Math.max(0,Math.min(100,g.nettProfitPct)).toFixed(1):0}%; background:${g.nettProfitPct!=null && g.nettProfitPct<0 ? 'var(--err)' : 'var(--accent)'};"></div></div>
-          <span class="margin-bar-rp tnum" style="font-size:12px; color:var(--ink-soft); text-align:right;">${fmtRpCompact(g.pendapatan)}</span>
-          <span class="tnum" style="font-size:12px; font-weight:600; text-align:right; color:${g.nettProfitPct!=null && g.nettProfitPct<0 ? 'var(--err)' : 'var(--ink)'};">${g.nettProfitPct!=null?g.nettProfitPct.toFixed(1)+'%':'-'}</span>
+          <span class="margin-bar-rp tnum" style="font-size:12.5px; color:var(--ink-soft); text-align:right;">${fmtRpCompact(g.pendapatan)}</span>
+          <span class="tnum" style="font-size:12.5px; font-weight:600; text-align:right; color:${g.nettProfitPct!=null && g.nettProfitPct<0 ? 'var(--err)' : 'var(--ink)'};">${g.nettProfitPct!=null?g.nettProfitPct.toFixed(1)+'%':'-'}</span>
         </div>
         `).join('')}
       </div>
@@ -6728,10 +6731,10 @@ function renderDashboard(container) {
         <div class="recent-row" data-recent-goto-db="1">
           ${platformDot(r.sumber)}
           <div style="flex:1; min-width:0; display:flex; flex-direction:column; line-height:1.3;">
-            <span style="font-size:12.5px; font-weight:600; color:var(--ink); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${r.produk||'-'} &middot; ${r.sku||'-'}</span>
-            <span style="font-size:11px; color:var(--ink-soft);">${fmtTanggal(r.tanggalPesan||r.tanggalPenarikan,{short:true})}</span>
+            <span style="font-size:13px; font-weight:600; color:var(--ink); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${r.produk||'-'} &middot; ${r.sku||'-'}</span>
+            <span style="font-size:12px; color:var(--ink-soft);">${fmtTanggal(r.tanggalPesan||r.tanggalPenarikan,{short:true})}</span>
           </div>
-          <span class="tnum" style="font-size:12.5px; font-weight:600; color:var(--ink-soft); flex:none;">${fmtRpCompact(r.pendapatan||0)}</span>
+          <span class="tnum" style="font-size:13px; font-weight:600; color:var(--ink-soft); flex:none;">${fmtRpCompact(r.pendapatan||0)}</span>
         </div>
         `).join('')}
         <button type="button" class="link-btn" id="btnDashGotoDatabase" style="margin-top:12px;">Lihat semua order di Database Penjualan &rarr;</button>
