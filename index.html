@@ -154,6 +154,26 @@
   .recent-row:first-child { border-top: none; }
   .recent-row:hover { background: #FAFAFB; }
   .link-btn { background: none; border: none; padding: 0; font-family: 'Inter', sans-serif; font-size: 12.5px; font-weight: 600; color: var(--accent); cursor: pointer; }
+
+  /* ===== List-row (pengganti tabel panjang, dipakai Database Penjualan & menu lain selanjutnya) ===== */
+  .list-card { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; margin-bottom: 20px; }
+  .list-head { display: flex; align-items: center; gap: 12px; padding: 10px 14px; border-bottom: 1px solid var(--line); background: #FAFAFB; font-size: 11px; font-weight: 600; color: var(--ink-soft); letter-spacing: .03em; text-transform: uppercase; }
+  .list-row { display: flex; align-items: center; gap: 12px; padding: 12px 14px; border-top: 1px solid #F1F2F5; cursor: pointer; }
+  .list-card .list-row:first-child { border-top: none; }
+  .list-row:hover { background: #FAFAFB; }
+  .list-row-chevron { flex: none; color: var(--ink-soft); transition: transform .15s; }
+  .list-row-chevron.open { transform: rotate(90deg); }
+  .list-row-main { flex: 1 1 200px; min-width: 0; display: flex; flex-direction: column; line-height: 1.3; }
+  .list-row-title { font-size: 13px; font-weight: 600; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .list-row-sub { font-size: 11px; color: var(--ink-soft); font-family: 'IBM Plex Mono', monospace; }
+  .list-row-toko { flex: 0 0 150px; font-size: 12.5px; color: var(--ink-soft); display: flex; align-items: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .list-row-num { flex: 0 0 108px; text-align: right; font-size: 13px; }
+  .list-row-small { flex: 0 0 86px; text-align: right; font-size: 11.5px; color: var(--ink-soft); }
+  @media (max-width: 760px) { .list-row-toko, .list-row-small { display: none; } .list-row-num { flex: 0 0 92px; } }
+  .list-detail { padding: 18px 20px 22px 44px; background: #FAFAFB; border-top: 1px solid #F1F2F5; display: flex; gap: 28px; flex-wrap: wrap; }
+  .breakdown-bar { display: flex; height: 26px; border-radius: 7px; overflow: hidden; margin-bottom: 12px; background: #F1F2F5; }
+  .breakdown-legend-row { display: flex; justify-content: space-between; align-items: baseline; font-size: 12.5px; padding: 6px 0; }
+  .breakdown-legend-row .dot3 { width: 9px; height: 9px; border-radius: 3px; display: inline-block; margin-right: 7px; flex: none; }
 </style>
 </head>
 <body>
@@ -3946,31 +3966,70 @@ function computeGrossNettProfitPerOrder(r) {
 // mempengaruhi angka Gross Profit yg ditampilkan). Dipakai sbg konten baris detail yg bisa di-klik-buka per
 // order di renderDatabase, supaya user bisa benar2 lihat "biaya apa saja" tanpa harus buka file Excel asli --
 // termasuk utk VERIFIKASI VISUAL setelah pakai alat "Perbaiki Biaya Fee yang Salah dari File Income Lama".
+// REDESIGN 2026-10-26 (bagian dari perapihan layout Database Penjualan, menyesuaikan konsep Claude Design):
+// dari tabel angka panjang jadi bar proporsional "Kemana Perginya Pendapatan" + panel "Detail Order" di
+// sampingnya -- TAPI tetap menampilkan SEMUA 6 kategori biaya scr eksplisit (Biaya Layanan/Pembayaran/Dinamis/
+// Pajak digabung visual jadi 1 segmen "Biaya Lainnya" di bar, TAPI rinciannya tetap ditulis apa adanya di baris
+// kecil di bawah legend -- supaya tujuan awal fix 2026-10-23 "biaya yang lain tidak tercantum" TETAP terpenuhi).
 function renderOrderFeeDetail(r) {
   const hp = computeGrossNettProfitPerOrder(r);
-  const feeRow = (label, val) => `<tr><td style="padding-left:16px; color:var(--ink-soft);">${label}</td><td class="num">${val!=null?'('+fmtRp(Math.abs(val))+')':'-'}</td></tr>`;
+  const pendapatan = r.pendapatan || 0;
+  const komisi = Math.abs(r.komisiPlatform || 0);
+  const afiliasi = Math.abs(r.komisiAfiliasi || 0);
+  const biayaLayanan = Math.abs(r.biayaLayanan || 0);
+  const biayaPembayaran = Math.abs(r.biayaPembayaran || 0);
+  const komisiDinamis = Math.abs(r.komisiDinamis || 0);
+  const pajak = Math.abs(r.pajak || 0);
+  const lainnya = biayaLayanan + biayaPembayaran + komisiDinamis + pajak;
+  const packPayout = hp.packingAksesoris + hp.payoutInvestor;
+  const nettNegatif = hp.nettProfit < 0;
+  // Bar proporsi cuma masuk akal kalau Pendapatan>0 DAN Nett Profit tidak negatif (kalau rugi, segmen biaya >
+  // 100% lebar bar -- menyesatkan kalau dipaksa tampil sbg proporsi). Fallback: daftar angka tanpa bar.
+  const bisaPakaiBar = pendapatan > 0 && !nettNegatif;
+  const pct = (v) => bisaPakaiBar ? Math.max(0, (v / pendapatan * 100)).toFixed(1) : 0;
+  const legendRow = (color, label, val, opts) => {
+    opts = opts || {};
+    return `<div class="breakdown-legend-row"${opts.topBorder ? ' style="padding-top:7px; border-top:1px solid var(--line);"' : ''}>
+      <span style="display:flex; align-items:center; color:${opts.bold?'var(--ink)':'var(--ink-soft)'}; font-weight:${opts.bold?600:400};">${color?`<i class="dot3" style="background:${color};"></i>`:''}${label}</span>
+      <span class="tnum" style="color:${opts.valueColor||'var(--ink)'}; font-weight:${opts.bold?600:400};">${val}</span>
+    </div>`;
+  };
   return `
-  <div style="background:#FAFAFB; border:1px solid var(--line); border-radius:3px; padding:10px; margin:4px 0 10px;">
-    <div class="desc" style="margin-bottom:6px;">Rincian biaya platform utk order ${r.orderId} (SKU ${r.sku||'-'}) -- SEMUA kategori di bawah ini sudah ikut dikurangkan dari Pendapatan utk hasilkan Gross Profit, bukan cuma Komisi Platform yg tampil di kolom tabel utama.</div>
-    <div style="overflow-x:auto;">
-    <table class="data compact" style="background:#fff;">
-      <tbody>
-        <tr><td>Pendapatan</td><td class="num">${fmtRp(r.pendapatan)}</td></tr>
-        ${feeRow('Komisi Platform', r.komisiPlatform)}
-        ${feeRow('Biaya Layanan', r.biayaLayanan)}
-        ${feeRow('Biaya Pembayaran', r.biayaPembayaran)}
-        ${feeRow('Komisi Afiliasi', r.komisiAfiliasi)}
-        ${feeRow('Komisi Dinamis', r.komisiDinamis)}
-        ${feeRow('Pajak', r.pajak)}
-        <tr style="font-weight:600; border-top:1px solid var(--line);"><td>= Gross Profit</td><td class="num">${fmtRp(hp.grossProfit)}</td></tr>
-        <tr><td style="padding-left:16px; color:var(--ink-soft);">Modal Konveksi</td><td class="num">(${fmtRp(hp.modal)})</td></tr>
-        <tr><td style="padding-left:16px; color:var(--ink-soft);">Packing &amp; Aksesoris (asumsi)</td><td class="num">(${fmtRp(hp.packingAksesoris)})</td></tr>
-        <tr><td style="padding-left:16px; color:var(--ink-soft);">Payout Investor (asumsi, khusus URBAN OUTDOOR)</td><td class="num">(${fmtRp(hp.payoutInvestor)})</td></tr>
-        <tr style="font-weight:700; border-top:1px solid var(--line);"><td>= Nett Profit</td><td class="num">${fmtRp(hp.nettProfit)}</td></tr>
-      </tbody>
-    </table>
+  <div class="list-detail">
+    <div style="flex:1 1 360px; min-width:280px;">
+      <div style="font-size:11.5px; font-weight:600; color:var(--ink-soft); letter-spacing:.04em; margin-bottom:10px; text-transform:uppercase;">Kemana Perginya Pendapatan</div>
+      ${bisaPakaiBar ? `
+      <div class="breakdown-bar">
+        <div style="width:${pct(komisi)}%; background:#4F46E5;" title="Komisi Platform"></div>
+        <div style="width:${pct(afiliasi)}%; background:#818CF8;" title="Komisi Afiliasi"></div>
+        <div style="width:${pct(lainnya)}%; background:#C7D2FE;" title="Biaya Lainnya"></div>
+        <div style="width:${pct(hp.modal)}%; background:#FDE68A;" title="Modal Konveksi"></div>
+        <div style="width:${pct(packPayout)}%; background:#FEF3C7;" title="Packing &amp; Payout Investor"></div>
+        <div style="width:${pct(hp.nettProfit)}%; background:#059669;" title="Nett Profit"></div>
+      </div>` : `<div class="desc" style="margin-bottom:10px;">${pendapatan<=0 ? 'Pendapatan order ini kosong/nol -- bar proporsi tidak bisa dihitung, lihat angka di bawah.' : 'Nett Profit order ini NEGATIF (rugi) -- bar proporsi tidak ditampilkan spy tidak menyesatkan, lihat angka di bawah.'}</div>`}
+      <div>
+        ${legendRow('#4F46E5', 'Komisi Platform', fmtRp(komisi))}
+        ${legendRow('#818CF8', 'Komisi Afiliasi', fmtRp(afiliasi))}
+        ${legendRow('#C7D2FE', 'Biaya Lainnya (Layanan + Pembayaran + Dinamis + Pajak)', fmtRp(lainnya))}
+        <div style="font-size:11px; color:var(--ink-soft); padding:0 0 6px 16px;">Layanan ${fmtRpCompact(biayaLayanan)} &middot; Pembayaran ${fmtRpCompact(biayaPembayaran)} &middot; Dinamis ${fmtRpCompact(komisiDinamis)} &middot; Pajak ${fmtRpCompact(pajak)}</div>
+        ${legendRow(null, '= Gross Profit' + (hp.grossProfitPct!=null?` (${hp.grossProfitPct.toFixed(1)}%)`:''), fmtRp(hp.grossProfit), {bold:true, topBorder:true})}
+        ${legendRow('#FDE68A', 'Modal Konveksi', '(' + fmtRp(hp.modal) + ')')}
+        ${legendRow('#FEF3C7', 'Packing &amp; Payout Investor (asumsi)', '(' + fmtRp(packPayout) + ')')}
+        ${legendRow(null, '= Nett Profit' + (hp.nettProfitPct!=null?` (${hp.nettProfitPct.toFixed(1)}%)`:''), fmtRp(hp.nettProfit), {bold:true, topBorder:true, valueColor: hp.nettProfit>=0?'var(--ok)':'var(--err)'})}
+      </div>
     </div>
-    <div class="desc" style="margin-top:6px;">Total Biaya tersimpan (gabungan semua kategori): <b>${r.totalBiaya!=null?fmtRp(r.totalBiaya):'-'}</b> &middot; Net Settlement dari platform: <b>${r.netSettlement!=null?fmtRp(r.netSettlement):'-'}</b> &middot; Sumber data: ${r.sumberData||'-'}</div>
+    <div style="flex:0 1 220px; min-width:200px;">
+      <div style="font-size:11.5px; font-weight:600; color:var(--ink-soft); letter-spacing:.04em; margin-bottom:10px; text-transform:uppercase;">Detail Order</div>
+      <div style="display:flex; flex-direction:column; gap:7px; font-size:12.5px;">
+        <div style="display:flex; justify-content:space-between;"><span style="color:var(--ink-soft);">Order ID</span><span style="font-family:'IBM Plex Mono',monospace; font-size:11px;">${r.orderId||'-'}</span></div>
+        <div style="display:flex; justify-content:space-between;"><span style="color:var(--ink-soft);">Warna</span><span>${r.warna||'-'}</span></div>
+        <div style="display:flex; justify-content:space-between;"><span style="color:var(--ink-soft);">Brand</span><span>${r.brand||'-'}</span></div>
+        <div style="display:flex; justify-content:space-between;"><span style="color:var(--ink-soft);">Qty</span><span class="tnum">${r.qty!=null?r.qty:1}</span></div>
+        <div style="display:flex; justify-content:space-between;"><span style="color:var(--ink-soft);">Tgl Pesanan</span><span>${fmtTanggal(r.tanggalPesan)}</span></div>
+        <div style="display:flex; justify-content:space-between;"><span style="color:var(--ink-soft);">Tgl Penarikan</span><span>${fmtTanggal(r.tanggalPenarikan)}</span></div>
+      </div>
+      <div class="desc" style="margin-top:12px;">Total Biaya tersimpan: <b>${r.totalBiaya!=null?fmtRp(r.totalBiaya):'-'}</b><br>Net Settlement platform: <b>${r.netSettlement!=null?fmtRp(r.netSettlement):'-'}</b><br>Sumber data: ${r.sumberData||'-'}</div>
+    </div>
   </div>`;
 }
 
@@ -4096,12 +4155,22 @@ function renderDatabase(container) {
   if (dbFilters.tglPenarikanSampai) filteredForMargin = filteredForMargin.filter(r => r.tanggalPenarikan && r.tanggalPenarikan.slice(0,10) <= dbFilters.tglPenarikanSampai);
   const marginPerProduk = computeMarginPerJenisProduk(filteredForMargin);
 
+  const marginColor = (pct) => pct==null ? 'var(--ink)' : (pct<0 ? 'var(--err)' : (pct<10 ? '#B8860B' : 'var(--ok)'));
+
   container.innerHTML = pendingPanel + `
-    <div class="kpi-row">
+    <div class="page-header">
+      <div>
+        <h1>Database Penjualan</h1>
+        <p class="page-sub">${filtered.length.toLocaleString('id-ID')} baris cocok filter &middot; klik order mana saja utk lihat rincian lengkap semua kategori biaya</p>
+      </div>
+    </div>
+
+    <div class="kpi-row-auto">
       <div class="kpi"><div class="kpi-label">Total Baris</div><div class="kpi-value">${db.length.toLocaleString('id-ID')}</div></div>
       <div class="kpi"><div class="kpi-label">Dari Migrasi PENJUALAN</div><div class="kpi-value">${(db.length-fromImport).toLocaleString('id-ID')}</div></div>
       <div class="kpi"><div class="kpi-label">Ditambahkan via App</div><div class="kpi-value">${fromImport.toLocaleString('id-ID')}</div></div>
     </div>
+
     <div class="panel">
       <div style="display:flex; justify-content:space-between; align-items:center;">
         <h2 style="margin:0;">Filter</h2>
@@ -4129,66 +4198,59 @@ function renderDatabase(container) {
       </div>
       <div class="desc" style="margin-top:10px;">${filtered.length.toLocaleString('id-ID')} baris cocok filter &middot; halaman ${dbFilters.page} dari ${totalPages}</div>
       <div class="desc">Total (sesuai filter): Pendapatan <b>${fmtRp(totalPendapatanFiltered)}</b> &middot; Gross Profit <b>${fmtRp(totalGrossProfitFiltered)}</b> (${totalGrossPctFiltered!=null?totalGrossPctFiltered.toFixed(1)+'%':'-'}) &middot; Nett Profit <b>${fmtRp(totalNettProfitFiltered)}</b> (${totalNettPctFiltered!=null?totalNettPctFiltered.toFixed(1)+'%':'-'})</div>
-      <div style="overflow-x:auto; margin-top:8px;">
-      <table class="data compact">
-        <thead><tr>
-          <th>Order ID</th><th>Produk</th><th>SKU</th><th>Warna</th><th>Brand</th><th>Sumber</th>
-          <th class="num">Qty</th><th class="num">Pendapatan</th><th class="num">Komisi Platform</th>
-          <th class="num">Afiliasi</th><th class="num">Gross Profit</th><th class="num">Gross %</th>
-          <th class="num">Nett Profit</th><th class="num">Nett %</th><th>Tgl Pesanan</th><th>Tgl Penarikan</th>
-        </tr></thead>
-        <tbody>
-          ${pageRows.map((r,i) => { const hp = computeGrossNettProfitPerOrder(r); const rowId = 'dbFeeDetail_' + dbFilters.page + '_' + i; return `<tr class="db-row-toggle" data-db-fee-detail="${rowId}" style="cursor:pointer;" title="Klik utk lihat rincian biaya per order">
-            <td style="font-family:'IBM Plex Mono',monospace;font-size:10.5px; color:var(--accent); text-decoration:underline;">${r.orderId}</td>
-            <td>${r.produk||'-'}</td><td style="font-size:10.5px;">${r.sku||'-'}</td><td style="font-size:10.5px;">${r.warna||'-'}</td>
-            <td>${r.brand||'-'}</td><td>${platformDot(r.sumber)}${r.sumber||'-'}</td>
-            <td class="num">${r.qty!=null?r.qty:1}</td>
-            <td class="num">${r.pendapatan!=null?fmtRpCompact(r.pendapatan):'-'}</td>
-            <td class="num">${r.komisiPlatform!=null?fmtRpCompact(r.komisiPlatform):'-'}</td>
-            <td class="num">${r.komisiAfiliasi!=null?fmtRpCompact(r.komisiAfiliasi):'-'}</td>
-            <td class="num" style="font-weight:600;">${fmtRpCompact(hp.grossProfit)}</td>
-            <td class="num" style="color:var(--ink-soft);">${hp.grossProfitPct!=null?hp.grossProfitPct.toFixed(1)+'%':'-'}</td>
-            <td class="num" style="font-weight:600; color:${hp.nettProfit>=0?'var(--ok)':'var(--err)'};">${fmtRpCompact(hp.nettProfit)}</td>
-            <td class="num" style="color:var(--ink-soft);">${hp.nettProfitPct!=null?hp.nettProfitPct.toFixed(1)+'%':'-'}</td>
-            <td style="font-size:10.5px;">${fmtTanggal(r.tanggalPesan)}</td>
-            <td style="font-size:10.5px;">${fmtTanggal(r.tanggalPenarikan)}</td>
-          </tr>
-          <tr id="${rowId}" style="display:none;"><td colspan="16" style="padding:0 0 4px 0;">${renderOrderFeeDetail(r)}</td></tr>`; }).join('')}
-        </tbody>
-      </table>
-      </div>
-      <div class="desc" style="margin-top:8px;">Gross Profit = Pendapatan - biaya platform (komisi/layanan/pembayaran/afiliasi/dinamis/pajak) -- kurang lebih sama dgn hasil settlement Shopee/TikTok. Nett Profit = Gross Profit - Modal Konveksi - Packing&amp;Aksesoris (asumsi rata Rp ${PACKING_AKSESORIS_PER_UNIT.toLocaleString('id-ID')}/unit) - Payout Investor (asumsi rata Rp ${PAYOUT_INVESTOR_UOUT_PER_UNIT.toLocaleString('id-ID')}/unit, khusus brand URBAN OUTDOOR). Angka packing &amp; payout investor di sini ASUMSI PUKUL RATA -- utk angka presisi per kontrak, lihat tab PNL/Laporan Penarikan. Tabel di atas cuma menampilkan Komisi Platform &amp; Afiliasi sbg kolom -- <b>klik baris mana saja utk lihat rincian LENGKAP semua kategori biaya</b> (Biaya Layanan, Biaya Pembayaran, Komisi Dinamis, Pajak) yg sebenarnya ikut mempengaruhi Gross Profit order itu.</div>
-      <div style="display:flex; justify-content:space-between; margin-top:12px;">
-        <button class="btn btn-ghost" id="dbPrevPage" ${dbFilters.page<=1?'disabled':''}>&larr; Sebelumnya</button>
-        <button class="btn btn-ghost" id="dbNextPage" ${dbFilters.page>=totalPages?'disabled':''}>Selanjutnya &rarr;</button>
-      </div>
     </div>
+
+    <div class="list-card">
+      <div class="list-head">
+        <span style="width:14px; flex:none;"></span>
+        <span class="list-row-main">ORDER / PRODUK</span>
+        <span class="list-row-toko">SUMBER</span>
+        <span class="list-row-num">PENDAPATAN</span>
+        <span class="list-row-num">GROSS PROFIT</span>
+        <span class="list-row-num">NETT PROFIT</span>
+        <span class="list-row-small">TGL</span>
+      </div>
+      ${!pageRows.length ? '<div class="empty-note">Tidak ada baris yg cocok dgn filter ini.</div>' : pageRows.map((r,i) => {
+        const hp = computeGrossNettProfitPerOrder(r);
+        const rowId = 'dbFeeDetail_' + dbFilters.page + '_' + i;
+        return `
+        <div class="list-row" data-db-fee-detail="${rowId}" title="Klik utk lihat rincian biaya per order">
+          <svg class="list-row-chevron" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"></path></svg>
+          <div class="list-row-main">
+            <span class="list-row-title">${r.produk||'-'} &middot; ${r.sku||'-'}</span>
+            <span class="list-row-sub">${r.orderId||'-'}</span>
+          </div>
+          <span class="list-row-toko">${platformDot(r.sumber)}${r.sumber||'-'}</span>
+          <span class="list-row-num tnum">${r.pendapatan!=null?fmtRpCompact(r.pendapatan):'-'}</span>
+          <span class="list-row-num tnum" style="font-weight:600;">${fmtRpCompact(hp.grossProfit)}</span>
+          <span class="list-row-num tnum" style="font-weight:600; color:${hp.nettProfit>=0?'var(--ok)':'var(--err)'};">${fmtRpCompact(hp.nettProfit)}</span>
+          <span class="list-row-small">${fmtTanggal(r.tanggalPenarikan,{short:true})}</span>
+        </div>
+        <div id="${rowId}" style="display:none;">${renderOrderFeeDetail(r)}</div>
+        `;
+      }).join('')}
+    </div>
+    <div class="desc" style="margin-bottom:12px;">Gross Profit = Pendapatan - biaya platform (6 kategori: komisi platform/layanan/pembayaran/afiliasi/dinamis/pajak) -- kurang lebih sama dgn hasil settlement Shopee/TikTok. Nett Profit = Gross Profit - Modal Konveksi - Packing&amp;Aksesoris (asumsi rata Rp ${PACKING_AKSESORIS_PER_UNIT.toLocaleString('id-ID')}/unit) - Payout Investor (asumsi rata Rp ${PAYOUT_INVESTOR_UOUT_PER_UNIT.toLocaleString('id-ID')}/unit, khusus brand URBAN OUTDOOR) -- ASUMSI PUKUL RATA, utk angka presisi per kontrak lihat tab PNL/Laporan Penarikan. <b>Klik baris mana saja utk lihat rincian lengkap semua kategori biaya</b> (termasuk Biaya Layanan, Biaya Pembayaran, Komisi Dinamis, Pajak yg tidak tampil sbg kolom di sini).</div>
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:20px;">
+      <button class="btn btn-ghost" id="dbPrevPage" ${dbFilters.page<=1?'disabled':''}>&larr; Sebelumnya</button>
+      <span class="desc" style="margin:0;">Halaman ${dbFilters.page} dari ${totalPages}</span>
+      <button class="btn btn-ghost" id="dbNextPage" ${dbFilters.page>=totalPages?'disabled':''}>Selanjutnya &rarr;</button>
+    </div>
+
     <div class="panel">
       <h2>Margin per Jenis Produk</h2>
       <div class="desc">Rata-rata Pendapatan, Gross Profit, dan Nett Profit per order, dikelompokkan per Jenis Produk (Oswald, Wilson, dst -- tanpa pecah warna/ukuran), supaya cepat kelihatan produk mana yg marginnya kekecilan. Ikut filter Brand/Sumber/Tanggal di atas, tapi TIDAK ikut filter Produk (biar semua jenis produk tetap bisa dibandingkan sekaligus). Diurutkan dari Nett % terkecil.</div>
-      ${!marginPerProduk.length ? '<div class="empty-note">Tidak ada data.</div>' : `
-      <div style="overflow-x:auto; margin-top:8px;">
-      <table class="data compact">
-        <thead><tr>
-          <th>Produk</th><th class="num">Jml Order</th><th class="num">Qty</th>
-          <th class="num">Rata-rata Pendapatan</th><th class="num">Rata-rata Gross Profit</th><th class="num">Gross %</th>
-          <th class="num">Rata-rata Nett Profit</th><th class="num">Nett %</th>
-        </tr></thead>
-        <tbody>
-          ${marginPerProduk.map(g => `<tr>
-            <td>${g.produk}</td>
-            <td class="num">${g.nOrder.toLocaleString('id-ID')}</td>
-            <td class="num">${g.qty.toLocaleString('id-ID')}</td>
-            <td class="num">${fmtRpCompact(g.rataPendapatan)}</td>
-            <td class="num">${fmtRpCompact(g.rataGrossProfit)}</td>
-            <td class="num" style="color:var(--ink-soft);">${g.grossProfitPct!=null?g.grossProfitPct.toFixed(1)+'%':'-'}</td>
-            <td class="num" style="font-weight:600; color:${g.nettProfitPct!=null && g.nettProfitPct<0?'var(--err)':'var(--ink)'};">${fmtRpCompact(g.rataNettProfit)}</td>
-            <td class="num" style="font-weight:600; color:${g.nettProfitPct!=null && g.nettProfitPct<0?'var(--err)':(g.nettProfitPct!=null && g.nettProfitPct<10?'#B8860B':'var(--ok)')};">${g.nettProfitPct!=null?g.nettProfitPct.toFixed(1)+'%':'-'}</td>
-          </tr>`).join('')}
-        </tbody>
-      </table>
+      ${!marginPerProduk.length ? '<div class="empty-note">Tidak ada data.</div>' : marginPerProduk.map(g => `
+      <div class="margin-bar-row">
+        <div style="min-width:0; display:flex; flex-direction:column; line-height:1.3;">
+          <span style="font-size:13px; font-weight:600; color:var(--ink); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${g.produk}</span>
+          <span style="font-size:10.5px; color:var(--ink-soft);">${g.nOrder.toLocaleString('id-ID')} order &middot; ${g.qty.toLocaleString('id-ID')} unit</span>
+        </div>
+        <div class="margin-bar-track"><div class="margin-bar-fill" style="width:${g.nettProfitPct!=null?Math.max(0,Math.min(100,g.nettProfitPct)).toFixed(1):0}%; background:${marginColor(g.nettProfitPct)};"></div></div>
+        <span class="margin-bar-rp tnum" style="font-size:12px; color:var(--ink-soft); text-align:right;">${fmtRpCompact(g.rataPendapatan)}</span>
+        <span class="tnum" style="font-size:12px; font-weight:600; text-align:right; color:${marginColor(g.nettProfitPct)};">${g.nettProfitPct!=null?g.nettProfitPct.toFixed(1)+'%':'-'}</span>
       </div>
-      `}
+      `).join('')}
     </div>
   `;
   document.getElementById('dbFilterProduk').addEventListener('change', (e) => { dbFilters.produk = e.target.value; dbFilters.page = 1; renderDatabase(container); });
@@ -4209,7 +4271,11 @@ function renderDatabase(container) {
   container.querySelectorAll('[data-db-fee-detail]').forEach(rowEl => {
     rowEl.addEventListener('click', () => {
       const target = document.getElementById(rowEl.dataset.dbFeeDetail);
-      if (target) target.style.display = target.style.display === 'none' ? 'table-row' : 'none';
+      const chevron = rowEl.querySelector('.list-row-chevron');
+      if (!target) return;
+      const nowOpen = target.style.display === 'none';
+      target.style.display = nowOpen ? 'block' : 'none';
+      if (chevron) chevron.classList.toggle('open', nowOpen);
     });
   });
   wirePendingHandlers(container);
