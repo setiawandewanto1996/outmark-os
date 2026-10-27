@@ -164,6 +164,11 @@
   @media (max-width: 560px) { .margin-bar-row { grid-template-columns: 76px 1fr 56px; } .margin-bar-row .margin-bar-rp { display: none; } }
   .margin-bar-track { height: 6px; border-radius: 999px; background: var(--paper); overflow: hidden; }
   .margin-bar-fill { height: 100%; border-radius: 999px; }
+  /* "Rincian per Kategori"/"Rincian per Toko" (Biaya Operasional, drilldown PNL, Ads Mingguan -- 2026-10-27)
+     -- diurutkan Rp terbesar dulu + bar proporsional, ganti dari chip/kalimat lama yg acak & susah dibaca. */
+  .rincian-bar-row { display: grid; grid-template-columns: 148px 1fr 108px; align-items: center; gap: 12px; padding: 7px 0; border-top: 1px solid var(--line-soft); }
+  .rincian-bar-row:first-child { border-top: none; }
+  @media (max-width: 560px) { .rincian-bar-row { grid-template-columns: 92px 1fr 84px; gap: 8px; } }
   .recent-row { display: flex; align-items: center; gap: 10px; padding: 9px 2px; border-top: 1px solid var(--line-soft); cursor: pointer; }
   .recent-row:first-child { border-top: none; }
   .recent-row:hover { background: var(--paper); }
@@ -667,13 +672,15 @@ function deriveWarnaFromSku(sku) {
   const kode = String(sku).toUpperCase().slice(3,6);
   return STATE.colorCodeMap[kode] || null;
 }
-// "Warna Terlaris" (Dashboard, breakdown per produk) digabung per warna DASAR -- varian akhiran "Waterproof"
-// (mis. "Navy Waterproof") sengaja digabung ke warna dasarnya ("Navy") DI BREAKDOWN INI SAJA (dikonfirmasi
-// user 2026-09-10), krn dari sisi warna dianggap sama, cuma beda bahan -- supaya tidak kesannya ada 2 warna
-// beda padahal sama. Data SKU/produk asli TIDAK diubah, ini murni pengelompokan tampilan.
+// "Warna Terlaris" (Dashboard, breakdown per produk) digabung per warna DASAR -- varian akhiran bahan
+// ("Waterproof", mis. "Navy Waterproof"; "Polar WB"/"Polar", mis. "Army Polar WB", ditambah 2026-10-27)
+// sengaja digabung ke warna dasarnya ("Navy", "Army") DI BREAKDOWN INI SAJA (dikonfirmasi user
+// 2026-09-10 utk Waterproof, 2026-10-27 utk Polar/Polar WB), krn dari sisi warna dianggap sama, cuma
+// beda bahan -- supaya tidak kesannya ada warna beda padahal sama. Data SKU/produk asli TIDAK diubah,
+// ini murni pengelompokan tampilan.
 function normalizeWarnaUtkBreakdown(w) {
   if (!w) return w;
-  const base = String(w).replace(/\s+waterproof\s*$/i, '').trim();
+  const base = String(w).replace(/\s+(waterproof|polar\s*wb|polar)\s*$/i, '').trim();
   return base || w;
 }
 function lookupHargaKonveksiBySku(sku) {
@@ -5812,10 +5819,12 @@ function renderAds(container) {
       ${!activeStores.length ? '<div class="empty-note">Belum ada toko terdaftar. Tambah di tab Data Master dulu.</div>' : `
       <form id="formAds">
         <div class="grid2">
-          <div class="field"><label>Tanggal Dari</label><input type="date" id="ads_tglDari" required></div>
-          <div class="field"><label>Tanggal Sampai</label><input type="date" id="ads_tglSampai" required></div>
+          <div class="field" id="ads_tglDariWrap"><label>Tanggal Dari</label><input type="date" id="ads_tglDari" required></div>
+          <div class="field" id="ads_tglSampaiWrap"><label>Tanggal Sampai</label><input type="date" id="ads_tglSampai" required></div>
+          <div class="field" id="ads_tglSatuWrap" style="display:none;"><label>Tanggal</label><input type="date" id="ads_tglSatu"></div>
         </div>
-        <div class="grid2">
+        <button type="button" class="btn-ghost" id="btnToggleAdsTglSatu" style="border:none; background:none; padding:4px 0; font-size:12.5px; color:var(--accent); cursor:pointer; box-shadow:none;">+ Input per hari (tanpa rentang)</button>
+        <div class="grid2" style="margin-top:12px;">
           <div class="field"><label>Toko</label>
             <select id="ads_store" required><option value="">Pilih toko</option>${activeStores.map(s=>`<option value="${s.id}">${s.nama} (${s.platform})</option>`).join('')}</select>
           </div>
@@ -5845,9 +5854,7 @@ function renderAds(container) {
         <div class="field"><label>Dari Tanggal</label><input type="date" id="adsFilterTglDari" value="${adsFilter.tglDari}"></div>
         <div class="field"><label>Sampai Tanggal</label><input type="date" id="adsFilterTglSampai" value="${adsFilter.tglSampai}"></div>
       </div>
-      ${Object.keys(byStore).length ? `
-      <div class="desc" style="margin-top:10px;"><b>Rincian per toko:</b> ${Object.entries(byStore).map(([s,t])=>`${s}: ${fmtRp(t)}`).join(' &middot; ')}</div>
-      ` : ''}
+      ${renderRincianBar(byStore, 'Rincian per Toko')}
       <div style="overflow-x:auto; margin-top:10px;">
       ${!filtered.length ? '<div class="empty-note">Belum ada data.</div>' : `
       <table class="data compact">
@@ -5910,13 +5917,33 @@ function renderAds(container) {
 
   const formAds = document.getElementById('formAds');
   if (formAds) {
+    // Toggle "Tanggal Dari/Sampai" (default, biasanya 1 periode/minggu) <-> "Tanggal" tunggal (2026-10-27,
+    // Setiawan: kadang input ads per hari jg) -- pola sama persis dgn toggle Satu Tanggal/Rentang di Biaya
+    // Operasional (btnTogglelOpexRentang), cuma DIBALIK: di sini rentang yg default aktif, bukan 1 tanggal.
+    document.getElementById('btnToggleAdsTglSatu').addEventListener('click', () => {
+      const satuWrap = document.getElementById('ads_tglSatuWrap');
+      const aktifkanSatu = satuWrap.style.display === 'none';
+      document.getElementById('ads_tglDariWrap').style.display = aktifkanSatu ? 'none' : '';
+      document.getElementById('ads_tglSampaiWrap').style.display = aktifkanSatu ? 'none' : '';
+      satuWrap.style.display = aktifkanSatu ? '' : 'none';
+      document.getElementById('btnToggleAdsTglSatu').textContent = aktifkanSatu
+        ? '- Kembali ke rentang tanggal' : '+ Input per hari (tanpa rentang)';
+    });
     formAds.addEventListener('submit', async (ev) => {
       ev.preventDefault();
       const msg = document.getElementById('adsMsg');
       const storeId = document.getElementById('ads_store').value;
       const store = activeStores.find(s => s.id === storeId);
-      const tglDari = document.getElementById('ads_tglDari').value;
-      const tglSampai = document.getElementById('ads_tglSampai').value;
+      const satuAktif = document.getElementById('ads_tglSatuWrap').style.display !== 'none';
+      let tglDari, tglSampai;
+      if (satuAktif) {
+        tglDari = tglSampai = document.getElementById('ads_tglSatu').value;
+        if (!tglDari) { showMsg(msg, 'err', 'Isi tanggal dulu.'); return; }
+      } else {
+        tglDari = document.getElementById('ads_tglDari').value;
+        tglSampai = document.getElementById('ads_tglSampai').value;
+        if (!tglDari || !tglSampai) { showMsg(msg, 'err', 'Isi Tanggal Dari dan Tanggal Sampai dulu.'); return; }
+      }
       const biaya = Number(document.getElementById('ads_biaya').value);
       const catatan = document.getElementById('ads_catatan').value.trim();
       if (!store) { showMsg(msg, 'err', 'Pilih toko dulu.'); return; }
@@ -5997,12 +6024,7 @@ function renderOpex(container) {
         <div class="field"><label>Dari Tanggal</label><input type="date" id="opexFilterTglDari" value="${opexFilter.tglDari}"></div>
         <div class="field"><label>Sampai Tanggal</label><input type="date" id="opexFilterTglSampai" value="${opexFilter.tglSampai}"></div>
       </div>
-      ${Object.keys(byKategori).length ? `
-      <div style="margin-top:12px;">
-        <div style="font-size:11.5px; font-weight:700; letter-spacing:.04em; text-transform:uppercase; color:var(--ink-soft); margin-bottom:8px;">Rincian per Kategori</div>
-        <div style="display:flex; flex-wrap:wrap; gap:8px;">${Object.entries(byKategori).map(([k,t])=>`<span style="display:inline-flex; align-items:center; gap:7px; background:var(--paper); border:1px solid var(--line-soft); border-radius:999px; padding:5px 12px 5px 12px; font-size:12.5px; color:var(--ink-soft);">${k}<span class="tnum" style="font-weight:700; color:var(--ink);">${fmtRp(t)}</span></span>`).join('')}</div>
-      </div>
-      ` : ''}
+      ${renderRincianBar(byKategori, 'Rincian per Kategori')}
       <div style="overflow-x:auto; margin-top:10px;">
       ${!filtered.length ? '<div class="empty-note">Belum ada data.</div>' : `
       <table class="data compact">
@@ -6258,6 +6280,30 @@ function computeOpexRowsForPeriode(dari, sampai) {
   return STATE.biayaOperasional.filter(o => overlaps(o.tanggalDari, o.tanggalSampai));
 }
 
+// Render blok "Rincian per ..." (Kategori di Biaya Operasional & drilldown PNL, Toko di Ads Mingguan --
+// 2026-10-27, Setiawan minta kedua2nya dirapihkan) -- SATU fungsi generik dipakai di semua tempat spy
+// tampilannya selalu konsisten. Sebelumnya berupa chip flex-wrap (atau, utk Ads, 1 kalimat panjang
+// "A: Rp x · B: Rp y · ...") TANPA urutan jelas -- susah dibandingkan mana yg paling besar sekilas.
+// Sekarang: diurutkan Rp TERBESAR dulu + bar proporsional thdp yg terbesar, pola yg sama dgn "Margin per
+// Jenis Produk"/Omzet-per-Toko (list diurutkan + bar, bukan chip/kalimat acak).
+function renderRincianBar(byMap, label) {
+  const entries = Object.entries(byMap).sort((a, b) => b[1] - a[1]);
+  if (!entries.length) return '';
+  const max = Math.max(1, ...entries.map(([, t]) => t));
+  return `
+    <div style="margin-top:12px;">
+      <div style="font-size:11.5px; font-weight:700; letter-spacing:.04em; text-transform:uppercase; color:var(--ink-soft); margin-bottom:4px;">${label}</div>
+      <div>${entries.map(([k, t]) => `
+        <div class="rincian-bar-row">
+          <span style="font-size:12.5px; color:var(--ink); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;" title="${k}">${k}</span>
+          <div class="margin-bar-track"><div class="margin-bar-fill" style="width:${(t/max*100).toFixed(1)}%; background:var(--accent);"></div></div>
+          <span class="tnum" style="font-size:12.5px; font-weight:700; color:var(--ink); text-align:right;">${fmtRp(t)}</span>
+        </div>
+      `).join('')}</div>
+    </div>
+  `;
+}
+
 function computePNL(dari, sampai, dateBasis) {
   const inRange = (isoStr) => { if (!isoStr) return false; const d = isoStr.slice(0,10); return (!dari || d >= dari) && (!sampai || d <= sampai); };
   const overlaps = (dariStr, sampaiStr) => { // utk entri ber-rentang (ads/opex): overlap dgn rentang filter
@@ -6327,10 +6373,7 @@ function renderPnl(container) {
   const opexDetailHtml = !opexRowsForDetail.length
     ? '<div class="empty-note">Tidak ada biaya operasional tercatat di periode ini.</div>'
     : `<div style="background:var(--paper); border:1px solid var(--line); border-radius:12px; padding:10px; margin:4px 0 10px;">
-        <div style="margin-bottom:10px;">
-          <div style="font-size:11px; font-weight:700; letter-spacing:.04em; text-transform:uppercase; color:var(--ink-soft); margin-bottom:7px;">Rincian per Kategori</div>
-          <div style="display:flex; flex-wrap:wrap; gap:7px;">${Object.entries(opexByKategoriForDetail).map(([k,t])=>`<span style="display:inline-flex; align-items:center; gap:6px; background:var(--surface); border:1px solid var(--line-soft); border-radius:999px; padding:4px 11px; font-size:12px; color:var(--ink-soft);">${k}<span class="tnum" style="font-weight:700; color:var(--ink);">${fmtRp(t)}</span></span>`).join('')}</div>
-        </div>
+        <div style="margin-bottom:4px;">${renderRincianBar(opexByKategoriForDetail, 'Rincian per Kategori')}</div>
         <div style="overflow-x:auto;">
         <table class="data compact">
           <thead><tr><th>Tanggal</th><th>Kategori</th><th class="num">Jumlah</th><th>Catatan</th></tr></thead>
