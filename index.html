@@ -55,7 +55,7 @@
   .sidebar-footer button { background: rgba(255,255,255,.55); border: 1px solid var(--line); color: var(--ink-soft); border-radius: 13px; padding: 7px 10px; font-family: 'Inter', sans-serif; font-size: 12px; font-weight: 500; cursor: pointer; margin-top: 8px; width: 100%; }
   .sidebar-footer button:hover { border-color: var(--accent); color: var(--accent); }
 
-  .main-content { flex: 1; min-width: 0; padding: 0 0 70px; }
+  .main-content { flex: 1; min-width: 0; max-width: 1040px; padding: 0 0 70px; }
   .mobile-topbar { display: none; }
   .sidebar-overlay { display: none; }
   @media (max-width: 900px) {
@@ -177,7 +177,7 @@
   .list-row:hover { background: var(--paper); }
   .list-row-chevron { flex: none; color: var(--ink-soft); transition: transform .15s; }
   .list-row-chevron.open { transform: rotate(90deg); color: var(--accent); }
-  .list-row-main { flex: 1 1 200px; min-width: 0; display: flex; flex-direction: column; line-height: 1.3; }
+  .list-row-main { flex: 1 1 200px; max-width: 420px; min-width: 0; display: flex; flex-direction: column; line-height: 1.3; }
   .list-row-title { font-size: 13.5px; font-weight: 700; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .list-row-sub { font-size: 12px; color: var(--ink-soft); font-family: 'IBM Plex Mono', monospace; }
   .list-row-toko { flex: 0 0 150px; font-size: 13px; color: var(--ink-soft); display: flex; align-items: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -240,6 +240,15 @@ const GOOGLE_PROJECT_NUMBER = '534061439425';
 // panel Pengaturan Slip Gaji (upload gambar baru -> disimpan sbg data URI juga, jadi tetap 1 file JSON saja).
 const DEFAULT_LOGO_UJUSO_DATA_URI = 'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/4QAqRXhpZgAASUkqAAgAAAABADEBAgAHAAAAGgAAAAAAAABQaWNhc2EAAP/bAIQAAwICCAgICAgHCAgIBggICAYICAgICAcHCAgICAgICAgICAgICAgICAgICAgICggICAgJCQkICAsNCggMCAgJCAEDBAQGBQYKBgYKCgoKCwgKCAsICAgICAoKCAgICAoICAoICAoKCAoKCAgKCAgICggLCAoICAoKCAgICAgICAgI/8AAEQgBIAEgAwERAAIRAQMRAf/EAB0AAQACAgMBAQAAAAAAAAAAAAAICQYHAQQFAgP/xABNEAACAgEDAQUCBwoLBQkAAAABAgADBAUREiEGBwgTMQkiFCMyQVFhgTM0NlJxc3R1sbMWNUJUYnKRk7K00hWChKS1JCUmQ2OSoaPR/8QAHQEBAAICAwEBAAAAAAAAAAAAAAYHBQgCBAkDAf/EAEkRAAIBAwEDCAQJCQcFAQEAAAABAgMEEQUSITEGBxMiQVFhcTKBkbEUIzRCUnJzobIzNlNidIKSs8IVNYOTtMHRJEOi0vCEJf/aAAwDAQACEQMRAD8Aj1KkPVAQBAEAQBAEAQBAEAQBAEAQBAEAQBAEAQBAEAQBAEAQBAEAQBAEAQBAEAQBAEAQBAEAQBAEAQBAEAQBAEAQBAEAQBAEAQBAEAQBAEAQBAEAQBAEAQBAEAQBAEAQBAEAQBAEAQBAEAQBAEAQBAEAQBAEAQBAEAQBAEAQBAEAQBAEAQBAEAQBAEAQBAEAQBAEAQBAEAQBAEAQBAEAQBAEAQBAEAQBAEAQBAEAQBAEAQBAEAQBAEAQBAEAQBAEAQBAEAQBAEAQBAEAQBAEAQBAEAQBAEAQBAEAQBAEAQBAEAQBAEAQBAEAQBAEAQBAEAQBAEAQBAEAQBAEAQBAEAQBAEAQBAEAQBAEAQBAEAQBAEAQBAEAQBAEAQBAEAQBAEAQBAEAQBAEAQBAEAQBAEAQBAEAQBAEAQBAEAQBAEAQBAEAQBAEAQBAEAQBAEAQBAEAQBAEAQBAEAQBAEAQBAEAQBAEAQBAEAQBAEAQBAEAQBAEAQBAEAQBAEAQBAEAQBAEAQBAEAQBAEAQBAEAQBAEAQBAEAQBAEAQBAEAQBAEAQBDeOION5w24969qBzOaafACAcbz8bS4gbzjtx717UDmc08gQBAEA43nDbj3r2oDeclJPgDmfoEA43nDbj3r2oDeclJPgDmfoEA43nDbj3r2oDeck0+AOZ+gQBAEAQBAEAQBAEAQBAEAQBAEA214TcVX7R6Uliq6NkMCrqGUjybfVSCD9onfsEndU0/p/0SK85wZyp8nbyUG4tUo4cW018bT4Nby2T+BWH/ADTG/uKv9EsfoofRXsRoF/aN1+mq/wCbP/kqv8auGlfafVErRUrX4FxRFCKN9OxCdlUADckk7D1JlfaqkruaW7dHh9U3t5sKk6nJu1lNuTbr5lJuT3XVbte80jMUWmSO8AmnV29oUW1EsT4HlHi6q67gJsdmBG4+mZnSEndJNZ6k+O/6JS/O3VnS0BypylF/CaSzGTi8dfdlbyzD+BWH/NMb+4q/0Se9FD6K9iNJ/wC0br9NV/zZ/wDJUP4jcdU17V1RQqLqGSqqoCqALDsABsAPqErS8WLmql+kfuR6FciZynoNlKTbbtaeW223u7W95rmdQmwgHf7PrvkUA9QbqgR833RZ+r0l9aP4kdDUG1a1Wv0NTevqSLr/AOBeH/NMb+4q/wBEtXoofRXsR5nf2jdfpqv+bP8A5IC+0l0iqnN0wU1V1A4txIrRawT5y9SFA3+2QzXYqNaGEl1JcFj50TbHmWr1a1pdurKUsV6eNuTlj4uXDLZDuRw2PPl/Q/knGfovyZ+PgXd4nYzD4r/2TG+Sv/kVfQP6EthUofRXsR5hS1C62n8dV4v/ALs+/wAyDXtK9Gppt0fyaq6g1eby8uta+WzYu2/EDfbc7b+m5kQ12KjOnhJdWfBY7YG0fMncVa1O+6WcpYlb425SljKuM4y3jO7OCFcjBs2Zf3O1BtX0pWAZW1LAUggFSDlVAgg9CCOhB6Gfe3Wa1PP6WH44ka5TScdHvZRbTVjcNNPDTVCphpremuwuP/gXh/zTG/uKv9Es/oofRXsR5yf2jdfpqv8Amz/5K4PaH6bXVrtK01pWn+zcduNaKi7nIy9zsoA36Dr69B9EgutRUbnCWPio8N3zqhuZzO1qlXRKkqkpSfw6osyk5PHQ2+7LzuIwTBl6CAIAgCAIAgCAIAgCAIAgCAIAgG3/AAifhLpH6Q37m2ZDT/lVL6/9EiuecT83L37KP82mW8yyzz1Km/HD+FOq/wDA/wDTcOV1q3yyflD8JvzzWfmza+df/VVjRcxJa5Jb2e34Rp+h5X7Ema0b5Uvs5/0lJc8H5vv9qo/1loUsE0cKcPEr+EGs/rHJ/eGVhe/Kav2j9yPRfkN+b9j+y0/ca2nTJyIB6HZ374x/z9X7xZ+r0o/Xj+JGP1H5JW+xqfgkXkS2jy/K9vaa/f2l/ol/75ZCde/LQ+pL8UTbrmR+R3n29L+XIhhI0bLHy/ofyTjL0X5M/HwL1MP5C/1V/YJbiPLOfpPzfvIG+08+7aN+bzv8WLIdr/p0vqz99M2r5jvyd/8AWtvdckH5FjaIzHuY/jjSf1ngf5uqdi3/AC1P7Wn+OJGOVH9zXv7Dc/6eoXTy0zzWKz/aPfx/T+rMf/MZcgWt/Kv8KP46hutzMf3HU/bqn8i3IrzAl9CAIAgCAIAgCAIAgCAIAgCAIAgG3/CJ+EukfpDfubZkNP8AlVL6/wDRIrnnE/Ny9+yj/NplvMss89Spvxw/hTqv/A/9Nw5XWrfLJ+UPwm/PNZ+bNr51/wDVVjRcxJa5Jb2e34Rp+h5X7Ema0b5Uvs5/0lJc8H5vv9qo/wBZaFLBNHCnDxK/hBrP6xyf3hlYXvymr9o/cj0X5Dfm/Y/stP3Gtp0yciAeh2d++Mf8/V+8Wfq9KP14/iRj9R+SVvsan4JF5Eto8vyvb2mv39pf6Jf++WQnXvy0PqS/FE265kfkd59vS/lyIYSNGyx8v6H8k4y9F+TPx8C9TD+Qv9Vf2CW4jyzn6T837yBvtPPu2jfm87/FiyHa/wCnS+rP30zavmO/J3/1rb3XJB+RY2iMx7mP440n9Z4H+bqnYt/y1P7Wn+OJGOVH9zXv7Dc/6eoXTy0zzWKz/aPfx/T+rMf/ADGXIFrfyr/Cj+OobrczH9x1P26p/ItyK8wJfQgCAIAgCAIAgCAIAgCAIAgCAIBt7wjNt2k0jf8AnJH9tNoH/wAzIaf8qpfX/pkV1ziLPJy9+yj/ADaZb1LLPPQqf8c2My9qNSLAgOMJ0P4yjAxU3H1ckZfygyutW+WT+rD8JvtzVzjLk1bJPhKun4P4TVePY0/WaHmJLaJL+z1X/wARL9WFlE//AFj9pEzejfK19nP3xKR54Hjk/wD/AKqXuqFoMsA0dKbfEhcG1/WSpBH+0sten0rcysPsIIP1iVhefKav2j/2PRnkRFx0CxTWP+kpv1OOU/WmmjXM6ZNxAPQ7O/fGP+fq/eLP1elH68fxIx+o/JK32NT8Ei8iW0eX5Xt7TX7+0v8ARL/3yyE69+Wh9SX4om3XMj8jvPt6X8uRDCRo2WPl/Q/knGXovyZ+PgXp4R9xP6q/sEtxHlnP0n5v3kDvaej47Rvzed/ixP8A9Eh2v+nS+rP30zarmOfxd+v1rb3XJB+RY2jMy7ll31nSAPU6pp4/5umdi3/LU/taf44kY5UvGjX37Dc/6eoXTS0zzWKzvaOt/wB/0/VpmOP+YyzIFrfyr/Cj+Kobr8zC/wD4VT9uq/ybcixMCXyIAgCAIAgCAIAgCAIAgCAIAgCAe/3f9qjg5+FmgMfgmVj5ZVTszLTatjIOoHvqpQgnYgkHoTPpTqdHONT6Moy3d0Wm161lGG1nT1qNhcWW742hUpJyWUpThKMZfuyalu3prK3l1uj6tXkVVX0OtlF1aX1WKd1euxQ6OpHqGUgg/QZasZKSUovKaymu1PgzzPr0KlvVlRqxcZwnKEoSWHGcG1KLXY000yHfjy8NGXn2VavplT5F9dIxcvGrAa1q6y7130oBztcc2reteTlRUVQ7OZF9YsJ1JKvTTbUdmUVxwm2pJcW1lppb2sYW42J5qeW1rpkJ6VqElThOr0tKvPKipyUYzpzl6MYvZjKEniKe3ty3xxAdOzmQbvg4x7zl77eQKrDfv9Hlcee/+7Ifh7WziWfo7Ms+zGTbF6haqj8IdWl0fHpelhsY+vnZ+8sG8BvhrydN87VdSqajLyKRjY2O4K3VUMy2WPch+RZayVha2AsrVG5bGwqJno9jOlmvUWG47MYvio5y212OTS3cUlvw20tROdXlrbatKGmWElUpUqjq1K0cOE6qTjCMJfOjTjKeZJuM3Lq5UVJyw7R9oKsTHvyshgmPj1WZFrH+Slal2P1nYdB6k9JI6k1Ti5y3JJtvwS3lCWlrVu68LaitqdScacYrtnNpRXtZSd2s7QtmZWVluONmVkX5bqDuFa+1rWG+w32LEb7DeVVKbnJze5yk5Y7tpt49WcHppptlGxtKNpF5VKjTop4xlUoRgnjxxk8qcTInBM4uSXFg2J4f+7q/VNWwcfHqaxBk03ZDhSa6ceuwPa9jAFUHBWVeRHNyqDqwE7lnSdxWjCG/rxba3pRTTbb4Lcmlni9yIVyx1q30nSbitWnGMnQqU6cW1tTqzg4wjGLeZYk05YzswTk9yLlZaJ5yFaPtG+1C3a5TjowYYeDUjgdSl11ltzK30E0tQwHQ7Nv84kC1uopXKivm00vXJttP1KL9fibqczNjKjo1S4kmumupOLfCVOlCEE1/idLFvvWOKZFWYEvw4n41lYBcj4de8NdU0XT8sMGtOOlORt045NAFV42O5ANiFlBJ3RlO5BBNm2Nfp6EJ9uzh/WjukvanjwPN7ldpEtI1e5tGmoqtKVPO/NGo9uk8rc+o0njhJNbmmjB/GX3A2a7pyfAwp1PCdr8dWIXzkdQt+OHbYI1gWt1LEKXqRWKhi69TVbJ3NJbHpxeUuGU/SjnxW9dm0lncSnm45WU+T2ot3Lat60VTquKb2JReadbZW+Sg3KMkstQnJxUmlGVXmv8AZPKxbfIy8a/HyCeIquqsqsJ322VXUFuuwHHffcfSJAJxlTezNSi+5xafq3b/AFZN5bTU7O8pdNbVqVSGMudOpCUUsZ3tPdu45xjt4EqfBR4W823UaNV1HGsxsDDPwihchDXbkZI+5FKnAcVUt8d5rBQXWsJz+MNcg0qwqSqqtUi4xjvW0sOUuC6r34jxy8ZeMZ3lDc5vLuyhYVNLsKsatat1KkqMtqFKjuc06kXsuVRfF7CcsQc9vZeypWNScmnZUT4ue8NNT1/OuqYPjVMuDSw9GTGXy2YEfKV7vNdW+dWWVrqNZVrmclwTUF5Q4/8Alteo9BubvR5aVoNvSqLZqVE7iafFSrPMU12NUujjJdkk0admOLKEAQBAEAQBAEAQBAEAQBAEAQBAEAl74PfGUNMVdL1hmOmAn4LlbF3wyTuabVUFnxiSSjKC9LErs9bL8HkOmap0HxNb0Pmy+h+q/wBXua9Hg+rjZ115xebeWpzlqelRXwh/lbfKiq2F+Ug3hKqlumm0qq6yaqJ9LYXoWv0ZVSX4t1V+O43S2l1trYfU6Eg/2ybwnGa2otNPg0017Uah3NrWtajo3EJU5xeJQqRcJJ+MZJNHfnM6p5faTtTjYdLZGZfTjYybcrb7EqrG52A5OQOTEgKo6sSAASQJ851I01tTaS720l7Wd2zsri9qqha051aj4U6UJTk8LL6sU3hLe3wS3vciuvxg+MJdYQ6bpfIaQGV773VkfMZGD1qtbgNXRW4V9nAsd1UlawmzwfUtTVyuipehubbWNvG9bnvUU9+/fJ9yXW3C5uubmeizWpalj4Thxp0otSVFSTjKTlHMZVJRbj1W4wg3vlKXUihMAbAiAWO+zZ0BRo2Ze1a879Rsq5lRyeqrHx+ILbblFse0BT0BLdOp3mugwXQzljjUe/vSjFe/Jphz0XUp6zRoqTxCzg9nLxGpOrWbeOClKCp5fFrHciWuNhog2RFQHrsqhRv+QASSpJcCgZTlPfJt+bb95rPv38RGBoOM1mTYtmayn4NhIw8+99jx3A3NVO49+9xxUdBzcpW2PvL6naxzN5b4QXFv/Zd7e5eeETTktyQv+UVwqVtFxpJrpLmSfR045379ylPHo04vak972YKU41J9tO19+oZeRm5bc8rJta+wjcKCx6KgJJWtF2RF3PFFUb9JXNSpKpJ1J+lJ5fn3LwSwl4I9BdL02hplpSsrZYp0oKnHOMvHGUmkk5TeZTeFmTbxvPFnzMoIBvjwqeJ+zs/kOlyvdpGSwbIpQ72VWAcRkUBiF58dldCV8xQo5A1oRldPv3aSecuEt8kuKfDaXjjc12rxW+puX3IaHKShGpRcYXVJNU5y9GcG89DUaTeM5lCW/Yk3uxKRZz2B7y8DVKRkadlVZNJ238tvjKyQDwtrO1lL7EEpYqsNx06iT6hcU68dqnJSXh2eDXFPweGaQ6ro17pNZ299RnSms4U47pJNrahNdSccp4lByT7GZNOwYY/PKylRS7sqIo5MzEKqgepLHYAD6SZ+N43s5whKclGKbbeEkm22+xJb2Qq8V3jhx1pu03QbfOyLUNV+oVN8RSjgh0xbFO9lxXp56e5WGBR3f7lFNR1eLi6Vu8trDqLgk+Ki+2Xit0e9vcbJ8gua+4qVoajrEOjpwltwtKi69SUcOLqwa6tNP5kutUxiUYwfXgBIglg26OYAgCAIAgCAIAgCAIAgCAIAgCAIAgCAet2d7XZeGzPhZWTiu2wZsa+3HZgN9uTVMhO2523PTc/TOUJSg8wcovvjJxz54az6zG3um2d8lG7o0qyWcKtShVSzjONtPGcLODOm8UPaEpw/2xncduO4uIfb84B5m/18t/rnb+HXOMdLP2r34yRVcg+T6lt/AqGc59B4/gzs+rGDA+0HavKy2D5mTkZViggPkXWZDgH1Aa1mI32G+x+adScpTeZtyffKTljyznBK7PTrSxi4WlGlRT4xo0oUk8cMqCSfrPLnEyIgCAZP2W70tTwQFwdQzcWsMX8ujJuqqLH1JqVxW2/z8lO8+1OtUp/k5yj24jJpZ7er6O/yMBf6Bpmoy2ry2oVZY2dupRpynhcEqjW2kuzDWDJNT8THaC5eFmsZ/H/072pJ/K1XBiPq32M+0r25ksOrP1PH3xSZhaHIbQKMtuFlb5/Xpqov4am1H7jXWbmvY7WWu1lrnk7uxd2Y+pZmJZj9ZJM6fF5e9vi28t+be9+smdKjTowVOlGMIpYUIRUYpdyjHCS8j8YPsIAgCAdzSdZux7Bbj220XL8mymx6rBv67OhVhv8AUZ+puL2otp98W4v2rDOrc2tG6g6VxCFSD4wqQjUi/OMk0bB0/wATfaGpOCaxnlev3S9rm6/07eb/AJPe6fNtO2r25Swqs/W0/vabIfW5Dcn6stuVlb5/Up9Gv4YbMfuMT7T942oZo2zs7Myl5cwuRk3XoG69VSx2VdtztxA2HQbTr1KlSp+UlKXbiUm17Hu+4z9jomnae82dtQovGNqlRpwk13OUYqT8ct57THp8zNiAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAc1VljsoLH12AJO307CcdpPhv8ALf7jhKcYb5NLzaXvPkNCmn2o5HM5H6IAgCAIBxynHaXf6lv+5H5k5cbHY9CPmPQ/2GNpLju893vPyMoyWYtPyafuE5HIQBAEAQBAEAQBAEAQBAEAQBAEAQBAEAQBAEAQBAEA/TFxWsZUrVnsdhWiIpd3diAqqqglmYkAKASSQBHlv7MLe23wSXe3uR86lSFKDqVGoxjFylKTUYxjFZlJt7kkstt7kt7LI/Dv4EcHCprydaqTO1J1DnHtAswsbcfc/L6pkWDfZ3t517gcFHHzHm9lo9OCUq6U5cdl74x8McG+9vPgkaW8sOdO+1CrK30ucre3TaVSDcK1XD9Nz9KnF4zGMNmWH8ZJ52YyqwsBK1CVIlaDoFRQigD5gqgAfYJI0kty+4ompUnUltTbk3xcm235t7zyu0/YfCzUNebiY+VWfVb6a7h9RHNTsR6gjYg9QRPlUowqrZnFSXdJJ+87tlqV3Yz6S0rVKUl86lUnTfti1ufanufaQF8avhW0zSMdNR0604y23rjfAH53K7urPyx7DyesVqjM62lkI2CvWeFdkM1XT6VtFVKTwnJR6N5fHti+Kwk2092OGO3bDmz5eanrNw9OvoKrs0nV+FR2YSjGLSxVisRntSlGMXBKSe+UZranCHsjpseIB7/YTsHl6nlVYeBS12VadlUdAqj5T2MfdStB1Z2IAH1kA/WlSnVkoU1mT4L3tvsS7X/u0jD6vq9ppNrO8vZqFOK3t722+EIx4ylL5qXnuSbVhvcn4AdMwUru1cDUdQ2DMhLDAqbY7rXVsrXgb7c8jdW4hhVUekmVpotKmlKv15d3zE/CPb5yz3pI095Tc7OpahOVLTW7WhlpSjjp5x3Ycqm/o3uzijhxy4upUW8k1onZvHxkFeLRTj1KOKpRUlKKB6AKiqoA+gCSGEIwWIpJdySS9iKTuLuvczdS4qTqSby5VJynJt8W5Sbb9Z28vCSwFbEV0PQq6hlP5QQROTSe5nwhUlTe1BtPvi2n7UaI72PBPoepoxqx107MIPHIwkWpeXU72Yw40Wgnq2ypYfmsX1mGudIt6yylsS+lDC3+MfRfrWe5otLQOcrW9JmlOq7mllZo3MnN7PdGq81INL0d8op73CXArn77e47O0HL+C5qgo4L42SgPkZNYIBZCfkum4FlTe/WSvqr1u8IurapbVOjqdu+MlwkvDxXanvXimm9yeS/Kqy5R2vwi1eJRxGrQk1t0pvgmlxjLDdOa3TSa3TjOEdezqkyEAQBAEAQBAEAQBAEAQBAEAQBAEAQBAEAQBAEA394F+yteV2jxDaAy4yX5yqQCDZUnGo9fQ12OtqkdQ1azLaVTU7uGexSn60sL2bWfNFQ86t/UtOT1VU8p1alO3bTaahOTlNbuyUYOD74yaLWZYpoaVN9+niV1zJ1PMHw/MxKaMm/Hqxsa+3ESpKrWrVXWl0Nlmybu9hZuZbbguyit7q+r1KsszlFKcoqMZOKSjJr5uG3u35zv4YW4345KcidFttMoSdvRrzqUKdWdavThWcpVIKTcekTUY5eIqCj1UtralmT93uc8dWsaa6pm2NqmD0U15L/9qQdfeqyyGsLdRuL/ADlIXYeWSWn3ttWr0Xib6SPdJ9ZeU+P8WfNGN5R81Wk6nFzs4q0rcVKlH4qT3bp0MqKXc6XRtN5kp4UTEvE54ire0WZVd5Rx8LGranGxy4sYF2DW3OwVfft41gqN1VakA3PJm619eu7qKTWyopqMXhvfxk2u17ljsS8yQ8huRtPkxaTpuaq1qslOpVUXFYimoU4pt9WGZvLw5OTbSWylpyY4skRnALSfBD3EppWl15dybapqNaZFrNvyqx29/HxwGAKe4wstGwY2sVYsKq9p7pFn0NHpJLrzSk/CPzY+GFvl+s33I0R5zeVU9Z1OVtSl/wBPbTlSgljE6q3VazabUsyTjTecdGk0k5zztnvh728TRMGzOzW+LUiuqtSPNvuYEpTUD6s3FmJ9FRXc9EMyV1dQtqbqT8ku1yfBLxf3Le9yIDye0C6129hY2i60utKbzs06axtVJtcIxyl+tJqC60kit7t/45e0GbazU5QwMYkhMfERBxXckFr3Vr3s47BmDohI3Fde5Eg1bVbqo8qWwuyMEvvlJNt+O5dyRubpHNXoNjSSrUnc1PnVa8pYbwsqNKDVOMc5cU1OSTxKcsI8fsx4ye0eK6uNSsvUHdqspa8itx+K3JfMAP012I31ifOnqV1B5VRvwmoyT+5P2NGRvubXk7dwcfgsabawp0JTpyj4pJuDf14yXeiwPwweJijtFjWE1/B9SxuIyscEsmz8uF9DkAtU/FgVPv1OCrcga7LZnp9+ruL3bMl6Uc548JJ9z+57n3vUflvyKr8mLmMdrpKFXLpVsJPMcbdOcVwnDK3rq1ItSjhqcIZb3490FGt6dfg3hQ7KbMa4ryOPkqp8q5fQ7Ani6gjnWzpuOU7N5axuaTpy81L6MuyXq7e9ZXaR/kzygr6DqFO+oN4T2alNPCq0W10lN8VvSzFtPZmozSzFFOOr6TZj220Xoa8iiyzHtQ7EpbUxSxCQSCVdSDsSOnqZWTTTcZLDTaa7mnhr2no7bXNO6owuKL2oVIRqQksrahOKlGWHh74tPfh951J+HZEAmld4Alz9I03UNIyfKzcjTsLKvxsolse223HpexqrlBegkl24OlqMzABqFEkq0bpaEKtGWJOnGTjPfFtxTbT4x8t68EayU+dqenardWOp0uko07yvShWoJRqQpwrVIwUqbahUwlGOU6clFNvpJMil297tc/S7vI1LFtxbuvEWKOFgG25qtUtVco5AFqndQTsSD0kfq0qlGWzVi4vufb5Nbn6m8dpf+ka5YaxR6ewrQqx7dl4lHOcKdOWKkG8PCnGLa3rK3mNT5GcEAQBAEAQBAEAQBAEAQBAEAQBAEAQDanhf7y00nXMHLuYric2xsk9NhTkI1Rdt+vGp2S5uPXas7b+h7tjXVC4hUlwy4y+rJYz6niT8EQDl3ok9Z0S4taKzVUVVprfl1KUlLZWPnVIKVOOd21JZxxVwNNoYBlIZWAYEEEEHqCCOhBHUESzVvPO9xcXhrDTw09zTXFY8DTffD4SNF1p2uyaHozm25ZeIwpvfbb7orK9Np2AXlZUzhegZdhti7rTKFw9qSal9ODw/X2P95PcWLyd5f6xoMVSt6inRWcW9dOpTWc+jhxqQ3tyxTlGLlvlF78xQ7zfZwahQGs0nKqzqxyYUXAYuVt/JVGLNRa3ruWfHHpsDv0jlfQ6sN9KSmvoy6svb6L9eyX5onPPZV2qep0ZUHuXS0m61LxlKOFVgu5RVZ+JEzXtBvxbrMfKqsoyam4WVWqUsRtt9mU7HqCCD6MpBG4IMj0ouLcZJprjF7mvV7u/itxsFZ3lC8oxuLacalOa2o1INSi14NdzymuKaaaTTR0JxO4ZB3d6AuXqGBi2fc8nNxcR9iQeN99dTdR1HRj1HUT6U4KpOMHwlOMX5Skk/uMLrd3Ky065uoelStq1WL49anSnKO57uKXEu2rQAAAbADYAdAAPQCWueZTbe9lfHtMe2DNnadgAsK6cV89hv7jPkWvSpK77Fq1xm2JHui1tj7zSE69Ubqwp9ii5+uTwt3goy9ptxzJadGNpdX7S2p1o26eOso0oKckn2KbqQyk97gsrciGEjRsuIBvXwSdqnxe0mAFOyZXnYNo/GS2pmVfsvrpf/AHZlNLqOndQx87MH5OLf4kiqOdCwhd8nbiUlmVJ068H3SjNRk/8AKnUXrLY5Y5oMVSeOjswMbtJmldgmUmPmgAbbF6Vrs3+ktbVY5PT5X2mutVp7F3PxUZ+1Yf3xz6zfTmrvndcnaMZcaU6tDLecqM3OPliE4xxv4epaCmJLcEAn54YPHPgV4mHperqcN8amrBpy1BsxbK6lSqrzgAbKH4hQzlXp91nZ6geIlun6vThTjRrdXZioqa3xaWEs9sX3/N7dpcDUflxzW387uvqWmNV41ak687fdGtCVRynPYz1akdrOyk1U3qChNracu9V0bA1XFC3V42fp96rYu4ryMexT1SythyU/jLYh3B2II9ZJ5Qp14Ykozi1nskmuxrs8mjXyhcXuk3O1SlVt69OTi8OdKpGS3SjJbpLulGXHg0Q876PZxo3O/s/f5bdW+A5Tlqz6e7Rknd19Dst/mbk9bUEjF1ofzrd/uTba9U+K/e2vNI2J5Nc8tSGKOtU9tcPhVCKjPzqUViEvF0tjCW6nNkKe2vYHN0644+oY1uLkDrwtXYMPTlW43SxN/wCXWzKfpkXqUp0pbFSLi+5r70+DXimzZrS9YstVoqvY1YVYd8HvT7pReJwf6s1F+B4M+RmBAEAQBAEAQBAEAQBAEAQBAEAQBAN/dx3jR1bRUTGPDO01NlTGyCVepRv7uPkKC9a7lfcsW+tVXZETcmZa01OtbLZWJR+jLdhd0ZLevJqSXBYKi5Uc2el67OVxHat7iW91aSTjOTx1qlF4jJ8etB05Sk9qcp4wS57A+0L0PKKpljJ0608RvdX52PybpsLqObAKfV7aqVAIO4AbjJKOuW8901KD/WWV/FHOPOWDXvVuaLXLJOdv0dzFZfxU9iphdrp1dnLfZGnKo29y7MyV0fWKcipL8e2u7HtUWV21OtlbqfRkdSVYfWCZn4TU0pRaae9NPKa80UvcW9W3qSo1oShOL2ZQnFxlGS4pxlhpruZFz2gnc3Tl6W2q1oBqGnmvnYq+/diPYK3qcgjcUvYL1ZuXBVuAA81jI7rdrGdLp0utDG/vg3vT8s7S7t+OLzePNJyjq2WqLTJyboXO0lBy6sLiMdqFSKed81F0pJY224OTfRxRWtIQbsGV90mpLTq2l3WECunUcG9yegC15VTsST6ABTPvQko1YSfZUg//ADiR3lJQlX0m8pQWZSs7iKS4uUqM0l63uLrZah5olcntLNBdNWwckj4m/Txjqfn8zGyLms+bbYLk1fP859Om8H12DVeMux08euEn/wCyNxuZS7hPTLm2XpQu+lf1K1KEYffSnn1EQpHDYoQDcng80Zr+0ulKoJ4XPkMQCQq002WEsR6DdQu56cmUepEyOnR2rqml2ScvUoy3+3C82VpzkXMbfk5duTS2qcaST7ZVKsI4Xe8Ny8k32Fukso8+irPx+a4t3aTIRfXGxsXGY/NyNfnnb8gvAP1gj5pXmry2ruWOyMY+vDl7pI3p5o7WVHk9Ccv+7XrVV9VSVP302/IjnMOXOIB7PZDsZl6heuNgY9uTkv1FdKFyF3Cl3Pya61LDlY5VF33LAT6U4TqS2Kacn3R977EvF4Ri9S1S00yg7m9qwpU18+pLGXhvZiuMpNJ7MYJyljcmWGeFjwnarpK+bl6vkYvmFbG0/CNVuPvuCfPbJqvpZ2UBGNFKuoB43noRMtN02tb9adRx7ejhhx9e0mt/bsqL/WfE085ecvdM1uXR21lTqbKcVeXCnCrjs2FRnCajF5lFVpTi36VFb05VahqNdNb23WJVTWpd7LGWutFHUs7sQqqB1JJAEkbkorLeF3vcvaUXSpTrTVOnFylJqMYQTlKUnwSistt9iXEr08dniN0vVqsfA02x8h8bJORZkqnHFPxdlRrqdiHsPIhi6p5TLxKu+/SFavfUrhRp0ntbM9pyXo+jJYT7d77N3ibdc1XI3U9HrVL+/iqUalDoo0ZSzV3zpzU5QWYwWE1syaqKWVKEe2HcjZsiIAgCAIAgCAIAgCAIAgCAIAgCAe32J7G5Go5dGFhp5mVk2Cqtd9hvsSzMevFEQM7tt7qKx+afSnTlUmqcFmUnhL/d+CWW/AxWq6nb6XaVL26ls06cNqT4vilGKXbKcmoxW7MmllG5e9PwP65pdIv8uvPoCg2nANt1lJ6b8qXqrtZASfjK0cBQWcVCZO40q4oLawprt6PLa/dxlrxWfFIrXQudLRdWquhKUraeXs/CtiEZrfjFSMpQjLGOrNxzJ7MHNkfuUwu3HvXtRb5Zd7OjRcqrRbmyFsTHuzGuxFs3AaryqleysH0rewNsRsGZWI333M70KE40JOXBzzHPdhZa8HLPnx7cmknPFdWtbWoRt3GU4W0YVnDG6op1GoSa4yjBxzxaTUXjGFsHxldoVxuzeps3U21JiIPnLX3V19N/xVZrD9SGdzVpqNpU8Vsrzk0v98+REubm0ldcorSMfm1HWb7o0YSm/a0o+bRUjK7PQg4In41lYBb74XO+JNa0jGyCwOZSq4eav8oZFSgFyPxb143KR098r6owFk6ddfCaCk/SXVkv1lxfk/SXgzzt5ccnZ6Dq1W2xilJutRl2OjNvZjnvpvNOXbmOeDTf5eKHuEXtBppx0ZK8+hvhOHa+/AWAbNVYRuwquX3GIB4MEfi/l8G/NRsvhVLZWFJPai3wz2p+Elufdxw8H05D8q5cm9RVzJOVGceirU44y6beVOOd23Tl1op42ltQ2oqbkqre3Xdrn6ZaadSxLsWzfiPMX4tztv8AFWryqtH9Kp3X169DK9q0qlF4qxcX48PVL0X6mb46Vrun6tT6Wxr06qxnEJdeP16bxUg/CcYv1HkaHoN+VYKcSi7IvYbrVRU99pA9SErVmPqPQfPPnBObxBOT7oJyfsWTI3d7b2dN1bmpTpQXGdWcacV+9NpFkfgr8K9mjJZqGogDVsivyEpDBhi45ZXZWKko19rIhYryCKgUN79gM40rT5W+atT02sJcdmPHGe9vGcbtyXiaXc5XLunr042Ni27alPbdRx2XWrJSipJPrKEIuSinhycnKS3QxInt121x9OxMjNzHFeLjVm12JHX0Cou/yrLHK1og6s7Ko3JEzlatGjB1JvCSy3/92vgu97in9M06vqV1Ts7WLlUqTUIxX3yfdGEcym3ujFOTwkUxdu+19uoZuVnX/dsq+zJYblgnmMStak/ya12Reg2VR0Eq6pUdWcqkuMpOT8M8F6lheo9JtI02npllRsqXo0qUaaeMbTiltTa75yzOXi2eFPmZcQwW++Gbszh4OgaZZTVTji7T8TOyrAFQ2XW41dlt11h2LHdj7zseKgKNlUAWPp1OFK2g4pLNOMm++Tim5N/8nnXy0vbq/wBduo1pzqOF3WoU4tuWzThWnGFOEeCSSW6K3yzJ5k23rDvn9oDpmBzp0sDU8wbjmjccCs/SbgCb9t99qAyNsR5qGdC61qlT6tH4x96eIL97t/dz3NonPJrml1PUsVr/AP6Slx2ZxzXkvClu2O7NVxa4qnJEFO9nv+1XWn5ajlM1IPJMav4rEr+jjSDszD5rLDZZt05mRK5uqty/jZZX0Vuiv3e3zll+JtRyf5IaXoMMWVJKeMOvUxOtLvzUa3J9saahH9XJrydQmYgCAIAgCAIAgCAIAgCAIAgCAIAgEjvBJ3x6Vo+fc+qVutmRWuNTmgeZViruWsFlYHNVuIrBuTmV4gFVRrHmY0u6pW9Vyqp71sqfFRXF5XFbW7MlngspLLKV5z+Tmqa3ZU46fJSjSk6k7b0Z1ZYShKMm9lumnNqEtnOW05T2Ylneh69Rk1Ldi3VX47jdLabFtrYf0XQlT/bLAhOM1tRaafBp5XtRpFc2ta1qOjcQlTnF4lCpGUJJ9zjJJo6uZ2Lw7H82zExnu338x6Kns3+nmyFt/tnF0oN5cU33tI+9PULqnDo4VasY/QjVnGP8KeDt6tq9ONU92RZXRj1Lzey11qqrUfOzMQqgfWROUpxgtqTSS4tvCS8zr0KFW5qKlRjKpOTxGEIucpSfBKKy234FZnjR8Tqa5fViYBJ0jEc2BypU5WRsU84KwDLXWjOlQIVjzsZh7yBIFql+rqSjT9CLyn9KXDa8kspd+W+43Y5tOQ89BozvL1JXVaKhsJ56GjlS6NtdVznJRlPGVHZjFP0sxomELwEA2J3G9+WZoOaMvDPOptq8rFckU5NIO/FtgeFiblqrgC1bE9HR7a7O3a3VS2qdJT8pRfCUe7wa4xfY+9NohnKrkraco7N21z1ZxzKlXik50qjXFcNqEtyqQbSmsb4zjCcbRO5zxH6VriD4FkKuXx5WYVxFWXXsBy2rJ+NReQBtpNle5ALA7qJ/a39G5XUe/tg90l6u1eKyvE0Y5RcjtU0Co1eUn0ecRuKac6Ms5x10urJ4b2KmxPG/ZxvNm20hhswDL9BAI/sMyGCFRk4vK3eK3HxjYaJ0RFQfQqhf2AQklwOUpyn6Tb8237zG+8LvQ0/SqTfqOVVjVbHiHb4ywgb8aql3stfp8mtWP2Azr17mnQjtVJKK8eL8EuLfgsmY0nRL7V6yoWNGdWXbsrqxTfpTm8QhHxm0vErS8Uniyv7QOtGOj42jVNzSlyPOvsHQW5PEsoKgkJUrMqbklnJBWC6hqMrt7K3QTyk+Lf0pf7Ls4vfjZ3W5Cc39Hk5F3Fdxq3co7LqRzsU4PjCltJN7Xz5tJyXVSjHO1H6Yct8QBAM27Xd8+p52NjYWTlWHT8SijEoxU+KxwmPXXXWXRNvOs+LDeZdzYMW48AQo7FS4q1IRpzk3GMVFR4RxFJLKXF7s5lnfwxwIrp3JfTdPuat5Qox6erVqVp159eptVZzlJRlL8nHrOOzT2U442tp7zCZ1yVCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAez2X7aZmC5swcrJxLG48mx7rKC3EkqH8tl5gbn3W3HU9OpnOnOVN5pycX3xbjnzxufryYu/wBKs9QioXlGlWSzhVqcKmM8dnaTcW8LfHD3LfuRsyvxjdpgOI1a7b061YzN/wC40Fvt3nfWpXaWOkl/DD/1IPLm25NSltOzh6qtwl/CqmPuMA7ad5uo6i3LUM3Jytm5qt1zvWjbbb11b+XX03HxaL6n6TOlVq1Ku+pKUu3rPKXlH0V6kS/TNB07S1ixt6VHdsuVOnFTaznEqnpy3/Sb7O5GMz5GdEAQBAPqq0qQykqykMrAkMrA7ggjqCD1BHUGfmP/ALu8n2HCcIzi4ySaaw00mmnxTT3NNbmmbN7O+J/tBirwo1fM4eu11gytum2y/CRaVH9Fdh9XWd+F9cw3RqT9bUvvmmyDXnITk/eS2qtlRz30ouhnxaoOCb8Xl+O5Hd1XxbdpLkKPq+SFYbE1CrHf7LKK63U/WrAzlLULqSw6svVsx++MU/Yda35u+TlvJThZU208/GSq1V641Zyi/Jpo1dq2sXZFjW5Ftt97fKtuse2xtvTk7lmP2mdBtye1Jtvvk3J+15ZO7a1o2tNUreEKcFwhThGEV5RikvuOpPw7QgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIAgCAIB//2Q==';
 
+// Daftar awal (seed) kategori Biaya Operasional -- sekarang dikelola user sendiri via STATE.opexKategori
+// (tab Data Master, "Kelola Kategori Biaya Operasional", 2026-10-26). Dipakai cuma sbg nilai default di STATE
+// literal di bawah & di DEFAULT_STATE (loadState()) supaya user lama yg filenya belum punya field ini tidak
+// kehilangan 16 kategori yg sudah ada. Setelah itu SEMUA baca/tulis kategori HARUS lewat STATE.opexKategori,
+// bukan const ini langsung, spy tambah/hapus kategori oleh user ikut kebawa & tersimpan ke Drive.
+const OPEX_KATEGORI = ['Gaji Karyawan', 'Bonus Karyawan', 'Sewa Tempat', 'Listrik', 'Internet', 'Cloud/Subscription',
+  'ATK (Alat Tulis Kantor)', 'Transportasi', 'Kesehatan', 'CSR', 'Entertainment', 'Logistik Umum',
+  'Biaya Bank', 'Biaya Packing', 'Marketing (non-Ads)', 'Lain-lain'];
+
 /* =========================================================================
    STATE
    ========================================================================= */
@@ -257,6 +266,7 @@ let STATE = {
   vendorPayouts: [],              // kewajiban bayar ke konveksi/supplier: {id, brand, produk, qty, total, tanggalDihitung, tanggalDibayar}
   adsMingguan: [],                 // biaya iklan per periode per toko: {id, tanggalDari, tanggalSampai, storeId, storeName, platform, biaya, catatan}
   biayaOperasional: [],            // biaya operasional periodik: {id, tanggalDari, tanggalSampai, kategori, jumlah, catatan}
+  opexKategori: OPEX_KATEGORI.slice(), // daftar kategori Biaya Operasional, dikelola user sendiri (tab Data Master)
   saldoDiluarKontrak: {},          // {capitalPartnerId: jumlahRp} -- sisa pembulatan dari rollover kontrak, lintas produk per investor
   biayaRetur: [],                  // biaya retur/refund dari order lama yg ditolak/dikembalikan: {id, tanggalDihitung, orderId, toko, jumlah, catatan}
   karyawan: [],                    // {id, nik, nama, status}
@@ -1305,7 +1315,7 @@ async function loadState(fileIdOverride) {
   const loaded = text ? JSON.parse(text) : {};
   // DEFAULT_STATE mencakup SEMUA field yg pernah ada -- supaya file lama (dari sebelum field baru ditambahkan)
   // tidak jadi undefined pas dimuat. Tiap kali nambah field baru ke STATE, tambahkan juga di sini.
-  const DEFAULT_STATE = { capitalPartners: [], stores: [], products: [], contracts: [], colorCodeMap: {}, pembagiPctManual: {}, orderDb: [], pendingOrderSku: {}, payouts: [], vendorPayouts: [], adsMingguan: [], biayaOperasional: [], saldoDiluarKontrak: {}, biayaRetur: [], karyawan: [], slipGaji: [], slipGajiSettings: { namaPerusahaan: 'UJUSO', alamatBaris: ['Jl. Permana Timur Blok D7 No. 28', 'Kel. Citeureup, Kec. Cimahi Utara', 'Kota Cimahi'], logoDataUri: DEFAULT_LOGO_UJUSO_DATA_URI, emailKontak: 'setiawandewanto@gmail.com' } };
+  const DEFAULT_STATE = { capitalPartners: [], stores: [], products: [], contracts: [], colorCodeMap: {}, pembagiPctManual: {}, orderDb: [], pendingOrderSku: {}, payouts: [], vendorPayouts: [], adsMingguan: [], biayaOperasional: [], opexKategori: OPEX_KATEGORI.slice(), saldoDiluarKontrak: {}, biayaRetur: [], karyawan: [], slipGaji: [], slipGajiSettings: { namaPerusahaan: 'UJUSO', alamatBaris: ['Jl. Permana Timur Blok D7 No. 28', 'Kel. Citeureup, Kec. Cimahi Utara', 'Kota Cimahi'], logoDataUri: DEFAULT_LOGO_UJUSO_DATA_URI, emailKontak: 'setiawandewanto@gmail.com' } };
   STATE = Object.assign({}, DEFAULT_STATE, loaded);
 }
 
@@ -1581,6 +1591,17 @@ function renderMaster(container) {
     </div>
 
     <div class="panel">
+      <h2>Kelola Kategori Biaya Operasional</h2>
+      <div class="desc">Kategori yang muncul di form "Tambah Biaya Operasional" &amp; filternya (tab Biaya Operasional). Sebuah kategori hanya bisa dihapus kalau belum dipakai di baris biaya manapun.</div>
+      <form id="formKategoriOpex" style="display:flex; gap:10px; align-items:flex-end; flex-wrap:wrap; margin-bottom:14px;">
+        <div class="field" style="flex:1 1 220px; margin-bottom:0;"><label>Nama Kategori Baru</label><input type="text" id="k_namaKategori" required placeholder="mis. Biaya Legal"></div>
+        <button type="submit" class="btn btn-primary">+ Tambah Kategori</button>
+      </form>
+      <div class="status-box" id="kategoriOpexMsg"></div>
+      <div id="kategoriOpexList"></div>
+    </div>
+
+    <div class="panel">
       <h2>Tandai Riwayat Rollover (Data Lama)</h2>
       <div class="desc">Sekali jalan: telusuri kontrak2 hasil migrasi UJUSO, tandai yang polanya jelas rollover (kontrak sebelumnya habis dulu baru yang baru mulai), dan perbaiki tanggal placeholder yang aneh. Aman diulang -- yang sudah ditandai tidak akan ditimpa.</div>
       <button class="btn btn-ghost" id="btnInferRollover">Tandai Sekarang</button>
@@ -1590,6 +1611,23 @@ function renderMaster(container) {
 
   renderPartnerList(document.getElementById('partnerList'));
   renderStoreList(document.getElementById('storeList'));
+  renderKategoriOpexList(document.getElementById('kategoriOpexList'));
+
+  document.getElementById('formKategoriOpex').addEventListener('submit', async (ev) => {
+    ev.preventDefault();
+    const msg = document.getElementById('kategoriOpexMsg');
+    const nama = document.getElementById('k_namaKategori').value.trim();
+    if (!nama) { showMsg(msg, 'err', 'Nama kategori tidak boleh kosong.'); return; }
+    if (STATE.opexKategori.some(k => k.toLowerCase() === nama.toLowerCase())) {
+      showMsg(msg, 'err', `Kategori "${nama}" sudah ada.`); return;
+    }
+    STATE.opexKategori.push(nama);
+    await withSaving(msg, 'Kategori ditambahkan.', async () => {
+      await saveState();
+      document.getElementById('formKategoriOpex').reset();
+      renderKategoriOpexList(document.getElementById('kategoriOpexList'));
+    });
+  });
 
   document.getElementById('btnPickFile').addEventListener('click', () => document.getElementById('fileMigrate').click());
   let pendingMigrateFile = null;
@@ -2036,6 +2074,31 @@ function renderStoreList(el) {
       STATE.stores = STATE.stores.filter(s => s.id !== btn.dataset.delStore);
       await saveState();
       renderStoreList(el);
+    });
+  });
+}
+
+// Kategori Biaya Operasional dikelola sendiri oleh user (2026-10-26, permintaan Setiawan) -- dulu hardcode
+// OPEX_KATEGORI, sekarang STATE.opexKategori (di-seed dari OPEX_KATEGORI sekali di DEFAULT_STATE, lihat loadState()).
+// Hapus kategori DIBLOKIR kalau masih dipakai di baris STATE.biayaOperasional manapun, supaya data lama tidak
+// pernah "lepas" jadi kategori hantu yg tidak muncul lagi di dropdown manapun.
+function renderKategoriOpexList(el) {
+  if (!STATE.opexKategori.length) { el.innerHTML = '<div class="empty-note">Belum ada kategori.</div>'; return; }
+  el.innerHTML = `<div style="display:flex; flex-wrap:wrap; gap:8px;">${STATE.opexKategori.map(k => `
+    <span style="display:inline-flex; align-items:center; gap:8px; background:var(--paper); border:1px solid var(--line-soft); border-radius:999px; padding:6px 7px 6px 14px; font-size:13px; color:var(--ink);">${k}<button class="icon-del" data-del-kategori-opex="${encodeURIComponent(k)}" title="Hapus kategori" style="line-height:1;">&#10005;</button></span>
+  `).join('')}</div>`;
+  el.querySelectorAll('[data-del-kategori-opex]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const nama = decodeURIComponent(btn.dataset.delKategoriOpex);
+      const nPakai = STATE.biayaOperasional.filter(o => o.kategori === nama).length;
+      if (nPakai > 0) {
+        alert(`Kategori "${nama}" masih dipakai di ${nPakai} baris Biaya Operasional -- tidak bisa dihapus. Ubah dulu kategori baris-baris itu (atau biarkan saja kalau memang masih dipakai).`);
+        return;
+      }
+      if (!confirm(`Hapus kategori "${nama}"?`)) return;
+      STATE.opexKategori = STATE.opexKategori.filter(k => k !== nama);
+      await saveState();
+      renderKategoriOpexList(el);
     });
   });
 }
@@ -4896,8 +4959,11 @@ function renderKontrakDetailTable(payout) {
   const produk = findProduct(payout.produk);
   const { rows, totalQty, totalRp, harga } = kontrakDetailRows(payout);
   return `
-    <div style="border:1px solid var(--line); border-radius:3px; padding:12px; margin-bottom:14px; background:#fff;">
-      <div style="font-family:'IBM Plex Mono',monospace; font-size:11px; color:var(--ink-soft); margin-bottom:6px;">INVESTOR &middot; ${payout.kodeKontrak || '-'} &middot; ${payout.namaInvestor||''}</div>
+    <div style="border:1px solid var(--glass-border); border-radius:18px; padding:16px; margin-bottom:14px; background:var(--surface); backdrop-filter:blur(16px); -webkit-backdrop-filter:blur(16px); box-shadow:0 10px 26px rgba(17,24,39,.07), 0 2px 6px rgba(17,24,39,.04);">
+      <div style="margin-bottom:12px;">
+        <div style="font-family:'Inter',sans-serif; font-size:11px; font-weight:700; letter-spacing:.06em; text-transform:uppercase; color:var(--ink-soft); margin-bottom:3px;">Investor</div>
+        <div style="font-family:'Inter',sans-serif; font-size:16px; font-weight:800; color:var(--ink);"><span style="font-family:'IBM Plex Mono',monospace; font-weight:700; color:var(--accent); background:var(--accent-soft); padding:2px 9px; border-radius:999px; font-size:13px; margin-right:8px; display:inline-block; vertical-align:middle;">${payout.kodeKontrak || '-'}</span>${payout.namaInvestor||''}</div>
+      </div>
       <table class="data compact">
         <thead><tr><th>Konveksi</th><th>Kode Produk</th><th class="num">Harga</th><th class="num">Qty</th><th class="num">Total</th></tr></thead>
         <tbody>
@@ -5883,10 +5949,6 @@ function renderAds(container) {
    TAB: BIAYA OPERASIONAL
    ========================================================================= */
 let opexFilter = { kategori: '', tglDari: '', tglSampai: '' };
-const OPEX_KATEGORI = ['Gaji Karyawan', 'Bonus Karyawan', 'Sewa Tempat', 'Listrik', 'Internet', 'Cloud/Subscription',
-  'ATK (Alat Tulis Kantor)', 'Transportasi', 'Kesehatan', 'CSR', 'Entertainment', 'Logistik Umum',
-  'Biaya Bank', 'Biaya Packing', 'Marketing (non-Ads)', 'Lain-lain'];
-
 function renderOpex(container) {
   let filtered = STATE.biayaOperasional;
   if (opexFilter.kategori) filtered = filtered.filter(o => o.kategori === opexFilter.kategori);
@@ -5911,7 +5973,7 @@ function renderOpex(container) {
         <button type="button" class="btn-ghost" id="btnTogglelOpexRentang" style="border:none; background:none; padding:4px 0; font-size:12.5px; color:var(--accent); cursor:pointer; box-shadow:none;">+ Jadikan rentang tanggal (mis. gaji/sewa bulanan)</button>
         <div class="grid2" style="margin-top:12px;">
           <div class="field"><label>Kategori</label>
-            <select id="opex_kategori" required><option value="">Pilih kategori</option>${OPEX_KATEGORI.map(k=>`<option value="${k}">${k}</option>`).join('')}</select>
+            <select id="opex_kategori" required><option value="">Pilih kategori</option>${STATE.opexKategori.map(k=>`<option value="${k}">${k}</option>`).join('')}</select>
           </div>
           <div class="field"><label>Jumlah (Rp)</label><input type="number" id="opex_jumlah" required min="0"></div>
         </div>
@@ -5929,14 +5991,17 @@ function renderOpex(container) {
     <div class="panel">
       <h2>Filter</h2>
       <div class="field"><label>Kategori</label>
-        <select id="opexFilterKategori"><option value="">Semua Kategori</option>${OPEX_KATEGORI.map(k=>`<option value="${k}" ${opexFilter.kategori===k?'selected':''}>${k}</option>`).join('')}</select>
+        <select id="opexFilterKategori"><option value="">Semua Kategori</option>${STATE.opexKategori.map(k=>`<option value="${k}" ${opexFilter.kategori===k?'selected':''}>${k}</option>`).join('')}</select>
       </div>
       <div class="grid2">
         <div class="field"><label>Dari Tanggal</label><input type="date" id="opexFilterTglDari" value="${opexFilter.tglDari}"></div>
         <div class="field"><label>Sampai Tanggal</label><input type="date" id="opexFilterTglSampai" value="${opexFilter.tglSampai}"></div>
       </div>
       ${Object.keys(byKategori).length ? `
-      <div class="desc" style="margin-top:10px;"><b>Rincian per kategori:</b> ${Object.entries(byKategori).map(([k,t])=>`${k}: ${fmtRp(t)}`).join(' &middot; ')}</div>
+      <div style="margin-top:12px;">
+        <div style="font-size:11.5px; font-weight:700; letter-spacing:.04em; text-transform:uppercase; color:var(--ink-soft); margin-bottom:8px;">Rincian per Kategori</div>
+        <div style="display:flex; flex-wrap:wrap; gap:8px;">${Object.entries(byKategori).map(([k,t])=>`<span style="display:inline-flex; align-items:center; gap:7px; background:var(--paper); border:1px solid var(--line-soft); border-radius:999px; padding:5px 12px 5px 12px; font-size:12.5px; color:var(--ink-soft);">${k}<span class="tnum" style="font-weight:700; color:var(--ink);">${fmtRp(t)}</span></span>`).join('')}</div>
+      </div>
       ` : ''}
       <div style="overflow-x:auto; margin-top:10px;">
       ${!filtered.length ? '<div class="empty-note">Belum ada data.</div>' : `
@@ -6262,7 +6327,10 @@ function renderPnl(container) {
   const opexDetailHtml = !opexRowsForDetail.length
     ? '<div class="empty-note">Tidak ada biaya operasional tercatat di periode ini.</div>'
     : `<div style="background:var(--paper); border:1px solid var(--line); border-radius:12px; padding:10px; margin:4px 0 10px;">
-        <div class="desc" style="margin-bottom:6px;"><b>Rincian per kategori:</b> ${Object.entries(opexByKategoriForDetail).map(([k,t])=>`${k}: ${fmtRp(t)}`).join(' &middot; ')}</div>
+        <div style="margin-bottom:10px;">
+          <div style="font-size:11px; font-weight:700; letter-spacing:.04em; text-transform:uppercase; color:var(--ink-soft); margin-bottom:7px;">Rincian per Kategori</div>
+          <div style="display:flex; flex-wrap:wrap; gap:7px;">${Object.entries(opexByKategoriForDetail).map(([k,t])=>`<span style="display:inline-flex; align-items:center; gap:6px; background:var(--surface); border:1px solid var(--line-soft); border-radius:999px; padding:4px 11px; font-size:12px; color:var(--ink-soft);">${k}<span class="tnum" style="font-weight:700; color:var(--ink);">${fmtRp(t)}</span></span>`).join('')}</div>
+        </div>
         <div style="overflow-x:auto;">
         <table class="data compact">
           <thead><tr><th>Tanggal</th><th>Kategori</th><th class="num">Jumlah</th><th>Catatan</th></tr></thead>
@@ -6741,7 +6809,7 @@ function renderDashboard(container) {
         ${!recentOrders.length ? '<div class="empty-note">Tidak ada order di periode ini.</div>' : recentOrders.map(r => `
         <div class="recent-row" data-recent-goto-db="1">
           ${platformDot(r.sumber)}
-          <div style="flex:1; min-width:0; display:flex; flex-direction:column; line-height:1.3;">
+          <div style="flex:1; max-width:220px; min-width:0; display:flex; flex-direction:column; line-height:1.3;">
             <span style="font-size:13px; font-weight:600; color:var(--ink); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${r.produk||'-'} &middot; ${r.sku||'-'}</span>
             <span style="font-size:12px; color:var(--ink-soft);">${fmtTanggal(r.tanggalPesan||r.tanggalPenarikan,{short:true})}</span>
           </div>
@@ -6757,14 +6825,14 @@ function renderDashboard(container) {
       <div class="desc">Margin Kotor = Omzet - Modal (Konveksi) - Beban Penjualan (komisi+biaya+pajak+iklan+retur), SEBELUM Payout Capital Partner (investor) -- payout investor sengaja tidak dipecah per toko krn dihitung per kontrak+tanggal, bukan per toko/order (lihat tab PNL utk profit akhir perusahaan). Klik nama toko utk rincian biaya lengkap.</div>
       ${!sumberList.length ? '<div class="empty-note">Tidak ada data di periode ini.</div>' : sumberList.map(([nama,v]) => `
         <div style="margin-bottom:14px; padding-bottom:12px; border-bottom:1px solid var(--line);">
-          <div class="toko-dash-toggle" data-toko-dash="${nama}" style="cursor:pointer;">
-            <div style="display:flex; justify-content:space-between; font-size:12px; margin-bottom:3px;">
-              <span style="text-decoration:underline; color:var(--accent);">${platformDot(nama)}${nama}</span><span>${fmtRp(v.omzet)} &middot; ${v.qty} unit</span>
+          <div class="toko-dash-toggle" data-toko-dash="${nama}" style="cursor:pointer; max-width:600px;">
+            <div style="display:flex; justify-content:space-between; gap:14px; font-size:12px; margin-bottom:5px;">
+              <span style="text-decoration:underline; color:var(--accent); font-weight:600;">${platformDot(nama)}${nama}</span><span style="font-weight:600; flex:none;">${fmtRp(v.omzet)} &middot; ${v.qty} unit</span>
             </div>
-            <div style="background:var(--line); border-radius:2px; height:10px;"><div style="background:var(--accent); height:100%; border-radius:2px; width:${(v.omzet/maxOmzetSumber*100).toFixed(1)}%;"></div></div>
-            <div style="display:flex; justify-content:space-between; font-size:11px; margin-top:4px; color:var(--ink-soft);">
+            <div style="background:var(--paper); border-radius:999px; height:8px; overflow:hidden;"><div style="background:var(--accent); height:100%; border-radius:999px; width:${(v.omzet/maxOmzetSumber*100).toFixed(1)}%;"></div></div>
+            <div style="display:flex; justify-content:space-between; gap:14px; font-size:11px; margin-top:5px; color:var(--ink-soft);">
               <span>Modal: ${fmtRpCompact(v.modal)} &middot; Beban Penjualan: ${fmtRpCompact(v.bebanPenjualan)}</span>
-              <span style="font-weight:600; color:${v.marginKotor>=0?'var(--ok)':'var(--err)'};">Margin Kotor: ${fmtRpCompact(v.marginKotor)}${v.marginPct!=null?` (${v.marginPct.toFixed(1)}%)`:''}</span>
+              <span style="font-weight:600; flex:none; color:${v.marginKotor>=0?'var(--ok)':'var(--err)'};">Margin Kotor: ${fmtRpCompact(v.marginKotor)}${v.marginPct!=null?` (${v.marginPct.toFixed(1)}%)`:''}</span>
             </div>
           </div>
           <div id="tokoDash_${nama}" style="display:none;">${renderTokoBreakdown(nama, v)}</div>
@@ -6777,11 +6845,11 @@ function renderDashboard(container) {
       <div class="desc">Klik nama produk untuk lihat rincian warna &amp; size terlaris.</div>
       ${!produkList.length ? '<div class="empty-note">Tidak ada data di periode ini.</div>' : produkList.map(([nama,v]) => `
         <div>
-          <div class="produk-dash-toggle" data-produk-dash="${nama}" style="margin-bottom:10px; cursor:pointer;">
-            <div style="display:flex; justify-content:space-between; font-size:12px; margin-bottom:3px;">
-              <span style="text-decoration:underline; color:var(--accent);">${nama}</span><span>${fmtRp(v.omzet)} &middot; ${v.qty} unit</span>
+          <div class="produk-dash-toggle" data-produk-dash="${nama}" style="margin-bottom:10px; cursor:pointer; max-width:600px;">
+            <div style="display:flex; justify-content:space-between; gap:14px; font-size:12px; margin-bottom:5px;">
+              <span style="text-decoration:underline; color:var(--accent); font-weight:600;">${nama}</span><span style="font-weight:600; flex:none;">${fmtRp(v.omzet)} &middot; ${v.qty} unit</span>
             </div>
-            <div style="background:var(--line); border-radius:2px; height:10px;"><div style="background:var(--ok); height:100%; border-radius:2px; width:${(v.omzet/maxOmzetProduk*100).toFixed(1)}%;"></div></div>
+            <div style="background:var(--paper); border-radius:999px; height:8px; overflow:hidden;"><div style="background:var(--ok); height:100%; border-radius:999px; width:${(v.omzet/maxOmzetProduk*100).toFixed(1)}%;"></div></div>
           </div>
           <div id="produkDash_${nama}" style="display:none;">${renderProdukBreakdown(nama)}</div>
         </div>
