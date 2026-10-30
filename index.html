@@ -209,6 +209,7 @@
       <div class="sidebar-group-label">Operasional</div>
       <button data-tab="ads"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9v6h3l9 4V5L6 9H3z"></path><path d="M16 9a4 4 0 0 1 0 6"></path></svg><span>Ads Mingguan</span></button>
       <button data-tab="opex"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="6" width="18" height="13" rx="2"></rect><path d="M3 10h18"></path><circle cx="16.5" cy="14" r="1"></circle></svg><span>Biaya Operasional</span></button>
+      <button data-tab="alokasi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v20"></path><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"></path></svg><span>Investasi &amp; Dividen</span></button>
       <button data-tab="pnl"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20V10"></path><path d="M12 20V4"></path><path d="M20 20v-6"></path></svg><span>PNL</span></button>
       <div class="sidebar-group-label">Karyawan</div>
       <button data-tab="gaji"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.2"></circle><path d="M3.5 19a5.5 5.5 0 0 1 11 0"></path><circle cx="17" cy="9" r="2.6"></circle><path d="M15.5 13.2A4.6 4.6 0 0 1 20.5 19"></path></svg><span>Slip Gaji</span></button>
@@ -254,6 +255,14 @@ const OPEX_KATEGORI = ['Gaji Karyawan', 'Bonus Karyawan', 'Sewa Tempat', 'Listri
   'ATK (Alat Tulis Kantor)', 'Transportasi', 'Kesehatan', 'CSR', 'Entertainment', 'Logistik Umum',
   'Biaya Bank', 'Biaya Packing', 'Marketing (non-Ads)', 'Lain-lain'];
 
+// Daftar awal (seed) kategori Investasi & Dividen (2026-10-29, permintaan Setiawan: "ada kategori yang
+// posisinya seperti dengan payout capital partner seperti investasi atau Deviden/share profit ... termasuk
+// jika ada biaya yang sifatnya investasi untuk pengembangan perusahaan") -- dikelola user sendiri via
+// STATE.alokasiKategori (tab Data Master, "Kelola Kategori Investasi & Dividen"), pola SAMA PERSIS dgn
+// OPEX_KATEGORI/STATE.opexKategori di atas. "Investasi" sengaja generik -- mencakup baik investasi
+// pengembangan perusahaan (alat, ekspansi, dll) maupun investasi lain yg sifatnya keluar dari pool profit.
+const ALOKASI_KATEGORI = ['Investasi', 'Dividen/Share Profit'];
+
 /* =========================================================================
    STATE
    ========================================================================= */
@@ -272,6 +281,8 @@ let STATE = {
   adsMingguan: [],                 // biaya iklan per periode per toko: {id, tanggalDari, tanggalSampai, storeId, storeName, platform, biaya, catatan}
   biayaOperasional: [],            // biaya operasional periodik: {id, tanggalDari, tanggalSampai, kategori, jumlah, catatan}
   opexKategori: OPEX_KATEGORI.slice(), // daftar kategori Biaya Operasional, dikelola user sendiri (tab Data Master)
+  alokasiProfit: [],               // Investasi/Dividen (alokasi dari profit, posisi spt Payout Capital Partner): {id, tanggalDari, tanggalSampai, kategori, jumlah, catatan}
+  alokasiKategori: ALOKASI_KATEGORI.slice(), // daftar kategori Investasi & Dividen, dikelola user sendiri (tab Data Master)
   saldoDiluarKontrak: {},          // {capitalPartnerId: jumlahRp} -- sisa pembulatan dari rollover kontrak, lintas produk per investor
   biayaRetur: [],                  // biaya retur/refund dari order lama yg ditolak/dikembalikan: {id, tanggalDihitung, orderId, toko, jumlah, catatan}
   karyawan: [],                    // {id, nik, nama, status}
@@ -755,7 +766,15 @@ function rowsToObjects(rows, headerRowIdx, dataStartIdx) {
 // kolom aslinya akan kelihatan di situ utk dipetakan dgn presisi.
 const SHOPEE_CATMAP = {
   komisi_platform: ['Biaya Administrasi (termasuk PPN 11%)'],
-  biaya_layanan: ['Biaya Proses Pesanan','Biaya Gratis Ongkir XTRA - Ukuran Biasa (Kategori F)','Biaya Layanan Promo XTRA','Biaya Layanan Shopee Live XTRA'],
+  // 'Kategori H' ditambah 2026-10-30 (laporan Setiawan: "48 kolom tidak dikenali" di preview import setelah
+  // Shopee tambah banyak kolom baru di file Income) -- dikonfirmasi lewat rekonsiliasi LANGSUNG ke file asli
+  // user (pendapatan + semua biaya YG SUDAH dikenali dibandingkan ke "Total Penghasilan" per order): 5 dari 99
+  // order di file itu py selisih PERSIS Rp9.540, dan SATU2NYA kolom tak dikenal yg nilainya cocok persis di
+  // tiap order itu adalah 'Kategori H' ini -- paralel persis dgn 'Kategori F' yg sudah lebih dulu dikenali,
+  // cuma beda ukuran kategori ongkir gratisnya. Bug yg sama persis polanya dgn "Growth Xtra" (2026-10-23):
+  // kolom ini TIDAK PERNAH dibaca sama sekali sejak kategori "Kategori H" mulai muncul di laporan Shopee,
+  // diam2 membuat Gross/Nett Profit tampil lebih besar dari yg sebenarnya.
+  biaya_layanan: ['Biaya Proses Pesanan','Biaya Gratis Ongkir XTRA - Ukuran Biasa (Kategori F)','Biaya Gratis Ongkir XTRA - Ukuran Biasa (Kategori H)','Biaya Layanan Promo XTRA','Biaya Layanan Shopee Live XTRA'],
   biaya_pembayaran: ['Biaya Pembayaran','Biaya Transaksi'],
   komisi_afiliasi: ['Biaya Komisi AMS'], // AMS = Affiliate Marketing Solutions
   komisi_dinamis: [],
@@ -788,8 +807,33 @@ function sumCategory(row, cols) { return cols.reduce((s,c) => s + (Number(row[c]
 
 // Kolom non-biaya yg SUDAH diketahui & dipakai langsung dari file Income (ID order, tanggal, status, dll) --
 // dipakai findUnrecognizedFeeColumns() di bawah supaya kolom2 ini TIDAK ikut dilaporkan sbg "kolom tak dikenal".
-const SHOPEE_NONFEE_COLS = ['No. Pesanan', 'Lihat berdasarkan', 'Harga Produk', 'Total Penghasilan', 'Tanggal Dana Dilepaskan'];
-const TIKTOK_NONFEE_COLS = ['ID Pesanan/Penyesuaian', 'Jenis transaksi', 'Total Pendapatan', 'Jumlah penyelesaian pembayaran', 'Waktu pembayaran pesanan'];
+// 2026-10-30: 41 kolom di bawah ini ditambah SETELAH Setiawan lapor preview import menampilkan "48 kolom
+// tidak dikenali" (Shopee & TikTok sama2 menambah banyak kolom baru di file Income/export mereka). Tiap
+// kolom di sini DIKONFIRMASI aman lewat rekonsiliasi langsung ke 3 file asli user (bukan tebakan dari nama
+// kolom saja): pendapatan + semua biaya yg SUDAH dikenali dibandingkan ke "Total Penghasilan"/"Jumlah
+// penyelesaian pembayaran" per order -- SEMUA order TikTok (68 order, 2 toko) & 93 dari 99 order Shopee
+// selisihnya PERSIS 0 tanpa kolom2 ini ikut dihitung, jadi terbukti murni informasi/pass-through (rincian
+// ongkir yg saling membatalkan sendiri antar kolom, rincian diskon/voucher, berat paket, ID referensi,
+// username, dll), BUKAN biaya yg hilang dari perhitungan. (6 order Shopee sisanya py selisih nyata -- 5
+// krn 'Kategori H', sudah dipetakan ke SHOPEE_CATMAP di atas; 1 lagi order retur yg netSettlement-nya
+// negatif, sudah otomatis ditangani jalur returAdjustments terpisah, BUKAN lewat CATMAP sama sekali.)
+// CATATAN: kalau suatu saat platform menaruh kategori biaya BARU di bawah nama kolom yg kebetulan mirip
+// salah satu di bawah ini, jaring pengaman findUnrecognizedFeeColumns() TIDAK akan menangkapnya lagi --
+// risiko ini diterima krn alternatifnya (biarkan 48 kolom "berisik" terus) bikin peringatan asli (spt
+// Kategori H ini) gampang kelewat di tengah noise.
+const SHOPEE_NONFEE_COLS = ['No. Pesanan', 'Lihat berdasarkan', 'Harga Produk', 'Total Penghasilan', 'Tanggal Dana Dilepaskan',
+  'No.', 'No. Pengajuan', 'Jumlah Pengembalian Dana ke Pembeli', 'Ongkir Dibayar Pembeli',
+  'Ongkos Kirim yang Dibayarkan ke Jasa Kirim', 'Potongan Ongkos Kirim dari Jasa Kirim', 'Gratis Ongkir dari Shopee',
+  'Ongkos Kirim Pengembalian Barang', 'Username (Pembeli)', 'Jumlah Dibayar Pembeli', 'Pengembalian Dana ke Pembeli',
+  'Dasar Pengenaan Pajak'];
+const TIKTOK_NONFEE_COLS = ['ID Pesanan/Penyesuaian', 'Jenis transaksi', 'Total Pendapatan', 'Jumlah penyelesaian pembayaran', 'Waktu pembayaran pesanan',
+  'Subtotal setelah diskon penjual', 'Subtotal sebelum diskon', 'Diskon penjual', 'Total pengembalian dana setelah diskon',
+  'Total pengembalian dana sebelum diskon', 'Pengembalian dana diskon penjual', 'Total Biaya', 'Ongkir',
+  'Ongkir yang ditalangi penyedia jasa logistik', 'Ongkir yang ditanggung platform', 'Ongkir yang ditanggung pembeli',
+  'ID pesanan terkait', 'Pembayaran oleh pembeli', 'Pengembalian dana pembeli', 'Diskon voucher yang ditanggung penjual',
+  'Pengembalian dana diskon voucher yang ditanggung penjual', 'Diskon platform', 'Pengembalian dana diskon platform',
+  'Diskon voucher yang ditanggung platform', 'Pengembalian dana diskon voucher yang ditanggung platform',
+  'Perkiraan berat paket', 'Berat paket yang bisa dikenai biaya'];
 
 // JARING PENGAMAN (ditambahkan 2026-10-23 setelah bug "Biaya layanan Program Growth Xtra" di atas): cari kolom
 // apa pun di baris header file Income yg (a) BUKAN salah satu kolom biaya yg sudah dikenal di *_CATMAP, (b)
@@ -1322,7 +1366,7 @@ async function loadState(fileIdOverride) {
   const loaded = text ? JSON.parse(text) : {};
   // DEFAULT_STATE mencakup SEMUA field yg pernah ada -- supaya file lama (dari sebelum field baru ditambahkan)
   // tidak jadi undefined pas dimuat. Tiap kali nambah field baru ke STATE, tambahkan juga di sini.
-  const DEFAULT_STATE = { capitalPartners: [], stores: [], products: [], contracts: [], colorCodeMap: {}, pembagiPctManual: {}, orderDb: [], pendingOrderSku: {}, payouts: [], vendorPayouts: [], adsMingguan: [], biayaOperasional: [], opexKategori: OPEX_KATEGORI.slice(), saldoDiluarKontrak: {}, biayaRetur: [], karyawan: [], slipGaji: [], slipGajiSettings: { namaPerusahaan: 'UJUSO', alamatBaris: ['Jl. Permana Timur Blok D7 No. 28', 'Kel. Citeureup, Kec. Cimahi Utara', 'Kota Cimahi'], logoDataUri: DEFAULT_LOGO_UJUSO_DATA_URI, emailKontak: 'setiawandewanto@gmail.com' } };
+  const DEFAULT_STATE = { capitalPartners: [], stores: [], products: [], contracts: [], colorCodeMap: {}, pembagiPctManual: {}, orderDb: [], pendingOrderSku: {}, payouts: [], vendorPayouts: [], adsMingguan: [], biayaOperasional: [], opexKategori: OPEX_KATEGORI.slice(), alokasiProfit: [], alokasiKategori: ALOKASI_KATEGORI.slice(), saldoDiluarKontrak: {}, biayaRetur: [], karyawan: [], slipGaji: [], slipGajiSettings: { namaPerusahaan: 'UJUSO', alamatBaris: ['Jl. Permana Timur Blok D7 No. 28', 'Kel. Citeureup, Kec. Cimahi Utara', 'Kota Cimahi'], logoDataUri: DEFAULT_LOGO_UJUSO_DATA_URI, emailKontak: 'setiawandewanto@gmail.com' } };
   STATE = Object.assign({}, DEFAULT_STATE, loaded);
 }
 
@@ -1609,6 +1653,17 @@ function renderMaster(container) {
     </div>
 
     <div class="panel">
+      <h2>Kelola Kategori Investasi &amp; Dividen</h2>
+      <div class="desc">Kategori yang muncul di form "Tambah Investasi/Dividen" &amp; filternya (tab Investasi &amp; Dividen) -- termasuk biaya yang sifatnya investasi untuk pengembangan perusahaan. Baris di sini ikut mengurangi "Profit Akhir Perusahaan" di tab PNL, posisinya sama seperti Payout Capital Partner. Sebuah kategori hanya bisa dihapus kalau belum dipakai di baris manapun.</div>
+      <form id="formKategoriAlokasi" style="display:flex; gap:10px; align-items:flex-end; flex-wrap:wrap; margin-bottom:14px;">
+        <div class="field" style="flex:1 1 220px; margin-bottom:0;"><label>Nama Kategori Baru</label><input type="text" id="k_namaKategoriAlokasi" required placeholder="mis. Beli Mesin Jahit"></div>
+        <button type="submit" class="btn btn-primary">+ Tambah Kategori</button>
+      </form>
+      <div class="status-box" id="kategoriAlokasiMsg"></div>
+      <div id="kategoriAlokasiList"></div>
+    </div>
+
+    <div class="panel">
       <h2>Tandai Riwayat Rollover (Data Lama)</h2>
       <div class="desc">Sekali jalan: telusuri kontrak2 hasil migrasi UJUSO, tandai yang polanya jelas rollover (kontrak sebelumnya habis dulu baru yang baru mulai), dan perbaiki tanggal placeholder yang aneh. Aman diulang -- yang sudah ditandai tidak akan ditimpa.</div>
       <button class="btn btn-ghost" id="btnInferRollover">Tandai Sekarang</button>
@@ -1619,6 +1674,7 @@ function renderMaster(container) {
   renderPartnerList(document.getElementById('partnerList'));
   renderStoreList(document.getElementById('storeList'));
   renderKategoriOpexList(document.getElementById('kategoriOpexList'));
+  renderKategoriAlokasiList(document.getElementById('kategoriAlokasiList'));
 
   document.getElementById('formKategoriOpex').addEventListener('submit', async (ev) => {
     ev.preventDefault();
@@ -1633,6 +1689,22 @@ function renderMaster(container) {
       await saveState();
       document.getElementById('formKategoriOpex').reset();
       renderKategoriOpexList(document.getElementById('kategoriOpexList'));
+    });
+  });
+
+  document.getElementById('formKategoriAlokasi').addEventListener('submit', async (ev) => {
+    ev.preventDefault();
+    const msg = document.getElementById('kategoriAlokasiMsg');
+    const nama = document.getElementById('k_namaKategoriAlokasi').value.trim();
+    if (!nama) { showMsg(msg, 'err', 'Nama kategori tidak boleh kosong.'); return; }
+    if (STATE.alokasiKategori.some(k => k.toLowerCase() === nama.toLowerCase())) {
+      showMsg(msg, 'err', `Kategori "${nama}" sudah ada.`); return;
+    }
+    STATE.alokasiKategori.push(nama);
+    await withSaving(msg, 'Kategori ditambahkan.', async () => {
+      await saveState();
+      document.getElementById('formKategoriAlokasi').reset();
+      renderKategoriAlokasiList(document.getElementById('kategoriAlokasiList'));
     });
   });
 
@@ -2106,6 +2178,29 @@ function renderKategoriOpexList(el) {
       STATE.opexKategori = STATE.opexKategori.filter(k => k !== nama);
       await saveState();
       renderKategoriOpexList(el);
+    });
+  });
+}
+
+// Kategori Investasi & Dividen (2026-10-29, permintaan Setiawan) -- pola SAMA PERSIS dgn
+// renderKategoriOpexList di atas, cuma sumbernya STATE.alokasiKategori/STATE.alokasiProfit.
+function renderKategoriAlokasiList(el) {
+  if (!STATE.alokasiKategori.length) { el.innerHTML = '<div class="empty-note">Belum ada kategori.</div>'; return; }
+  el.innerHTML = `<div style="display:flex; flex-wrap:wrap; gap:8px;">${STATE.alokasiKategori.map(k => `
+    <span style="display:inline-flex; align-items:center; gap:8px; background:var(--paper); border:1px solid var(--line-soft); border-radius:999px; padding:6px 7px 6px 14px; font-size:13px; color:var(--ink);">${k}<button class="icon-del" data-del-kategori-alokasi="${encodeURIComponent(k)}" title="Hapus kategori" style="line-height:1;">&#10005;</button></span>
+  `).join('')}</div>`;
+  el.querySelectorAll('[data-del-kategori-alokasi]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const nama = decodeURIComponent(btn.dataset.delKategoriAlokasi);
+      const nPakai = STATE.alokasiProfit.filter(a => a.kategori === nama).length;
+      if (nPakai > 0) {
+        alert(`Kategori "${nama}" masih dipakai di ${nPakai} baris Investasi & Dividen -- tidak bisa dihapus. Ubah dulu kategori baris-baris itu (atau biarkan saja kalau memang masih dipakai).`);
+        return;
+      }
+      if (!confirm(`Hapus kategori "${nama}"?`)) return;
+      STATE.alokasiKategori = STATE.alokasiKategori.filter(k => k !== nama);
+      await saveState();
+      renderKategoriAlokasiList(el);
     });
   });
 }
@@ -5976,6 +6071,11 @@ function renderAds(container) {
    TAB: BIAYA OPERASIONAL
    ========================================================================= */
 let opexFilter = { kategori: '', tglDari: '', tglSampai: '' };
+// Edit-in-place utk Biaya Operasional (2026-10-27, Setiawan: "jika aku ingin mengganti kategori yang sudah
+// di input disini apakah bisa tanpa perlu menghapus dulu") -- pola SAMA PERSIS dgn edit Slip Gaji
+// (editingSlipGajiId): id yg sedang diedit disimpan di var module-level ini, form "Tambah" di atas dipakai
+// ULANG sbg form edit (judul/isi/tombol berubah kalau ada yg sedang diedit), bukan edit inline di baris tabel.
+let editingOpexId = null;
 function renderOpex(container) {
   let filtered = STATE.biayaOperasional;
   if (opexFilter.kategori) filtered = filtered.filter(o => o.kategori === opexFilter.kategori);
@@ -5987,25 +6087,29 @@ function renderOpex(container) {
   const byKategori = {};
   filtered.forEach(o => { byKategori[o.kategori] = (byKategori[o.kategori]||0) + (o.jumlah||0); });
 
+  const editingOpex = editingOpexId ? STATE.biayaOperasional.find(o => o.id === editingOpexId) : null;
+  const editingRentang = editingOpex ? editingOpex.tanggalDari.slice(0,10) !== editingOpex.tanggalSampai.slice(0,10) : false;
+
   container.innerHTML = `
     <div class="panel">
-      <h2>Tambah Biaya Operasional</h2>
+      <h2>${editingOpex ? 'Edit Biaya Operasional' : 'Tambah Biaya Operasional'}</h2>
       <div class="desc">Catat biaya non-produksi (gaji, sewa, listrik, dll). Biasanya cukup 1 tanggal -- pakai rentang tanggal cuma kalau biayanya memang utk 1 periode (mis. gaji/sewa bulanan).</div>
       <form id="formOpex">
         <div class="grid2">
-          <div class="field" id="opex_tglSatuWrap"><label>Tanggal</label><input type="date" id="opex_tglSatu" required></div>
-          <div class="field" id="opex_tglDariWrap" style="display:none;"><label>Tanggal Dari</label><input type="date" id="opex_tglDari"></div>
-          <div class="field" id="opex_tglSampaiWrap" style="display:none;"><label>Tanggal Sampai</label><input type="date" id="opex_tglSampai"></div>
+          <div class="field" id="opex_tglSatuWrap" style="${editingRentang ? 'display:none;' : ''}"><label>Tanggal</label><input type="date" id="opex_tglSatu" value="${editingOpex ? editingOpex.tanggalDari.slice(0,10) : ''}" ${editingRentang ? '' : 'required'}></div>
+          <div class="field" id="opex_tglDariWrap" style="${editingRentang ? '' : 'display:none;'}"><label>Tanggal Dari</label><input type="date" id="opex_tglDari" value="${editingOpex ? editingOpex.tanggalDari.slice(0,10) : ''}"></div>
+          <div class="field" id="opex_tglSampaiWrap" style="${editingRentang ? '' : 'display:none;'}"><label>Tanggal Sampai</label><input type="date" id="opex_tglSampai" value="${editingOpex ? editingOpex.tanggalSampai.slice(0,10) : ''}"></div>
         </div>
-        <button type="button" class="btn-ghost" id="btnTogglelOpexRentang" style="border:none; background:none; padding:4px 0; font-size:12.5px; color:var(--accent); cursor:pointer; box-shadow:none;">+ Jadikan rentang tanggal (mis. gaji/sewa bulanan)</button>
+        <button type="button" class="btn-ghost" id="btnTogglelOpexRentang" style="border:none; background:none; padding:4px 0; font-size:12.5px; color:var(--accent); cursor:pointer; box-shadow:none;">${editingRentang ? '- Kembali ke 1 tanggal saja' : '+ Jadikan rentang tanggal (mis. gaji/sewa bulanan)'}</button>
         <div class="grid2" style="margin-top:12px;">
           <div class="field"><label>Kategori</label>
-            <select id="opex_kategori" required><option value="">Pilih kategori</option>${STATE.opexKategori.map(k=>`<option value="${k}">${k}</option>`).join('')}</select>
+            <select id="opex_kategori" required><option value="">Pilih kategori</option>${STATE.opexKategori.map(k=>`<option value="${k}" ${editingOpex && editingOpex.kategori===k ? 'selected' : ''}>${k}</option>`).join('')}</select>
           </div>
-          <div class="field"><label>Jumlah (Rp)</label><input type="number" id="opex_jumlah" required min="0"></div>
+          <div class="field"><label>Jumlah (Rp)</label><input type="number" id="opex_jumlah" required min="0" value="${editingOpex ? editingOpex.jumlah : ''}"></div>
         </div>
-        <div class="field"><label>Catatan (opsional)</label><input type="text" id="opex_catatan" placeholder="mis. gaji Agustus minggu ke-3"></div>
-        <button type="submit" class="btn btn-primary">+ Tambah Biaya Operasional</button>
+        <div class="field"><label>Catatan (opsional)</label><input type="text" id="opex_catatan" placeholder="mis. gaji Agustus minggu ke-3" value="${editingOpex && editingOpex.catatan ? editingOpex.catatan.replace(/"/g,'&quot;') : ''}"></div>
+        <button type="submit" class="btn btn-primary">${editingOpex ? 'Simpan Perubahan' : '+ Tambah Biaya Operasional'}</button>
+        ${editingOpex ? `<button type="button" class="btn btn-ghost" id="btnBatalEditOpex" style="margin-top:8px;">Batal Edit</button>` : ''}
         <div class="status-box" id="opexMsg"></div>
       </form>
     </div>
@@ -6034,7 +6138,10 @@ function renderOpex(container) {
             <td>${fmtRentangTanggal(o.tanggalDari,o.tanggalSampai,{short:true})}</td>
             <td>${o.kategori}</td><td class="num">${fmtRp(o.jumlah)}</td>
             <td style="font-size:11px; color:var(--ink-soft);">${o.catatan||'-'}</td>
-            <td><button class="icon-del" data-del-opex="${o.id}">✕</button></td>
+            <td style="white-space:nowrap;">
+              <button class="btn btn-ghost" data-edit-opex="${o.id}" style="padding:3px 8px; font-size:11px;">Edit</button>
+              <button class="icon-del" data-del-opex="${o.id}">✕</button>
+            </td>
           </tr>`).join('')}
         </tbody>
       </table>`}
@@ -6072,25 +6179,193 @@ function renderOpex(container) {
     const catatan = document.getElementById('opex_catatan').value.trim();
     if (!kategori) { showMsg(msg, 'err', 'Pilih kategori dulu.'); return; }
     if (new Date(tglSampai) < new Date(tglDari)) { showMsg(msg, 'err', 'Tanggal Sampai tidak boleh sebelum Tanggal Dari.'); return; }
-    STATE.biayaOperasional.push({
-      id: uid('opex'), tanggalDari: new Date(tglDari).toISOString(), tanggalSampai: new Date(tglSampai).toISOString(),
-      kategori, jumlah, catatan: catatan||null,
-    });
-    await withSaving(msg, 'Biaya operasional ditambahkan.', async () => {
+    if (editingOpexId) {
+      const o = STATE.biayaOperasional.find(x => x.id === editingOpexId);
+      Object.assign(o, {
+        tanggalDari: new Date(tglDari).toISOString(), tanggalSampai: new Date(tglSampai).toISOString(),
+        kategori, jumlah, catatan: catatan||null,
+      });
+    } else {
+      STATE.biayaOperasional.push({
+        id: uid('opex'), tanggalDari: new Date(tglDari).toISOString(), tanggalSampai: new Date(tglSampai).toISOString(),
+        kategori, jumlah, catatan: catatan||null,
+      });
+    }
+    const wasEditing = !!editingOpexId;
+    editingOpexId = null;
+    await withSaving(msg, wasEditing ? 'Biaya operasional diperbarui.' : 'Biaya operasional ditambahkan.', async () => {
       await saveState();
       document.getElementById('formOpex').reset();
     });
     setTimeout(() => renderOpex(container), 800);
   });
+  const btnBatalEditOpex = document.getElementById('btnBatalEditOpex');
+  if (btnBatalEditOpex) btnBatalEditOpex.addEventListener('click', () => { editingOpexId = null; renderOpex(container); });
   document.getElementById('opexFilterKategori').addEventListener('change', (e) => { opexFilter.kategori = e.target.value; renderOpex(container); });
   document.getElementById('opexFilterTglDari').addEventListener('change', (e) => { opexFilter.tglDari = e.target.value; renderOpex(container); });
   document.getElementById('opexFilterTglSampai').addEventListener('change', (e) => { opexFilter.tglSampai = e.target.value; renderOpex(container); });
+  container.querySelectorAll('[data-edit-opex]').forEach(btn => {
+    btn.addEventListener('click', () => { editingOpexId = btn.dataset.editOpex; renderOpex(container); });
+  });
   container.querySelectorAll('[data-del-opex]').forEach(btn => {
     btn.addEventListener('click', async () => {
       if (!confirm('Hapus entri biaya operasional ini?')) return;
+      if (editingOpexId === btn.dataset.delOpex) editingOpexId = null;
       STATE.biayaOperasional = STATE.biayaOperasional.filter(o => o.id !== btn.dataset.delOpex);
       await saveState();
       renderOpex(container);
+    });
+  });
+}
+
+/* =========================================================================
+   TAB: INVESTASI & DIVIDEN
+   ========================================================================= */
+// Baris "Investasi"/"Dividen/Share Profit" dll (2026-10-29, permintaan Setiawan: "ada kategori yang
+// posisinya seperti dengan payout capital partner seperti investasi atau Deviden/share profit ... termasuk
+// jika ada biaya yang sifatnya investasi untuk pengembangan perusahaan") -- posisinya di PNL SAMA PERSIS
+// seperti Payout Capital Partner: dikurangkan dari Nett Margin utk dapat Profit Akhir Perusahaan (lihat
+// computePNL). Kategori dikelola sendiri oleh user (tab Data Master, "Kelola Kategori Investasi & Dividen"),
+// bentuk data & UI-nya (form tambah/edit, filter, Rincian per Kategori) SENGAJA disalin persis dari pola
+// Biaya Operasional (renderOpex) di atas, termasuk edit-in-place (editingAlokasiId, sama pola dgn
+// editingOpexId/editingSlipGajiId) -- supaya konsisten & user sudah familiar dgn cara pakainya.
+let alokasiFilter = { kategori: '', tglDari: '', tglSampai: '' };
+let editingAlokasiId = null;
+function renderAlokasiProfit(container) {
+  let filtered = STATE.alokasiProfit;
+  if (alokasiFilter.kategori) filtered = filtered.filter(a => a.kategori === alokasiFilter.kategori);
+  if (alokasiFilter.tglDari) filtered = filtered.filter(a => a.tanggalSampai && a.tanggalSampai.slice(0,10) >= alokasiFilter.tglDari);
+  if (alokasiFilter.tglSampai) filtered = filtered.filter(a => a.tanggalDari && a.tanggalDari.slice(0,10) <= alokasiFilter.tglSampai);
+  filtered = filtered.slice().sort((a,b) => new Date(b.tanggalDari||0) - new Date(a.tanggalDari||0));
+
+  const totalFiltered = filtered.reduce((s,a) => s + (a.jumlah||0), 0);
+  const byKategori = {};
+  filtered.forEach(a => { byKategori[a.kategori] = (byKategori[a.kategori]||0) + (a.jumlah||0); });
+
+  const editingAlokasi = editingAlokasiId ? STATE.alokasiProfit.find(a => a.id === editingAlokasiId) : null;
+  const editingRentang = editingAlokasi ? editingAlokasi.tanggalDari.slice(0,10) !== editingAlokasi.tanggalSampai.slice(0,10) : false;
+
+  container.innerHTML = `
+    <div class="panel">
+      <h2>${editingAlokasi ? 'Edit Investasi & Dividen' : 'Tambah Investasi & Dividen'}</h2>
+      <div class="desc">Catat alokasi dari profit perusahaan -- investasi untuk pengembangan perusahaan (alat, ekspansi, dll) atau dividen/bagi hasil profit. Baris ini otomatis mengurangi "Profit Akhir Perusahaan" di tab PNL, posisinya sama seperti Payout Capital Partner. Biasanya cukup 1 tanggal -- pakai rentang kalau memang utk 1 periode.</div>
+      <form id="formAlokasi">
+        <div class="grid2">
+          <div class="field" id="alokasi_tglSatuWrap" style="${editingRentang ? 'display:none;' : ''}"><label>Tanggal</label><input type="date" id="alokasi_tglSatu" value="${editingAlokasi ? editingAlokasi.tanggalDari.slice(0,10) : ''}" ${editingRentang ? '' : 'required'}></div>
+          <div class="field" id="alokasi_tglDariWrap" style="${editingRentang ? '' : 'display:none;'}"><label>Tanggal Dari</label><input type="date" id="alokasi_tglDari" value="${editingAlokasi ? editingAlokasi.tanggalDari.slice(0,10) : ''}"></div>
+          <div class="field" id="alokasi_tglSampaiWrap" style="${editingRentang ? '' : 'display:none;'}"><label>Tanggal Sampai</label><input type="date" id="alokasi_tglSampai" value="${editingAlokasi ? editingAlokasi.tanggalSampai.slice(0,10) : ''}"></div>
+        </div>
+        <button type="button" class="btn-ghost" id="btnTogglelAlokasiRentang" style="border:none; background:none; padding:4px 0; font-size:12.5px; color:var(--accent); cursor:pointer; box-shadow:none;">${editingRentang ? '- Kembali ke 1 tanggal saja' : '+ Jadikan rentang tanggal'}</button>
+        <div class="grid2" style="margin-top:12px;">
+          <div class="field"><label>Kategori</label>
+            <select id="alokasi_kategori" required><option value="">Pilih kategori</option>${STATE.alokasiKategori.map(k=>`<option value="${k}" ${editingAlokasi && editingAlokasi.kategori===k ? 'selected' : ''}>${k}</option>`).join('')}</select>
+          </div>
+          <div class="field"><label>Jumlah (Rp)</label><input type="number" id="alokasi_jumlah" required min="0" value="${editingAlokasi ? editingAlokasi.jumlah : ''}"></div>
+        </div>
+        <div class="field"><label>Catatan (opsional)</label><input type="text" id="alokasi_catatan" placeholder="mis. beli mesin jahit baru" value="${editingAlokasi && editingAlokasi.catatan ? editingAlokasi.catatan.replace(/"/g,'&quot;') : ''}"></div>
+        <button type="submit" class="btn btn-primary">${editingAlokasi ? 'Simpan Perubahan' : '+ Tambah Investasi & Dividen'}</button>
+        ${editingAlokasi ? `<button type="button" class="btn btn-ghost" id="btnBatalEditAlokasi" style="margin-top:8px;">Batal Edit</button>` : ''}
+        <div class="status-box" id="alokasiMsg"></div>
+      </form>
+    </div>
+
+    <div class="kpi-row">
+      <div class="kpi"><div class="kpi-label">Total (sesuai filter)</div><div class="kpi-value">${fmtRp(totalFiltered)}</div></div>
+      <div class="kpi"><div class="kpi-label">Jumlah Entri</div><div class="kpi-value">${filtered.length}</div></div>
+    </div>
+
+    <div class="panel">
+      <h2>Filter</h2>
+      <div class="field"><label>Kategori</label>
+        <select id="alokasiFilterKategori"><option value="">Semua Kategori</option>${STATE.alokasiKategori.map(k=>`<option value="${k}" ${alokasiFilter.kategori===k?'selected':''}>${k}</option>`).join('')}</select>
+      </div>
+      <div class="grid2">
+        <div class="field"><label>Dari Tanggal</label><input type="date" id="alokasiFilterTglDari" value="${alokasiFilter.tglDari}"></div>
+        <div class="field"><label>Sampai Tanggal</label><input type="date" id="alokasiFilterTglSampai" value="${alokasiFilter.tglSampai}"></div>
+      </div>
+      ${renderRincianBar(byKategori, 'Rincian per Kategori')}
+      <div style="overflow-x:auto; margin-top:10px;">
+      ${!filtered.length ? '<div class="empty-note">Belum ada data.</div>' : `
+      <table class="data compact">
+        <thead><tr><th>Tanggal</th><th>Kategori</th><th class="num">Jumlah</th><th>Catatan</th><th></th></tr></thead>
+        <tbody>
+          ${filtered.map(a => `<tr>
+            <td>${fmtRentangTanggal(a.tanggalDari,a.tanggalSampai,{short:true})}</td>
+            <td>${a.kategori}</td><td class="num">${fmtRp(a.jumlah)}</td>
+            <td style="font-size:11px; color:var(--ink-soft);">${a.catatan||'-'}</td>
+            <td style="white-space:nowrap;">
+              <button class="btn btn-ghost" data-edit-alokasi="${a.id}" style="padding:3px 8px; font-size:11px;">Edit</button>
+              <button class="icon-del" data-del-alokasi="${a.id}">✕</button>
+            </td>
+          </tr>`).join('')}
+        </tbody>
+      </table>`}
+      </div>
+    </div>
+  `;
+
+  document.getElementById('btnTogglelAlokasiRentang').addEventListener('click', () => {
+    const dariWrap = document.getElementById('alokasi_tglDariWrap');
+    const aktifkanRentang = dariWrap.style.display === 'none';
+    document.getElementById('alokasi_tglSatuWrap').style.display = aktifkanRentang ? 'none' : '';
+    dariWrap.style.display = aktifkanRentang ? '' : 'none';
+    document.getElementById('alokasi_tglSampaiWrap').style.display = aktifkanRentang ? '' : 'none';
+    document.getElementById('btnTogglelAlokasiRentang').textContent = aktifkanRentang
+      ? '- Kembali ke 1 tanggal saja' : '+ Jadikan rentang tanggal';
+  });
+  document.getElementById('formAlokasi').addEventListener('submit', async (ev) => {
+    ev.preventDefault();
+    const msg = document.getElementById('alokasiMsg');
+    const rentangAktif = document.getElementById('alokasi_tglDariWrap').style.display !== 'none';
+    let tglDari, tglSampai;
+    if (rentangAktif) {
+      tglDari = document.getElementById('alokasi_tglDari').value;
+      tglSampai = document.getElementById('alokasi_tglSampai').value;
+      if (!tglDari || !tglSampai) { showMsg(msg, 'err', 'Isi Tanggal Dari dan Tanggal Sampai dulu.'); return; }
+    } else {
+      tglDari = tglSampai = document.getElementById('alokasi_tglSatu').value;
+      if (!tglDari) { showMsg(msg, 'err', 'Isi tanggal dulu.'); return; }
+    }
+    const kategori = document.getElementById('alokasi_kategori').value;
+    const jumlah = Number(document.getElementById('alokasi_jumlah').value);
+    const catatan = document.getElementById('alokasi_catatan').value.trim();
+    if (!kategori) { showMsg(msg, 'err', 'Pilih kategori dulu.'); return; }
+    if (new Date(tglSampai) < new Date(tglDari)) { showMsg(msg, 'err', 'Tanggal Sampai tidak boleh sebelum Tanggal Dari.'); return; }
+    if (editingAlokasiId) {
+      const a = STATE.alokasiProfit.find(x => x.id === editingAlokasiId);
+      Object.assign(a, {
+        tanggalDari: new Date(tglDari).toISOString(), tanggalSampai: new Date(tglSampai).toISOString(),
+        kategori, jumlah, catatan: catatan||null,
+      });
+    } else {
+      STATE.alokasiProfit.push({
+        id: uid('alokasi'), tanggalDari: new Date(tglDari).toISOString(), tanggalSampai: new Date(tglSampai).toISOString(),
+        kategori, jumlah, catatan: catatan||null,
+      });
+    }
+    const wasEditing = !!editingAlokasiId;
+    editingAlokasiId = null;
+    await withSaving(msg, wasEditing ? 'Investasi & Dividen diperbarui.' : 'Investasi & Dividen ditambahkan.', async () => {
+      await saveState();
+      document.getElementById('formAlokasi').reset();
+    });
+    setTimeout(() => renderAlokasiProfit(container), 800);
+  });
+  const btnBatalEditAlokasi = document.getElementById('btnBatalEditAlokasi');
+  if (btnBatalEditAlokasi) btnBatalEditAlokasi.addEventListener('click', () => { editingAlokasiId = null; renderAlokasiProfit(container); });
+  document.getElementById('alokasiFilterKategori').addEventListener('change', (e) => { alokasiFilter.kategori = e.target.value; renderAlokasiProfit(container); });
+  document.getElementById('alokasiFilterTglDari').addEventListener('change', (e) => { alokasiFilter.tglDari = e.target.value; renderAlokasiProfit(container); });
+  document.getElementById('alokasiFilterTglSampai').addEventListener('change', (e) => { alokasiFilter.tglSampai = e.target.value; renderAlokasiProfit(container); });
+  container.querySelectorAll('[data-edit-alokasi]').forEach(btn => {
+    btn.addEventListener('click', () => { editingAlokasiId = btn.dataset.editAlokasi; renderAlokasiProfit(container); });
+  });
+  container.querySelectorAll('[data-del-alokasi]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      if (!confirm('Hapus entri Investasi & Dividen ini?')) return;
+      if (editingAlokasiId === btn.dataset.delAlokasi) editingAlokasiId = null;
+      STATE.alokasiProfit = STATE.alokasiProfit.filter(a => a.id !== btn.dataset.delAlokasi);
+      await saveState();
+      renderAlokasiProfit(container);
     });
   });
 }
@@ -6156,7 +6431,7 @@ function computeProfitPerSku(dari, sampai, dateBasis) {
     if (!bySku[key]) bySku[key] = {
       sku: key, produk: null, warna: null, qty: 0, pendapatan: 0, modal: 0,
       komisiPlatform: 0, biayaLayanan: 0, biayaPembayaran: 0, komisiAfiliasi: 0, komisiDinamis: 0, pajak: 0,
-      biayaIklan: 0, biayaRetur: 0, biayaOperasional: 0, payoutInvestor: 0, byToko: {}, ordersByKey: {},
+      biayaIklan: 0, biayaRetur: 0, biayaOperasional: 0, payoutInvestor: 0, alokasiProfit: 0, byToko: {}, ordersByKey: {},
     };
     const g = bySku[key];
     g.qty += r.qty||1;
@@ -6199,6 +6474,11 @@ function computeProfitPerSku(dari, sampai, dateBasis) {
     returPerToko[toko] = STATE.biayaRetur.filter(r => r.toko === toko && inRange(r.tanggalDihitung)).reduce((s,r)=>s+(r.jumlah||0),0);
   });
   const totalOpex = STATE.biayaOperasional.filter(o => overlaps(o.tanggalDari, o.tanggalSampai)).reduce((s,o)=>s+(o.jumlah||0),0);
+  // Investasi & Dividen (2026-10-29) -- dialokasikan proporsional per SKU dgn metode SAMA PERSIS dgn Biaya
+  // Operasional (proporsional dari omzet SKU thdp omzet SELURUH PERUSAHAAN), krn sama2 dicatat company-wide
+  // (bukan per SKU/toko). Supaya "Total Profit Bersih" panel ini tetap = "Profit Akhir Perusahaan" di tabel
+  // PNL di atasnya (1 sumber kebenaran yg sama, cuma cara baginya perkiraan).
+  const totalAlokasi = STATE.alokasiProfit.filter(a => overlaps(a.tanggalDari, a.tanggalSampai)).reduce((s,a)=>s+(a.jumlah||0),0);
 
   Object.values(bySku).forEach(g => {
     Object.entries(g.byToko).forEach(([toko, omzetSkuDiToko]) => {
@@ -6209,6 +6489,7 @@ function computeProfitPerSku(dari, sampai, dateBasis) {
     });
     const shareCompany = totalOmzetPerusahaan > 0 ? g.pendapatan / totalOmzetPerusahaan : 0;
     g.biayaOperasional = totalOpex * shareCompany;
+    g.alokasiProfit = totalAlokasi * shareCompany;
   });
 
   STATE.payouts.filter(p => inRange(p.tanggalDihitung) && p.rate != null).forEach(p => {
@@ -6220,18 +6501,19 @@ function computeProfitPerSku(dari, sampai, dateBasis) {
 
   const list = Object.values(bySku).map(g => {
     const bebanLangsung = g.komisiPlatform + g.biayaLayanan + g.biayaPembayaran + g.komisiAfiliasi + g.komisiDinamis + g.pajak;
-    const profitBersih = g.pendapatan - g.modal - bebanLangsung - g.biayaIklan - g.biayaRetur - g.biayaOperasional - g.payoutInvestor;
+    const profitBersih = g.pendapatan - g.modal - bebanLangsung - g.biayaIklan - g.biayaRetur - g.biayaOperasional - g.payoutInvestor - g.alokasiProfit;
     const marginPct = g.pendapatan > 0 ? (profitBersih / g.pendapatan * 100) : null;
-    // Alokasikan Iklan/Retur/Operasional/Payout Investor SKU ini ke tiap order, proporsional omzet order thdp omzet SKU
+    // Alokasikan Iklan/Retur/Operasional/Payout Investor/Alokasi Profit SKU ini ke tiap order, proporsional omzet order thdp omzet SKU
     const orders = Object.values(g.ordersByKey).map(o => {
       const shareInSku = g.pendapatan > 0 ? o.pendapatan / g.pendapatan : 0;
       const oIklan = g.biayaIklan * shareInSku;
       const oRetur = g.biayaRetur * shareInSku;
       const oOpex = g.biayaOperasional * shareInSku;
       const oPayout = g.payoutInvestor * shareInSku;
-      const oProfit = o.pendapatan - o.modal - o.bebanLangsung - oIklan - oRetur - oOpex - oPayout;
+      const oAlokasi = g.alokasiProfit * shareInSku;
+      const oProfit = o.pendapatan - o.modal - o.bebanLangsung - oIklan - oRetur - oOpex - oPayout - oAlokasi;
       const oMarginPct = o.pendapatan > 0 ? (oProfit / o.pendapatan * 100) : null;
-      return { ...o, biayaIklan: oIklan, biayaRetur: oRetur, biayaOperasional: oOpex, payoutInvestor: oPayout, profitBersih: oProfit, marginPct: oMarginPct };
+      return { ...o, biayaIklan: oIklan, biayaRetur: oRetur, biayaOperasional: oOpex, payoutInvestor: oPayout, alokasiProfit: oAlokasi, profitBersih: oProfit, marginPct: oMarginPct };
     });
     orders.sort((a,b) => b.pendapatan - a.pendapatan);
     const { ordersByKey, ...gTanpaOrdersByKey } = g;
@@ -6280,13 +6562,32 @@ function computeOpexRowsForPeriode(dari, sampai) {
   return STATE.biayaOperasional.filter(o => overlaps(o.tanggalDari, o.tanggalSampai));
 }
 
+// Sama persis pola/logic overlap-nya dgn computeOpexRowsForPeriode di atas, sumbernya STATE.alokasiProfit
+// (Investasi/Dividen, 2026-10-29). Dipakai computePNL DAN panel rincian yg bisa diklik di tab PNL (renderPnl).
+function computeAlokasiRowsForPeriode(dari, sampai) {
+  const overlaps = (dariStr, sampaiStr) => {
+    if (!dariStr || !sampaiStr) return false;
+    const a1 = dariStr.slice(0,10), a2 = sampaiStr.slice(0,10);
+    return (!sampai || a1 <= sampai) && (!dari || a2 >= dari);
+  };
+  return STATE.alokasiProfit.filter(a => overlaps(a.tanggalDari, a.tanggalSampai));
+}
+
 // Render blok "Rincian per ..." (Kategori di Biaya Operasional & drilldown PNL, Toko di Ads Mingguan --
 // 2026-10-27, Setiawan minta kedua2nya dirapihkan) -- SATU fungsi generik dipakai di semua tempat spy
 // tampilannya selalu konsisten. Sebelumnya berupa chip flex-wrap (atau, utk Ads, 1 kalimat panjang
 // "A: Rp x · B: Rp y · ...") TANPA urutan jelas -- susah dibandingkan mana yg paling besar sekilas.
 // Sekarang: diurutkan Rp TERBESAR dulu + bar proporsional thdp yg terbesar, pola yg sama dgn "Margin per
 // Jenis Produk"/Omzet-per-Toko (list diurutkan + bar, bukan chip/kalimat acak).
-function renderRincianBar(byMap, label) {
+// opts.clickable (2026-10-27, drilldown kategori PNL): tiap baris dikasih data-rincian-click="<key
+// ter-encodeURIComponent>" + cursor pointer, dipakai caller (renderPnl) utk toggle tabel rincian PER
+// kategori saat barisnya diklik -- 2 caller lain (Opex-tab, Ads-tab) TIDAK pakai opt ini, tetap statis.
+// opts.targetPrefix (2026-10-29, drilldown kedua -- Investasi & Dividen -- ditambah di renderPnl):
+// dipakai bareng opts.clickable, jadi id target toggle (data-rincian-target) = `${targetPrefix}${key}`,
+// supaya 1 fungsi generik ini bisa dipakai utk BEBERAPA blok drilldown berbeda di 1 halaman yg sama (tiap
+// blok punya prefix id sendiri, mis. "pnlOpexKatRows_" vs "pnlAlokasiKatRows_") tanpa saling tabrakan.
+function renderRincianBar(byMap, label, opts) {
+  opts = opts || {};
   const entries = Object.entries(byMap).sort((a, b) => b[1] - a[1]);
   if (!entries.length) return '';
   const max = Math.max(1, ...entries.map(([, t]) => t));
@@ -6294,8 +6595,8 @@ function renderRincianBar(byMap, label) {
     <div style="margin-top:12px;">
       <div style="font-size:11.5px; font-weight:700; letter-spacing:.04em; text-transform:uppercase; color:var(--ink-soft); margin-bottom:4px;">${label}</div>
       <div>${entries.map(([k, t]) => `
-        <div class="rincian-bar-row">
-          <span style="font-size:12.5px; color:var(--ink); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;" title="${k}">${k}</span>
+        <div class="rincian-bar-row"${opts.clickable ? ` data-rincian-click="${encodeURIComponent(k)}" data-rincian-target="${(opts.targetPrefix||'')}${encodeURIComponent(k)}" style="cursor:pointer;" title="Klik utk lihat rincian baris ${k}"` : ''}>
+          <span style="font-size:12.5px; color:${opts.clickable ? 'var(--accent)' : 'var(--ink)'}; ${opts.clickable ? 'text-decoration:underline;' : ''} white-space:nowrap; overflow:hidden; text-overflow:ellipsis;" title="${k}">${k}</span>
           <div class="margin-bar-track"><div class="margin-bar-fill" style="width:${(t/max*100).toFixed(1)}%; background:var(--accent);"></div></div>
           <span class="tnum" style="font-size:12.5px; font-weight:700; color:var(--ink); text-align:right;">${fmtRp(t)}</span>
         </div>
@@ -6354,9 +6655,14 @@ function computePNL(dari, sampai, dateBasis) {
   const payoutRows = STATE.payouts.filter(p => inRange(p.tanggalDihitung));
   const payoutInvestor = payoutRows.reduce((s,p) => s + (p.payout||0), 0);
 
-  const profitAkhir = nettMargin - payoutInvestor;
+  // Investasi & Dividen (2026-10-29) -- posisinya SAMA PERSIS spt Payout Capital Partner: dikurangkan dari
+  // Nett Margin, SETELAH Payout Capital Partner, utk dapat Profit Akhir Perusahaan.
+  const alokasiRows = computeAlokasiRowsForPeriode(dari, sampai);
+  const alokasiProfit = alokasiRows.reduce((s,a) => s + (a.jumlah||0), 0);
 
-  return { pendapatan, biayaModal, grossMargin, komisiPlatform, biayaLayanan, biayaPembayaran, komisiAfiliasi, komisiDinamis, pajak, biayaIklan, biayaRetur, bebanPenjualan, biayaOperasional, nettMargin, payoutInvestor, profitAkhir, nOrder: orderRows.length };
+  const profitAkhir = nettMargin - payoutInvestor - alokasiProfit;
+
+  return { pendapatan, biayaModal, grossMargin, komisiPlatform, biayaLayanan, biayaPembayaran, komisiAfiliasi, komisiDinamis, pajak, biayaIklan, biayaRetur, bebanPenjualan, biayaOperasional, nettMargin, payoutInvestor, alokasiProfit, profitAkhir, nOrder: orderRows.length };
 }
 
 function renderPnl(container) {
@@ -6370,23 +6676,67 @@ function renderPnl(container) {
   const opexRowsForDetail = computeOpexRowsForPeriode(pnlFilter.dari, pnlFilter.sampai);
   const opexByKategoriForDetail = {};
   opexRowsForDetail.forEach(o => { opexByKategoriForDetail[o.kategori] = (opexByKategoriForDetail[o.kategori]||0) + (o.jumlah||0); });
+  // 2026-10-27, Setiawan: rincian baris per kategori jgn langsung semua tampil pas "Biaya Operasional"
+  // diklik -- cukup bar "Rincian per Kategori" dulu, tabel baris baru muncul kalau kategori TERTENTU yg
+  // diklik (mis. klik "Gaji Karyawan" -> cuma baris Gaji Karyawan yg tampil). Semua tabel per-kategori
+  // di-render sekali di sini (hidden by default), ditoggle via klik (lihat wiring [data-rincian-click] di
+  // bawah) -- bukan render-on-demand via JS, konsisten dgn pola toggle lain di app ini (render semua,
+  // toggle display saja).
+  const opexKatTablesHtml = Object.keys(opexByKategoriForDetail).map(k => {
+    const rowsKat = opexRowsForDetail.filter(o => o.kategori === k).slice().sort((a,b) => new Date(b.tanggalDari||0) - new Date(a.tanggalDari||0));
+    return `<div id="pnlOpexKatRows_${encodeURIComponent(k)}" class="pnl-opex-kat-rows" style="display:none; margin-top:10px;">
+      <div style="font-size:11px; font-weight:700; color:var(--ink-soft); margin-bottom:6px;">${k} &middot; ${rowsKat.length} baris</div>
+      <div style="overflow-x:auto;">
+      <table class="data compact">
+        <thead><tr><th>Tanggal</th><th class="num">Jumlah</th><th>Catatan</th></tr></thead>
+        <tbody>
+          ${rowsKat.map(o => `<tr>
+            <td style="font-size:10.5px;">${fmtRentangTanggal(o.tanggalDari,o.tanggalSampai,{short:true})}</td>
+            <td class="num">${fmtRp(o.jumlah)}</td>
+            <td style="font-size:10.5px; color:var(--ink-soft);">${o.catatan||'-'}</td>
+          </tr>`).join('')}
+        </tbody>
+      </table>
+      </div>
+    </div>`;
+  }).join('');
   const opexDetailHtml = !opexRowsForDetail.length
     ? '<div class="empty-note">Tidak ada biaya operasional tercatat di periode ini.</div>'
-    : `<div style="background:var(--paper); border:1px solid var(--line); border-radius:12px; padding:10px; margin:4px 0 10px;">
-        <div style="margin-bottom:4px;">${renderRincianBar(opexByKategoriForDetail, 'Rincian per Kategori')}</div>
-        <div style="overflow-x:auto;">
-        <table class="data compact">
-          <thead><tr><th>Tanggal</th><th>Kategori</th><th class="num">Jumlah</th><th>Catatan</th></tr></thead>
-          <tbody>
-            ${opexRowsForDetail.slice().sort((a,b) => new Date(b.tanggalDari||0) - new Date(a.tanggalDari||0)).map(o => `<tr>
-              <td style="font-size:10.5px;">${fmtRentangTanggal(o.tanggalDari,o.tanggalSampai,{short:true})}</td>
-              <td style="font-size:10.5px;">${o.kategori}</td>
-              <td class="num">${fmtRp(o.jumlah)}</td>
-              <td style="font-size:10.5px; color:var(--ink-soft);">${o.catatan||'-'}</td>
-            </tr>`).join('')}
-          </tbody>
-        </table>
-        </div>
+    : `<div class="pnl-drilldown-block" style="background:var(--paper); border:1px solid var(--line); border-radius:12px; padding:10px; margin:4px 0 10px;">
+        <div style="margin-bottom:4px;">${renderRincianBar(opexByKategoriForDetail, 'Rincian per Kategori', { clickable: true, targetPrefix: 'pnlOpexKatRows_' })}</div>
+        ${opexKatTablesHtml}
+      </div>`;
+
+  // Rincian "Investasi & Dividen" (2026-10-29) -- pola drilldown 2 tingkat SAMA PERSIS dgn Biaya Operasional
+  // di atas (blok terbungkus .pnl-drilldown-block TERPISAH, spy klik kategori di sini tidak ikut
+  // menutup/membuka kategori yg lagi kebuka di blok Biaya Operasional, lihat wiring [data-rincian-click] di
+  // bawah yg di-scope ke .closest('.pnl-drilldown-block')).
+  const alokasiRowsForDetail = computeAlokasiRowsForPeriode(pnlFilter.dari, pnlFilter.sampai);
+  const alokasiByKategoriForDetail = {};
+  alokasiRowsForDetail.forEach(a => { alokasiByKategoriForDetail[a.kategori] = (alokasiByKategoriForDetail[a.kategori]||0) + (a.jumlah||0); });
+  const alokasiKatTablesHtml = Object.keys(alokasiByKategoriForDetail).map(k => {
+    const rowsKat = alokasiRowsForDetail.filter(a => a.kategori === k).slice().sort((a,b) => new Date(b.tanggalDari||0) - new Date(a.tanggalDari||0));
+    return `<div id="pnlAlokasiKatRows_${encodeURIComponent(k)}" class="pnl-opex-kat-rows" style="display:none; margin-top:10px;">
+      <div style="font-size:11px; font-weight:700; color:var(--ink-soft); margin-bottom:6px;">${k} &middot; ${rowsKat.length} baris</div>
+      <div style="overflow-x:auto;">
+      <table class="data compact">
+        <thead><tr><th>Tanggal</th><th class="num">Jumlah</th><th>Catatan</th></tr></thead>
+        <tbody>
+          ${rowsKat.map(a => `<tr>
+            <td style="font-size:10.5px;">${fmtRentangTanggal(a.tanggalDari,a.tanggalSampai,{short:true})}</td>
+            <td class="num">${fmtRp(a.jumlah)}</td>
+            <td style="font-size:10.5px; color:var(--ink-soft);">${a.catatan||'-'}</td>
+          </tr>`).join('')}
+        </tbody>
+      </table>
+      </div>
+    </div>`;
+  }).join('');
+  const alokasiDetailHtml = !alokasiRowsForDetail.length
+    ? '<div class="empty-note">Tidak ada Investasi/Dividen tercatat di periode ini.</div>'
+    : `<div class="pnl-drilldown-block" style="background:var(--paper); border:1px solid var(--line); border-radius:12px; padding:10px; margin:4px 0 10px;">
+        <div style="margin-bottom:4px;">${renderRincianBar(alokasiByKategoriForDetail, 'Rincian per Kategori', { clickable: true, targetPrefix: 'pnlAlokasiKatRows_' })}</div>
+        ${alokasiKatTablesHtml}
       </div>`;
 
   container.innerHTML = `
@@ -6431,10 +6781,12 @@ function renderPnl(container) {
           <tr><td style="padding-left:20px; color:var(--ink-soft);">Biaya Iklan (Ads Mingguan)</td><td class="num">(${fmtRp(p.biayaIklan)})</td><td class="num" style="color:var(--ink-soft); font-size:11px;">${pct(p.biayaIklan)}</td></tr>
           <tr><td style="padding-left:20px; color:var(--ink-soft);">Biaya Retur/Refund</td><td class="num">(${fmtRp(p.biayaRetur)})</td><td class="num" style="color:var(--ink-soft); font-size:11px;">${pct(p.biayaRetur)}</td></tr>
           <tr style="font-weight:600;"><td style="padding-left:20px;">Total Beban Penjualan</td><td class="num">(${fmtRp(p.bebanPenjualan)})</td><td class="num" style="font-size:11px;">${pct(p.bebanPenjualan)}</td></tr>
-          <tr class="opex-toggle" data-opex-detail="pnlOpexDetail" style="cursor:pointer;" title="Klik utk lihat rincian"><td style="padding-left:20px; color:var(--accent); text-decoration:underline;">Biaya Operasional</td><td class="num">(${fmtRp(p.biayaOperasional)})</td><td class="num" style="color:var(--ink-soft); font-size:11px;">${pct(p.biayaOperasional)}</td></tr>
+          <tr class="row-toggle" data-row-toggle="pnlOpexDetail" style="cursor:pointer;" title="Klik utk lihat rincian"><td style="padding-left:20px; color:var(--accent); text-decoration:underline;">Biaya Operasional</td><td class="num">(${fmtRp(p.biayaOperasional)})</td><td class="num" style="color:var(--ink-soft); font-size:11px;">${pct(p.biayaOperasional)}</td></tr>
           <tr id="pnlOpexDetail" style="display:none;"><td colspan="3" style="padding:0 0 4px 0;">${opexDetailHtml}</td></tr>
           <tr style="font-weight:600; border-top:2px solid var(--ink); font-size:15px;"><td style="padding-top:10px;">Nett Margin</td><td class="num" style="padding-top:10px;">${fmtRp(p.nettMargin)}</td><td class="num" style="padding-top:10px; font-size:11px;">${pct(p.nettMargin)}</td></tr>
           <tr><td style="padding-top:14px; color:var(--ink-soft);">Payout Capital Partner</td><td class="num" style="padding-top:14px;">(${fmtRp(p.payoutInvestor)})</td><td class="num" style="padding-top:14px; color:var(--ink-soft); font-size:11px;">${pct(p.payoutInvestor)}</td></tr>
+          <tr class="row-toggle" data-row-toggle="pnlAlokasiDetail" style="cursor:pointer;" title="Klik utk lihat rincian"><td style="padding-left:20px; color:var(--accent); text-decoration:underline;">Investasi &amp; Dividen</td><td class="num">(${fmtRp(p.alokasiProfit)})</td><td class="num" style="color:var(--ink-soft); font-size:11px;">${pct(p.alokasiProfit)}</td></tr>
+          <tr id="pnlAlokasiDetail" style="display:none;"><td colspan="3" style="padding:0 0 4px 0;">${alokasiDetailHtml}</td></tr>
           <tr style="font-weight:700; border-top:2px solid var(--ink); font-size:16px;"><td style="padding-top:10px;">Profit Akhir Perusahaan</td><td class="num" style="padding-top:10px;">${fmtRp(p.profitAkhir)}</td><td class="num" style="padding-top:10px; font-size:12px;">${pct(p.profitAkhir)}</td></tr>
         </tbody>
       </table>
@@ -6453,13 +6805,33 @@ function renderPnl(container) {
   document.getElementById('pnlSampai').addEventListener('change', (e) => { pnlFilter.preset='custom'; pnlFilter.sampai = e.target.value; skuProfitFilter.page = 1; renderPnl(container); });
   document.getElementById('pnlBasis').addEventListener('change', (e) => { pnlFilter.basis = e.target.value; skuProfitFilter.page = 1; renderPnl(container); });
   wireProfitPerSkuHandlers(container);
-  const opexToggleEl = container.querySelector('[data-opex-detail]');
-  if (opexToggleEl) {
-    opexToggleEl.addEventListener('click', () => {
-      const target = document.getElementById(opexToggleEl.dataset.opexDetail);
+  // data-row-toggle (2026-10-29, digeneralisasi dari data-opex-detail lama) -- dipakai 2 baris sekarang
+  // (Biaya Operasional & Investasi/Dividen), makanya querySelectorAll+forEach, bukan querySelector tunggal.
+  container.querySelectorAll('[data-row-toggle]').forEach(toggleEl => {
+    toggleEl.addEventListener('click', () => {
+      const target = document.getElementById(toggleEl.dataset.rowToggle);
       if (target) target.style.display = target.style.display === 'none' ? 'table-row' : 'none';
     });
-  }
+  });
+  // Drilldown 2 tingkat (2026-10-27, digeneralisasi 2026-10-29 utk 2 blok -- Biaya Operasional & Investasi/
+  // Dividen): klik 1 kategori di "Rincian per Kategori" -> tampilkan HANYA tabel baris kategori itu (tutup
+  // kategori lain yg mungkin lagi kebuka, klik kategori yg sama lagi = tutup). Di-scope ke .closest(
+  // '.pnl-drilldown-block') masing2 row, spy klik kategori di blok Investasi/Dividen TIDAK ikut
+  // menutup/membuka kategori yg lagi kebuka di blok Biaya Operasional (2 blok independen).
+  container.querySelectorAll('[data-rincian-click]').forEach(row => {
+    row.addEventListener('click', () => {
+      const target = document.getElementById(row.dataset.rincianTarget);
+      const scope = row.closest('.pnl-drilldown-block') || container;
+      const isOpen = !!target && target.style.display !== 'none';
+      scope.querySelectorAll('.pnl-opex-kat-rows').forEach(t => { t.style.display = 'none'; });
+      scope.querySelectorAll('[data-rincian-click]').forEach(r => { r.style.background = ''; r.style.borderRadius = ''; });
+      if (target && !isOpen) {
+        target.style.display = '';
+        row.style.background = 'var(--accent-soft)';
+        row.style.borderRadius = '8px';
+      }
+    });
+  });
 
   // ---- Panel "Profit per SKU" -- pakai periode & basis tanggal yg SAMA PERSIS dgn tabel PNL di atas ----
   function renderProfitPerSkuPanel() {
@@ -6479,13 +6851,13 @@ function renderPnl(container) {
       if (!g.orders.length) return '<div class="empty-note">Tidak ada rincian order.</div>';
       return `
       <div style="background:var(--paper); border:1px solid var(--line); border-radius:12px; padding:10px; margin:4px 0 10px;">
-        <div class="desc" style="margin-bottom:6px;">Rincian per nomor pesanan utk SKU ${g.sku}. Pendapatan/Modal/Beban Langsung EKSAK per order; Iklan/Retur/Opex/Payout Investor dialokasikan proporsional dari omzet order ini thdp omzet SKU -- jumlah semua baris di bawah = angka SKU di atas.</div>
+        <div class="desc" style="margin-bottom:6px;">Rincian per nomor pesanan utk SKU ${g.sku}. Pendapatan/Modal/Beban Langsung EKSAK per order; Iklan/Retur/Opex/Payout Investor/Alokasi dialokasikan proporsional dari omzet order ini thdp omzet SKU -- jumlah semua baris di bawah = angka SKU di atas.</div>
         <div style="overflow-x:auto;">
         <table class="data compact">
           <thead><tr>
             <th>Order ID</th><th>Toko</th><th>Tgl Pesan</th><th>Tgl Cair</th><th class="num">Qty</th><th class="num">Pendapatan</th>
             <th class="num">Modal</th><th class="num">Beban Langsung</th><th class="num">Iklan</th><th class="num">Retur</th>
-            <th class="num">Opex</th><th class="num">Payout Investor</th><th class="num">Profit Bersih</th><th class="num">Margin%</th>
+            <th class="num">Opex</th><th class="num">Payout Investor</th><th class="num">Alokasi</th><th class="num">Profit Bersih</th><th class="num">Margin%</th>
           </tr></thead>
           <tbody>
             ${g.orders.map(o => `<tr>
@@ -6497,6 +6869,7 @@ function renderPnl(container) {
               <td class="num">${fmtRpCompact(o.modal)}</td><td class="num">${fmtRpCompact(o.bebanLangsung)}</td>
               <td class="num">${fmtRpCompact(o.biayaIklan)}</td><td class="num">${fmtRpCompact(o.biayaRetur)}</td>
               <td class="num">${fmtRpCompact(o.biayaOperasional)}</td><td class="num">${fmtRpCompact(o.payoutInvestor)}</td>
+              <td class="num">${fmtRpCompact(o.alokasiProfit)}</td>
               <td class="num" style="font-weight:600; color:${o.profitBersih>=0?'var(--ok)':'var(--err)'};">${fmtRpCompact(o.profitBersih)}</td>
               <td class="num">${o.marginPct!=null?o.marginPct.toFixed(1)+'%':'-'}</td>
             </tr>`).join('')}
@@ -6509,7 +6882,7 @@ function renderPnl(container) {
     return `
     <div class="panel">
       <h2>Profit per SKU (${pnlFilter.basis==='pesan'?'Basis Tanggal Pesan':'Sudah Cair'})</h2>
-      <div class="desc">Rincian per SKU dari total di atas, periode &amp; basis tanggal yg sama persis dgn tabel PNL di atas (${pnlFilter.basis==='pesan'?'Tanggal Pesan':'Tanggal Cair'}). Modal, Beban Langsung (komisi/biaya/pajak), dan Payout Investor dihitung EKSAK per SKU. Iklan, Retur, dan Operasional dialokasikan proporsional dari omzet (lihat rincian di kode) krn ketiganya dicatat per-toko/company-wide, bukan per SKU -- totalnya tetap sama persis dgn Biaya Iklan/Retur/Operasional di tabel PNL di atas, cuma cara baginya yg perkiraan. Klik baris SKU utk lihat rincian per nomor pesanan.</div>
+      <div class="desc">Rincian per SKU dari total di atas, periode &amp; basis tanggal yg sama persis dgn tabel PNL di atas (${pnlFilter.basis==='pesan'?'Tanggal Pesan':'Tanggal Cair'}). Modal, Beban Langsung (komisi/biaya/pajak), dan Payout Investor dihitung EKSAK per SKU. Iklan, Retur, Operasional, dan Alokasi (Investasi/Dividen) dialokasikan proporsional dari omzet (lihat rincian di kode) krn semuanya dicatat per-toko/company-wide, bukan per SKU -- totalnya tetap sama persis dgn angka di tabel PNL di atas, cuma cara baginya yg perkiraan. Klik baris SKU utk lihat rincian per nomor pesanan.</div>
       <div class="field"><label>Cari Produk / SKU</label><input type="text" id="skuProfitSearch" value="${skuProfitFilter.search}" placeholder="ketik nama produk atau SKU..."></div>
       <div class="desc">${filtered.length.toLocaleString('id-ID')} SKU cocok &middot; halaman ${skuProfitFilter.page} dari ${totalPages} &middot; Total Pendapatan <b>${fmtRp(totalPendapatan)}</b> &middot; Total Profit Bersih <b>${fmtRp(totalProfitBersih)}</b></div>
       ${!filtered.length ? '<div class="empty-note">Tidak ada data di periode ini.</div>' : `
@@ -6518,7 +6891,7 @@ function renderPnl(container) {
         <thead><tr>
           <th>Produk</th><th>SKU</th><th>Warna</th><th class="num">Qty</th><th class="num">Pendapatan</th>
           <th class="num">Modal</th><th class="num">Beban Langsung</th><th class="num">Iklan</th><th class="num">Retur</th>
-          <th class="num">Opex</th><th class="num">Payout Investor</th><th class="num">Profit Bersih</th><th class="num">Margin%</th>
+          <th class="num">Opex</th><th class="num">Payout Investor</th><th class="num">Alokasi</th><th class="num">Profit Bersih</th><th class="num">Margin%</th>
         </tr></thead>
         <tbody>
           ${pageRows.map((g,i) => { const rowId = 'skuOrders_' + skuProfitFilter.page + '_' + i; return `<tr class="sku-profit-toggle" data-sku-orders="${rowId}" style="cursor:pointer;">
@@ -6527,10 +6900,11 @@ function renderPnl(container) {
             <td class="num">${fmtRpCompact(g.modal)}</td><td class="num">${fmtRpCompact(g.bebanLangsung)}</td>
             <td class="num">${fmtRpCompact(g.biayaIklan)}</td><td class="num">${fmtRpCompact(g.biayaRetur)}</td>
             <td class="num">${fmtRpCompact(g.biayaOperasional)}</td><td class="num">${fmtRpCompact(g.payoutInvestor)}</td>
+            <td class="num">${fmtRpCompact(g.alokasiProfit)}</td>
             <td class="num" style="font-weight:600; color:${g.profitBersih>=0?'var(--ok)':'var(--err)'};">${fmtRpCompact(g.profitBersih)}</td>
             <td class="num">${g.marginPct!=null?g.marginPct.toFixed(1)+'%':'-'}</td>
           </tr>
-          <tr id="${rowId}" style="display:none;"><td colspan="13" style="padding:0 0 4px 0;">${renderOrderDetailTable(g)}</td></tr>`; }).join('')}
+          <tr id="${rowId}" style="display:none;"><td colspan="14" style="padding:0 0 4px 0;">${renderOrderDetailTable(g)}</td></tr>`; }).join('')}
         </tbody>
       </table>
       </div>
@@ -7508,7 +7882,7 @@ function renderGaji(container) {
   });
 }
 
-const renderers = { master: renderMaster, kontrak: renderKontrak, import: renderImport, database: renderDatabase, laporan: renderLaporan, ads: renderAds, opex: renderOpex, pnl: renderPnl, dashboard: renderDashboard, gaji: renderGaji };
+const renderers = { master: renderMaster, kontrak: renderKontrak, import: renderImport, database: renderDatabase, laporan: renderLaporan, ads: renderAds, opex: renderOpex, alokasi: renderAlokasiProfit, pnl: renderPnl, dashboard: renderDashboard, gaji: renderGaji };
 function switchTab(tab) {
   document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
   renderers[tab](document.getElementById('app'));
