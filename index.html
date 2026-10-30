@@ -5872,6 +5872,15 @@ function terapkanMigrasiAdsMingguan(parsedWeeks, mapping) {
 
 let adsFilter = { storeId: '', tglDari: '', tglSampai: '' };
 
+// BUG (ditemukan 2026-10-30, laporan Setiawan: klik "+ Tambah Biaya Iklan" saat mode "Input per hari" tidak ada
+// respon apapun -- rentang tanggal normal tidak kena): ads_tglDari/ads_tglSampai dulu py attribute HTML `required`
+// permanen, sedangkan toggle btnToggleAdsTglSatu cuma sembunyikan wrapper div-nya (style.display='none'), TIDAK
+// ikut lepas `required`-nya. Dikonfirmasi lewat Playwright: field required yg disembunyikan via display:none di
+// ANCESTOR (bukan di elemen itu sendiri) TETAP willValidate=true di Chromium nyata -- browser diam2 menolak
+// submit form (event 'submit' tidak pernah terpicu sama sekali, makanya "tidak ada respon apapun", bukan error).
+// Fix: `required` dilepas dari markup ads_tglDari/ads_tglSampai, validasi kosong/isi sepenuhnya diserahkan ke
+// cek manual yg SUDAH ADA di submit handler (if (!tglDari || !tglSampai) ...) -- persis pola Biaya Operasional
+// (opex_tglDari/opex_tglSampai) yg dari awal memang TIDAK pernah dikasih `required` di HTML.
 function renderAds(container) {
   const activeStores = STATE.stores.filter(s => s.status === 'Aktif');
   let filtered = STATE.adsMingguan;
@@ -5914,8 +5923,8 @@ function renderAds(container) {
       ${!activeStores.length ? '<div class="empty-note">Belum ada toko terdaftar. Tambah di tab Data Master dulu.</div>' : `
       <form id="formAds">
         <div class="grid2">
-          <div class="field" id="ads_tglDariWrap"><label>Tanggal Dari</label><input type="date" id="ads_tglDari" required></div>
-          <div class="field" id="ads_tglSampaiWrap"><label>Tanggal Sampai</label><input type="date" id="ads_tglSampai" required></div>
+          <div class="field" id="ads_tglDariWrap"><label>Tanggal Dari</label><input type="date" id="ads_tglDari"></div>
+          <div class="field" id="ads_tglSampaiWrap"><label>Tanggal Sampai</label><input type="date" id="ads_tglSampai"></div>
           <div class="field" id="ads_tglSatuWrap" style="display:none;"><label>Tanggal</label><input type="date" id="ads_tglSatu"></div>
         </div>
         <button type="button" class="btn-ghost" id="btnToggleAdsTglSatu" style="border:none; background:none; padding:4px 0; font-size:12.5px; color:var(--accent); cursor:pointer; box-shadow:none;">+ Input per hari (tanpa rentang)</button>
