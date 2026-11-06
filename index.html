@@ -774,7 +774,12 @@ const SHOPEE_CATMAP = {
   // cuma beda ukuran kategori ongkir gratisnya. Bug yg sama persis polanya dgn "Growth Xtra" (2026-10-23):
   // kolom ini TIDAK PERNAH dibaca sama sekali sejak kategori "Kategori H" mulai muncul di laporan Shopee,
   // diam2 membuat Gross/Nett Profit tampil lebih besar dari yg sebenarnya.
-  biaya_layanan: ['Biaya Proses Pesanan','Biaya Gratis Ongkir XTRA - Ukuran Biasa (Kategori F)','Biaya Gratis Ongkir XTRA - Ukuran Biasa (Kategori H)','Biaya Layanan Promo XTRA','Biaya Layanan Shopee Live XTRA'],
+  // 'Promo Gratis Ongkir dari Penjual' ditambah 2026-11-06 (laporan Setiawan: "2 kolom tidak dikenali" lagi di
+  // preview import minggu ini) -- dikonfirmasi lewat rekonsiliasi langsung ke file asli: 3 order di file itu
+  // py selisih PERSIS Rp2.000 (pendapatan + biaya yg sudah dikenal - "Total Penghasilan"), dan nilai kolom ini
+  // di tiap order itu PERSIS -Rp2.000 -- pola identik Kategori H/Growth Xtra, kolom biaya baru dari Shopee yg
+  // belum dipetakan, bikin Gross/Nett Profit tampil lebih besar dari sebenarnya utk order yg kena biaya ini.
+  biaya_layanan: ['Biaya Proses Pesanan','Biaya Gratis Ongkir XTRA - Ukuran Biasa (Kategori F)','Biaya Gratis Ongkir XTRA - Ukuran Biasa (Kategori H)','Biaya Layanan Promo XTRA','Biaya Layanan Shopee Live XTRA','Promo Gratis Ongkir dari Penjual'],
   biaya_pembayaran: ['Biaya Pembayaran','Biaya Transaksi'],
   komisi_afiliasi: ['Biaya Komisi AMS'], // AMS = Affiliate Marketing Solutions
   komisi_dinamis: [],
@@ -833,7 +838,14 @@ const TIKTOK_NONFEE_COLS = ['ID Pesanan/Penyesuaian', 'Jenis transaksi', 'Total 
   'ID pesanan terkait', 'Pembayaran oleh pembeli', 'Pengembalian dana pembeli', 'Diskon voucher yang ditanggung penjual',
   'Pengembalian dana diskon voucher yang ditanggung penjual', 'Diskon platform', 'Pengembalian dana diskon platform',
   'Diskon voucher yang ditanggung platform', 'Pengembalian dana diskon voucher yang ditanggung platform',
-  'Perkiraan berat paket', 'Berat paket yang bisa dikenai biaya'];
+  'Perkiraan berat paket', 'Berat paket yang bisa dikenai biaya',
+  // 'Pengembalian ongkir yang dibayar pembeli' ditambah 2026-11-06 (laporan Setiawan): dikonfirmasi lewat
+  // rekonsiliasi -- 2 order di file UJUSO yg kena kolom ini SAMA-SAMA py "Total Pendapatan"=0 & "Jumlah
+  // penyelesaian pembayaran"=0 (order refund PENUH, lihat "Total pengembalian dana setelah diskon" = -Subtotal
+  // persis), jadi 2 order ini sudah masuk jalur zeroSettlementSkipped (dilewati total dari processWeeklyBatch
+  // SEBELUM sumCategory dipanggil sama sekali) -- kolom ini murni reversal ongkir dari refund, tidak pernah
+  // ikut dihitung sbg biaya order aktif manapun, aman diredam.
+  'Pengembalian ongkir yang dibayar pembeli'];
 
 // JARING PENGAMAN (ditambahkan 2026-10-23 setelah bug "Biaya layanan Program Growth Xtra" di atas): cari kolom
 // apa pun di baris header file Income yg (a) BUKAN salah satu kolom biaya yg sudah dikenal di *_CATMAP, (b)
