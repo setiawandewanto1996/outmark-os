@@ -1187,10 +1187,14 @@ async function processWeeklyBatch(storeImports) {
     const p = STATE.products.find(pr => pr.prefix === prefix);
     r.produk = p ? p.nama : null;
     r.brand = p ? p.brand : null;
+    // Kategori Jual "PO" (2026-11-06, kasus ROVEE): produk tetap pakai brand yg sama (mis. URBAN OUTDOOR),
+    // tapi TIDAK ada kontrak investor -- field ini snapshot ke tiap baris supaya applyBatchResult/computeGrossNett
+    // dst bisa membedakannya TANPA perlu lookup ulang ke STATE.products (produk bisa saja berubah lagi nanti).
+    r.kategoriJual = p ? p.kategoriJual : null;
     r.hargaKonveksi = lookupHargaKonveksiBySku(r.sku);
     if (!r.warna) r.warna = deriveWarnaFromSku(r.sku);
     if (!p) return;
-    if (p.brand === 'URBAN OUTDOOR') {
+    if (p.brand === 'URBAN OUTDOOR' && p.kategoriJual !== 'PO') {
       const cp = capitalPartnerProduk(p.nama);
       qtyPerProduk[cp] = (qtyPerProduk[cp]||0) + r.qty;
     }
@@ -1198,10 +1202,13 @@ async function processWeeklyBatch(storeImports) {
   });
 
   // ---- Pembayaran ke Konveksi/Supplier (SEMUA brand, termasuk Urban Outdoor) ----
+  // Produk Kategori Jual "PO" dikelompokkan TERPISAH dari produk investor meski brand-nya sama (mis.
+  // "URBAN OUTDOOR (PO)" vs "URBAN OUTDOOR") -- supaya totalnya di Laporan Penarikan tidak tercampur dgn
+  // produk yg beneran ada kontrak investornya (2026-11-06, kasus ROVEE).
   const vendorPayments = {};
   vendorSkuRows.forEach(r => {
     if (!r.hargaKonveksi) return;
-    const b = r.brand || 'TIDAK DIKETAHUI';
+    const b = (r.brand || 'TIDAK DIKETAHUI') + (r.kategoriJual === 'PO' ? ' (PO)' : '');
     vendorPayments[b] = vendorPayments[b] || { qty:0, total:0, produk:new Set(), skuBreakdown:{} };
     vendorPayments[b].qty += r.qty; vendorPayments[b].total += r.qty*r.hargaKonveksi; vendorPayments[b].produk.add(r.produk);
     vendorPayments[b].skuBreakdown[r.sku] = (vendorPayments[b].skuBreakdown[r.sku]||0) + r.qty;
@@ -2228,13 +2235,13 @@ async function applyBatchResult(result, tanggalPenarikanIso) {
   result.cairSkuRows.forEach(r => {
     const key = r.orderId + '|' + r.sku;
     if (genuinelySettledKeys.has(key)) return; // sudah beneran settle sebelumnya, jangan diproses lagi
-    const cpProduk = r.brand === 'URBAN OUTDOOR' ? capitalPartnerProduk(r.produk) : null;
+    const cpProduk = (r.brand === 'URBAN OUTDOOR' && r.kategoriJual !== 'PO') ? capitalPartnerProduk(r.produk) : null;
     // DULU cari ulang ke STATE.pendingOrderSku[r.orderId] langsung di sini -- tapi itu TIDAK ikut fallback ke
     // historicalOrderSku spt proses pencocokan SKU-nya sendiri, jadi order yg match lewat fallback selalu
     // kebagian tanggalPesan = null. Sekarang r.tanggalPesan sudah dihitung dgn fallback yg benar di processWeeklyBatch.
     const tanggalPesan = r.tanggalPesan || null;
     const fresh = {
-      orderId: r.orderId, sumber: r.sumber||null, produk: r.produk, sku: r.sku, brand: r.brand, warna: r.warna||null,
+      orderId: r.orderId, sumber: r.sumber||null, produk: r.produk, sku: r.sku, brand: r.brand, kategoriJual: r.kategoriJual||null, warna: r.warna||null,
       qty: r.qty, hargaKonveksi: r.hargaKonveksi||null, tanggalPenarikan: tglPenarikan, tanggalCair: r.tanggalCair||null, tanggalPesan,
       pendapatan: r.pendapatan??null, komisiPlatform: r.komisiPlatform??null, biayaLayanan: r.biayaLayanan??null,
       biayaPembayaran: r.biayaPembayaran??null, komisiAfiliasi: r.komisiAfiliasi??null, komisiDinamis: r.komisiDinamis??null,
@@ -2376,7 +2383,7 @@ function reverseContractAllocation(orderId) {
 function summarizeRecomputeForDate(dateStr) {
   const payoutsForDate = STATE.payouts.filter(p => p.tanggalDihitung && p.tanggalDihitung.slice(0,10) === dateStr);
   const sudahDibayar = payoutsForDate.filter(p => p.tanggalDibayar);
-  const rowsForDate = STATE.orderDb.filter(r => r.brand === 'URBAN OUTDOOR' && r.tanggalPenarikan && r.tanggalPenarikan.slice(0,10) === dateStr && r.pendapatan != null && r.status !== 'Gagal');
+  const rowsForDate = STATE.orderDb.filter(r => r.brand === 'URBAN OUTDOOR' && r.kategoriJual !== 'PO' && r.tanggalPenarikan && r.tanggalPenarikan.slice(0,10) === dateStr && r.pendapatan != null && r.status !== 'Gagal');
   return {
     dateStr,
     nPayoutLama: payoutsForDate.length,
@@ -2423,7 +2430,7 @@ function beginRecomputeForDate(dateStr) {
   // & lewat alat manual "Bersihkan Kontrak Rollover Duplikat" utk beresin sisa2 duplikat yg sudah terlanjur ada.
   recomputeUndoSnapshot = snapshot;
 
-  const rowsForDate = STATE.orderDb.filter(r => r.brand === 'URBAN OUTDOOR' && r.tanggalPenarikan && r.tanggalPenarikan.slice(0,10) === dateStr && r.pendapatan != null && r.status !== 'Gagal');
+  const rowsForDate = STATE.orderDb.filter(r => r.brand === 'URBAN OUTDOOR' && r.kategoriJual !== 'PO' && r.tanggalPenarikan && r.tanggalPenarikan.slice(0,10) === dateStr && r.pendapatan != null && r.status !== 'Gagal');
   const qtyPerProduk = {};
   rowsForDate.forEach(r => { const cp = capitalPartnerProduk(r.produk); qtyPerProduk[cp] = (qtyPerProduk[cp]||0) + (r.qty||1); });
   const cairSkuRowsForDate = rowsForDate.map(r => ({ orderId: r.orderId, sku: r.sku, qty: r.qty||1, produk: r.produk }));
@@ -4086,6 +4093,18 @@ function renderProdukDetailHtml(p) {
   return `
     <div style="background:var(--paper); border:1px solid var(--line); border-radius:12px; padding:14px; margin:4px 0;">
       <div style="font-weight:600; margin-bottom:10px;">Kelola Harga -- ${p.nama}</div>
+      <div class="field" style="margin-bottom:14px; max-width:460px;">
+        <label>Kategori Jual</label>
+        <select id="pr_kategoriJual_${p.id}">
+          <option value="" ${p.kategoriJual !== 'PO' ? 'selected' : ''}>Normal (ikut Investor kalau Brand = URBAN OUTDOOR)</option>
+          <option value="PO" ${p.kategoriJual === 'PO' ? 'selected' : ''}>PO / Pre Order (dana dari konsumen, TANPA investor)</option>
+        </select>
+        <div class="desc" style="margin-top:4px;">Produk PO tetap dihitung modal konveksi yg harus dibayar per pencairan (spt produk biasa), TAPI TIDAK dialokasikan ke kontrak investor manapun -- brand produk ini TIDAK berubah, cuma kategori jualnya.</div>
+      </div>
+      <button class="btn btn-ghost" id="btnSimpanKategoriJual" data-produk-id="${p.id}">Simpan Kategori Jual</button>
+      <div class="status-box" id="kategoriJualMsg" style="margin-top:8px;"></div>
+      <hr style="border:none; border-top:1px solid var(--line); margin:16px 0;">
+      <div style="font-weight:600; margin-bottom:10px;">Harga Konveksi per Size</div>
       <div class="grid2">
         ${SIZES.map(s => {
           const cur = getCurrentHarga(p.nama, s);
@@ -4144,7 +4163,7 @@ function computeGrossNettProfitPerOrder(r) {
   const hargaKonveksi = r.hargaKonveksi != null ? r.hargaKonveksi : lookupHargaKonveksiBySku(r.sku);
   const modal = hargaKonveksi != null ? qty * hargaKonveksi : 0;
   const packingAksesoris = qty * PACKING_AKSESORIS_PER_UNIT;
-  const payoutInvestor = r.brand === 'URBAN OUTDOOR' ? qty * PAYOUT_INVESTOR_UOUT_PER_UNIT : 0;
+  const payoutInvestor = (r.brand === 'URBAN OUTDOOR' && r.kategoriJual !== 'PO') ? qty * PAYOUT_INVESTOR_UOUT_PER_UNIT : 0;
   const nettProfit = grossProfit - modal - packingAksesoris - payoutInvestor;
   const nettProfitPct = pendapatan > 0 ? (nettProfit / pendapatan * 100) : null;
 
@@ -4550,6 +4569,10 @@ function renderKontrak(container) {
           </div>
         </div>
         <div class="field"><label>Prefix SKU (3 huruf)</label><input type="text" id="pr_prefix" required maxlength="3" placeholder="mis. RV2" style="text-transform:uppercase;"></div>
+        <div class="field" style="margin-top:2px;">
+          <label style="display:flex; align-items:center; gap:8px; font-weight:400; cursor:pointer;"><input type="checkbox" id="pr_po" style="width:auto;"> Produk PO (Pre Order -- dana dari konsumen, TANPA investor)</label>
+          <div class="desc" style="margin-top:4px;">Brand tetap diisi spt biasa. Tandai ini kalau produk TIDAK ada kontrak investor (modal konveksi dibayar dari dana pembeli/PO), spt yg dulu ditentukan utk ROVEE.</div>
+        </div>
         <div class="desc" style="margin-top:10px; margin-bottom:6px;">Harga konveksi per size (Rp) -- isi yg tersedia saja:</div>
         <div class="grid2">${SIZES.map(s => `<div class="field"><label>${s}</label><input type="number" class="pr-harga-size" data-size="${s}" min="0" placeholder="Rp"></div>`).join('')}</div>
         <button type="submit" class="btn btn-primary">+ Tambah Produk</button>
@@ -4568,7 +4591,7 @@ function renderKontrak(container) {
             const nSize = SIZES.filter(s => p.hargaKonveksi && p.hargaKonveksi[s] && p.hargaKonveksi[s].length).length;
             return `<tr>
               <td><span class="produk-link" data-produk="${p.nama}" style="color:var(--accent); text-decoration:underline; cursor:pointer;">${p.nama}</span></td>
-              <td>${p.brand||'-'}</td><td>${p.prefix}</td><td class="num">${nSize}/${SIZES.length}</td>
+              <td>${p.brand||'-'} ${p.kategoriJual === 'PO' ? '<span class="pill">PO</span>' : ''}</td><td>${p.prefix}</td><td class="num">${nSize}/${SIZES.length}</td>
             </tr>
             ${expandedProduk === p.nama ? `<tr><td colspan="4">${renderProdukDetailHtml(p)}</td></tr>` : ''}`;
           }).join('')}
@@ -4730,7 +4753,12 @@ function renderKontrak(container) {
       const v = Number(inp.value);
       if (v > 0) hargaKonveksi[inp.dataset.size] = [{ harga: v, tanggal: new Date().toISOString(), sumber: 'manual' }];
     });
-    STATE.products.push({ id: uid('pr'), nama, brand, prefix, hargaKonveksi });
+    // Kategori Jual "PO" (Pre Order, 2026-11-06, permintaan user via produk ROVEE): brand TETAP diisi apa
+    // adanya (bisa sama dgn produk investor, mis. "URBAN OUTDOOR") -- field INI yg jadi penentu apakah produk
+    // ikut dialokasikan ke kontrak investor atau tidak, BUKAN brand lagi. Lihat semua pemakaian kategoriJual
+    // di processWeeklyBatch/applyBatchResult/computeGrossNettProfitPerOrder dst.
+    const kategoriJual = document.getElementById('pr_po').checked ? 'PO' : '';
+    STATE.products.push({ id: uid('pr'), nama, brand, prefix, hargaKonveksi, kategoriJual });
     await withSaving(msg, `Produk "${nama}" ditambahkan.`, async () => { await saveState(); });
     setTimeout(() => renderKontrak(container), 800);
   });
@@ -4752,6 +4780,20 @@ function renderKontrak(container) {
   });
   const btnTutupDetail = document.getElementById('btnTutupDetailProduk');
   if (btnTutupDetail) btnTutupDetail.addEventListener('click', () => { expandedProduk = null; renderKontrak(container); });
+  const btnSimpanKategoriJual = document.getElementById('btnSimpanKategoriJual');
+  if (btnSimpanKategoriJual) {
+    btnSimpanKategoriJual.addEventListener('click', async () => {
+      const prodId = btnSimpanKategoriJual.dataset.produkId;
+      const p = STATE.products.find(pr => pr.id === prodId);
+      const sel = document.getElementById('pr_kategoriJual_' + prodId);
+      const msg = document.getElementById('kategoriJualMsg');
+      if (!p || !sel) return;
+      p.kategoriJual = sel.value || '';
+      await saveState();
+      showMsg(msg, 'ok', `Kategori Jual "${p.nama}" disimpan: ${p.kategoriJual === 'PO' ? 'PO / Pre Order (tanpa investor)' : 'Normal'}.`);
+      setTimeout(() => renderKontrak(container), 900);
+    });
+  }
   container.querySelectorAll('[data-hist-toggle]').forEach(pill => {
     pill.addEventListener('click', () => {
       const el = document.getElementById('hist_' + pill.dataset.histToggle);
