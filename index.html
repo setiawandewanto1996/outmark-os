@@ -4457,7 +4457,10 @@ function renderDatabase(container) {
           <span class="list-row-toko">${platformDot(r.sumber)}${r.sumber||'-'}</span>
           <span class="list-row-num tnum">${r.pendapatan!=null?fmtRpCompact(r.pendapatan):'-'}</span>
           <span class="list-row-num tnum" style="font-weight:600;">${fmtRpCompact(hp.grossProfit)}</span>
-          <span class="list-row-num tnum" style="font-weight:600; color:${hp.nettProfit>=0?'var(--ok)':'var(--err)'};">${fmtRpCompact(hp.nettProfit)}</span>
+          <span class="list-row-num" style="display:flex; flex-direction:column; align-items:flex-end; line-height:1.25;">
+            <span class="tnum" style="font-weight:600; color:${hp.nettProfit>=0?'var(--ok)':'var(--err)'};">${fmtRpCompact(hp.nettProfit)}</span>
+            <span style="font-size:10.5px; font-weight:400; color:${hp.nettProfit>=0?'var(--ok)':'var(--err)'}; opacity:.8;">${hp.nettProfitPct!=null?hp.nettProfitPct.toFixed(1)+'%':'-'}</span>
+          </span>
           <span class="list-row-small">${fmtTanggal(r.tanggalPenarikan,{short:true})}</span>
         </div>
         <div id="${rowId}" style="display:none;">${renderOrderFeeDetail(r)}</div>
