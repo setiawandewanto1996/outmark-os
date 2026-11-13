@@ -3555,8 +3555,8 @@ function renderRolloverCase(a, key, resolutions) {
         </div>
       ` : `
         <div style="display:flex; gap:6px; flex-wrap:wrap; margin-top:8px;">
-          <button class="btn btn-ghost" data-rollover-pilih="putar_penuh" data-case-key="${key}">Putar Penuh</button>
-          <button class="btn btn-ghost" data-rollover-pilih="putar_modal" data-case-key="${key}">Putar Modal Saja</button>
+          <button class="btn btn-ghost" data-rollover-pilih="putar_penuh" data-case-key="${key}" data-harga-lama="${a.hargaModalPcsLama}" data-kode-lama="${a.kodeKontrakLama}">Putar Penuh</button>
+          <button class="btn btn-ghost" data-rollover-pilih="putar_modal" data-case-key="${key}" data-harga-lama="${a.hargaModalPcsLama}" data-kode-lama="${a.kodeKontrakLama}">Putar Modal Saja</button>
           <button class="btn btn-ghost" data-rollover-pilih="stop" data-case-key="${key}">Stop</button>
         </div>
         <div id="rolloverInputArea_${key}"></div>
@@ -3570,10 +3570,22 @@ function wireRolloverHandlers(el, resolutions, rerender) {
     btn.addEventListener('click', () => {
       const key = btn.dataset.caseKey, tipe = btn.dataset.rolloverPilih;
       if (tipe === 'stop') { resolutions[key] = { tipe: 'stop' }; rerender(); return; }
+      // Harga lama dititipkan via data-attribute tombol (data-harga-lama/data-kode-lama, diisi renderRolloverCase)
+      // krn wireRolloverHandlers() dipanggil 1x utk SEMUA kasus sekaligus (tidak py akses langsung ke object
+      // `a` tiap kasus) -- BUKAN variabel `a` (itu cuma scope renderRolloverCase, beda fungsi).
+      const hargaLama = Number(btn.dataset.hargaLama) || 0;
+      const kodeLama = btn.dataset.kodeLama || '';
       const area = document.getElementById('rolloverInputArea_' + key);
+      // Tampilkan Harga Modal LAMA di dekat input Harga Modal Baru -- permintaan Setiawan 2026-11-13 ("agar aku
+      // tidak bingung saat menginput harga baru, aku ingin ada tampilan harga sebelumnya"), supaya tidak perlu
+      // scroll ke atas cek "Modal awal: Rp..." di baris kasusnya.
       area.innerHTML = `
         <div class="grid2" style="margin-top:8px; max-width:400px;">
-          <div class="field"><label>Harga Modal Baru (Rp)</label><input type="number" id="rolloverHarga_${key}" min="1"></div>
+          <div class="field">
+            <label>Harga Modal Baru (Rp)</label>
+            <input type="number" id="rolloverHarga_${key}" min="1" placeholder="Harga lama: ${fmtRp(hargaLama)}">
+            <div class="desc" style="margin-top:3px;">Harga modal sebelumnya (${kodeLama}): <b>${fmtRp(hargaLama)}</b></div>
+          </div>
         </div>
         <button class="btn btn-primary" data-confirm-rollover="${key}" data-tipe="${tipe}" style="padding:6px 12px; font-size:12px;">Konfirmasi</button>
       `;
