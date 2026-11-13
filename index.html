@@ -284,6 +284,10 @@ let STATE = {
   alokasiProfit: [],               // Investasi/Dividen (alokasi dari profit, posisi spt Payout Capital Partner): {id, tanggalDari, tanggalSampai, kategori, jumlah, catatan}
   alokasiKategori: ALOKASI_KATEGORI.slice(), // daftar kategori Investasi & Dividen, dikelola user sendiri (tab Data Master)
   saldoDiluarKontrak: {},          // {capitalPartnerId: jumlahRp} -- sisa pembulatan dari rollover kontrak, lintas produk per investor
+  rolloverLog: [],                 // riwayat KEPUTUSAN rollover (2026-11-13, laporan "rollover hari ini"): {id, waktu, tanggalPenarikanBatch,
+                                    // produk, kode2, namaInvestor, capitalPartnerId, kodeKontrakLama, tipe:'putar_penuh'|'putar_modal'|'stop', ...}.
+                                    // Permanen -- TIDAK terpengaruh kontrak barunya langsung habis/ditutup lagi atau tidak (beda dgn STATE.contracts
+                                    // yg cuma nyimpan kontrak yg MASIH relevan, jadi tidak bisa dipakai sbg riwayat).
   biayaRetur: [],                  // biaya retur/refund dari order lama yg ditolak/dikembalikan: {id, tanggalDihitung, orderId, toko, jumlah, catatan}
   karyawan: [],                    // {id, nik, nama, status}
   slipGaji: [],                    // riwayat slip gaji per bulan: {id, karyawanId, bulan(1-12), tahun, pendapatan:[{label,jumlah}], potongan:[{label,jumlah}], createdAt, updatedAt}
@@ -585,6 +589,18 @@ function resolveRolloverIntoAllocations(result, resolutions, tanggalPenarikanFor
       STATE.contracts.push(kontrakBaru);
     }
 
+    // Catat ke rolloverLog (2026-11-13, laporan "rollover hari ini") -- SELALU dicatat di titik ini terlepas
+    // kontrakBaru ini nanti langsung habis lagi di batch yg sama atau tidak. STATE.contracts sendiri TIDAK bisa
+    // diandalkan sbg riwayat krn kontrak yg sudah DANA SUDAH CAIR tidak tampil lagi di tab Kelola Kontrak.
+    STATE.rolloverLog.push({
+      id: uid('rlog'), waktu: new Date().toISOString(), tanggalPenarikanBatch: dateForRollover,
+      produk: a.produk, kode2: a.kode2, namaInvestor: a.namaInvestor, capitalPartnerId: a.capitalPartnerId,
+      kodeKontrakLama: a.kodeKontrakLama, tipe: res.tipe, kodeKontrakBaru: kontrakBaru.kodeKontrak,
+      kontrakBaruDipakaiUlang: !!existingUnusedSuccessor, hargaLama: a.hargaModalPcsLama, hargaBaru: res.hargaBaru,
+      modalLama, profitLama, modalBaru, stockAwalBaru, sisaRp, qtyDariSibling,
+      qtyKeKontrakBaru: Math.min(sisaQty, stockAwalBaru),
+    });
+
     if (sisaQty <= 0) {
       // Semua sisa unit sudah tertampung kontrak aktif lama -- entri placeholder ini tidak perlu jadi payout lagi.
       toRemoveTahap1.push(a);
@@ -651,13 +667,20 @@ function resolveRolloverIntoAllocations(result, resolutions, tanggalPenarikanFor
     if (!Object.keys(pct).length) {
       result.allocations.push({ produk: a.produk, kode2: null, namaInvestor: null, kodeKontrak: null, qty: a.qty, rate: null, payout: null,
         catatan: `${a.qty} unit dari ${a.namaInvestor} (STOP) tidak bisa diredistribusi -- tidak ada kontrak aktif lain utk ${a.produk}.` });
+      STATE.rolloverLog.push({
+        id: uid('rlog'), waktu: new Date().toISOString(), tanggalPenarikanBatch: dateForRollover,
+        produk: a.produk, kode2: a.kode2, namaInvestor: a.namaInvestor, capitalPartnerId: a.capitalPartnerId,
+        kodeKontrakLama: a.kodeKontrakLama, tipe: 'stop', qty: a.qty, redistribusi: [],
+      });
       return;
     }
     const floors = allocateLargestRemainder(a.qty, pct);
+    const redistribusiLog = [];
     Object.entries(floors).forEach(([kode2b, qtyb]) => {
       if (qtyb <= 0) return;
       const partnerB = findPartnerByKode2(kode2b);
       const kontrakB = partnerB ? activeContractFor(a.produk, partnerB.id) : null;
+      redistribusiLog.push({ kode2: kode2b, namaInvestor: partnerB ? partnerB.nama : kode2b, qty: qtyb });
       result.allocations.push({
         produk: a.produk, kode2: kode2b, namaInvestor: partnerB ? partnerB.nama : kode2b, capitalPartnerId: partnerB ? partnerB.id : null,
         kodeKontrak: kontrakB ? kontrakB.kodeKontrak : null, contractId: kontrakB ? kontrakB.id : null,
@@ -665,6 +688,11 @@ function resolveRolloverIntoAllocations(result, resolutions, tanggalPenarikanFor
         catatan: `Redistribusi dari ${a.namaInvestor} (kontrak di-STOP)` + (kontrakB ? '' : ' -- TIDAK ADA kontrak aktif, cek manual'),
         orderUnits: a.orderUnits ? a.orderUnits.slice(0, qtyb) : [], skuBreakdown: {}, hargaModalPcs: kontrakB ? kontrakB.hargaModalPcs : null,
       });
+    });
+    STATE.rolloverLog.push({
+      id: uid('rlog'), waktu: new Date().toISOString(), tanggalPenarikanBatch: dateForRollover,
+      produk: a.produk, kode2: a.kode2, namaInvestor: a.namaInvestor, capitalPartnerId: a.capitalPartnerId,
+      kodeKontrakLama: a.kodeKontrakLama, tipe: 'stop', qty: a.qty, redistribusi: redistribusiLog,
     });
   });
   toRemove.forEach(a => { const idx = result.allocations.indexOf(a); if (idx >= 0) result.allocations.splice(idx, 1); });
@@ -1385,7 +1413,7 @@ async function loadState(fileIdOverride) {
   const loaded = text ? JSON.parse(text) : {};
   // DEFAULT_STATE mencakup SEMUA field yg pernah ada -- supaya file lama (dari sebelum field baru ditambahkan)
   // tidak jadi undefined pas dimuat. Tiap kali nambah field baru ke STATE, tambahkan juga di sini.
-  const DEFAULT_STATE = { capitalPartners: [], stores: [], products: [], contracts: [], colorCodeMap: {}, pembagiPctManual: {}, orderDb: [], pendingOrderSku: {}, payouts: [], vendorPayouts: [], adsMingguan: [], biayaOperasional: [], opexKategori: OPEX_KATEGORI.slice(), alokasiProfit: [], alokasiKategori: ALOKASI_KATEGORI.slice(), saldoDiluarKontrak: {}, biayaRetur: [], karyawan: [], slipGaji: [], slipGajiSettings: { namaPerusahaan: 'UJUSO', alamatBaris: ['Jl. Permana Timur Blok D7 No. 28', 'Kel. Citeureup, Kec. Cimahi Utara', 'Kota Cimahi'], logoDataUri: DEFAULT_LOGO_UJUSO_DATA_URI, emailKontak: 'setiawandewanto@gmail.com' } };
+  const DEFAULT_STATE = { capitalPartners: [], stores: [], products: [], contracts: [], colorCodeMap: {}, pembagiPctManual: {}, orderDb: [], pendingOrderSku: {}, payouts: [], vendorPayouts: [], adsMingguan: [], biayaOperasional: [], opexKategori: OPEX_KATEGORI.slice(), alokasiProfit: [], alokasiKategori: ALOKASI_KATEGORI.slice(), saldoDiluarKontrak: {}, rolloverLog: [], biayaRetur: [], karyawan: [], slipGaji: [], slipGajiSettings: { namaPerusahaan: 'UJUSO', alamatBaris: ['Jl. Permana Timur Blok D7 No. 28', 'Kel. Citeureup, Kec. Cimahi Utara', 'Kota Cimahi'], logoDataUri: DEFAULT_LOGO_UJUSO_DATA_URI, emailKontak: 'setiawandewanto@gmail.com' } };
   STATE = Object.assign({}, DEFAULT_STATE, loaded);
 }
 
@@ -5104,6 +5132,9 @@ function fmtRpCompact(n) {
    ========================================================================= */
 let laporanFilter = { status: 'belum', investorId: '', tab: 'investor' };
 let laporanDetail = { tanggal: '', kodeKontrak: '', brand: '' };
+// Filter tanggal panel "Riwayat Rollover" (2026-11-13) -- default kosong (tampil semua) spy render pertama
+// kali tidak keliru kelihatan "kosong" kalau belum ada rollover HARI INI tapi ada di hari lain.
+let rolloverLogFilter = { dari: '', sampai: '' };
 // Centang "Tandai Dibayar" massal (permintaan user 2026-09-18, tab Payout Capital Partner) -- Set berisi id
 // STATE.payouts yg lagi dicentang. Dikosongkan tiap ganti sub-tab/filter status spy tidak nyangkut ke tampilan
 // yg beda (id yg sudah tidak kelihatan tetap aman kalaupun ketinggalan, cuma diabaikan saat commit massal).
@@ -5440,6 +5471,52 @@ function renderLaporanDetailPanel(container) {
   wireDrilldownHandlers(container);
 }
 
+// Tabel "Riwayat Rollover" (2026-11-13, permintaan Setiawan: butuh laporan rollover apa saja yg terjadi di
+// suatu tanggal -- sebelumnya cuma bisa dilihat lewat badge "rollover" di tab Kelola Kontrak, yg HILANG begitu
+// kontrak barunya langsung habis lagi/ditutup di batch yg sama). Sumber data: STATE.rolloverLog (permanen,
+// ditulis di resolveRolloverIntoAllocations, TIDAK terpengaruh status kontrak sama sekali).
+function renderRolloverLogTable(el) {
+  const dari = rolloverLogFilter.dari, sampai = rolloverLogFilter.sampai;
+  const list = (STATE.rolloverLog || [])
+    .filter(r => (!dari || r.waktu.slice(0,10) >= dari) && (!sampai || r.waktu.slice(0,10) <= sampai))
+    .sort((a,b) => new Date(b.waktu) - new Date(a.waktu));
+  if (!list.length) { el.innerHTML = '<div class="empty-note">Tidak ada rollover tercatat utk rentang tanggal ini.</div>'; return; }
+  el.innerHTML = `
+    <div style="overflow-x:auto;">
+    <table class="data compact">
+      <thead><tr>
+        <th>Waktu</th><th>Produk</th><th>Investor</th><th>Keputusan</th><th>Kontrak</th>
+        <th class="num">Harga Lama &rarr; Baru</th><th class="num">Modal Baru</th><th class="num">Stock Awal Baru</th><th class="num">Sisa ke Saldo</th>
+      </tr></thead>
+      <tbody>
+        ${list.map(r => {
+          const tipeLabel = r.tipe === 'putar_penuh' ? 'Putar Penuh' : r.tipe === 'putar_modal' ? 'Putar Modal Saja' : 'Stop (Redistribusi)';
+          if (r.tipe === 'stop') {
+            const redis = (r.redistribusi||[]).length
+              ? r.redistribusi.map(x => `${x.namaInvestor} (+${x.qty})`).join(', ')
+              : 'Tidak ada kontrak aktif lain -- tidak bisa diredistribusi';
+            return `<tr>
+              <td>${fmtTanggal(r.waktu, {short:true})}</td><td>${r.produk}</td><td>${r.namaInvestor||'-'}</td>
+              <td>${tipeLabel}</td>
+              <td>${r.kodeKontrakLama} &rarr; <i>ditutup</i><div style="font-size:10.5px; color:var(--ink-soft); margin-top:2px; white-space:normal;">${redis}</div></td>
+              <td class="num">-</td><td class="num">-</td><td class="num">-</td><td class="num">-</td>
+            </tr>`;
+          }
+          return `<tr>
+            <td>${fmtTanggal(r.waktu, {short:true})}</td><td>${r.produk}</td><td>${r.namaInvestor||'-'}</td>
+            <td>${tipeLabel}</td>
+            <td>${r.kodeKontrakLama} &rarr; ${r.kodeKontrakBaru}${r.kontrakBaruDipakaiUlang?' <span class="pill" style="font-size:9px;">pakai ulang</span>':''}</td>
+            <td class="num">${fmtRpCompact(r.hargaLama)} &rarr; ${fmtRpCompact(r.hargaBaru)}</td>
+            <td class="num">${fmtRp(r.modalBaru)}</td><td class="num">${r.stockAwalBaru}</td>
+            <td class="num">${r.sisaRp ? fmtRp(r.sisaRp) : '-'}</td>
+          </tr>`;
+        }).join('')}
+      </tbody>
+    </table>
+    </div>
+  `;
+}
+
 function renderLaporan(container) {
   const payouts = STATE.payouts;
   const vendorPayouts = STATE.vendorPayouts;
@@ -5494,6 +5571,18 @@ function renderLaporan(container) {
           <tbody>${saldoEntries.map(([cpId,v]) => { const p = findPartnerById(cpId); return `<tr><td>${p?p.nama:cpId}</td><td class="num">${fmtRp(v)}</td></tr>`; }).join('')}</tbody>
         </table>`;
       })()}
+    </div>
+
+    <div class="panel">
+      <h2>Riwayat Rollover</h2>
+      <div class="desc">Semua keputusan rollover (Putar Penuh / Putar Modal Saja / Stop) yang pernah diproses -- tetap tercatat di sini walau kontrak barunya sudah langsung habis/tertutup lagi, berbeda dgn badge "rollover" di tab Kelola Kontrak yg bisa hilang.</div>
+      <div class="grid2" style="margin-bottom:8px; max-width:420px;">
+        <div class="field"><label>Dari Tanggal</label><input type="date" id="rlog_dari" value="${rolloverLogFilter.dari}"></div>
+        <div class="field"><label>Sampai Tanggal</label><input type="date" id="rlog_sampai" value="${rolloverLogFilter.sampai}"></div>
+      </div>
+      <button class="btn btn-ghost" id="rlog_hariIni" style="margin-right:8px;">Hari Ini</button>
+      <button class="btn btn-ghost" id="rlog_semua">Lihat Semua</button>
+      <div id="rolloverLogArea" style="margin-top:10px;"></div>
     </div>
 
     <div class="panel" style="padding-bottom:0;">
@@ -5557,6 +5646,20 @@ function renderLaporan(container) {
       }
     });
   }
+  document.getElementById('rlog_dari').addEventListener('change', (e) => { rolloverLogFilter.dari = e.target.value; renderRolloverLogTable(document.getElementById('rolloverLogArea')); });
+  document.getElementById('rlog_sampai').addEventListener('change', (e) => { rolloverLogFilter.sampai = e.target.value; renderRolloverLogTable(document.getElementById('rolloverLogArea')); });
+  document.getElementById('rlog_hariIni').addEventListener('click', () => {
+    const t = new Date().toISOString().slice(0,10);
+    rolloverLogFilter = { dari: t, sampai: t };
+    document.getElementById('rlog_dari').value = t; document.getElementById('rlog_sampai').value = t;
+    renderRolloverLogTable(document.getElementById('rolloverLogArea'));
+  });
+  document.getElementById('rlog_semua').addEventListener('click', () => {
+    rolloverLogFilter = { dari: '', sampai: '' };
+    document.getElementById('rlog_dari').value = ''; document.getElementById('rlog_sampai').value = '';
+    renderRolloverLogTable(document.getElementById('rolloverLogArea'));
+  });
+  renderRolloverLogTable(document.getElementById('rolloverLogArea'));
   if (laporanFilter.tab === 'detail') { renderLaporanDetailPanel(document.getElementById('laporanDetailArea')); return; }
   const statusFilterEl = document.getElementById('laporanStatusFilter');
   if (statusFilterEl) statusFilterEl.addEventListener('change', (e) => { laporanFilter.status = e.target.value; laporanBulkSelection.clear(); renderLaporan(container); });
