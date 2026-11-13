@@ -4175,7 +4175,19 @@ function computeGrossNettProfitPerOrder(r) {
   const hargaKonveksi = r.hargaKonveksi != null ? r.hargaKonveksi : lookupHargaKonveksiBySku(r.sku);
   const modal = hargaKonveksi != null ? qty * hargaKonveksi : 0;
   const packingAksesoris = qty * PACKING_AKSESORIS_PER_UNIT;
-  const payoutInvestor = (r.brand === 'URBAN OUTDOOR' && r.kategoriJual !== 'PO') ? qty * PAYOUT_INVESTOR_UOUT_PER_UNIT : 0;
+  // Kategori Jual produk dicek LIVE ke STATE.products (bukan snapshot r.kategoriJual yg sudah tersimpan di
+  // baris order) -- ditemukan 2026-11-13 dari laporan nyata Setiawan (ROVEE masih kena "Payout Investor
+  // (asumsi)" Rp5.000 di panel ini walau sudah ditandai PO): kalau produk baru ditandai PO lewat "Simpan
+  // Kategori Jual" SETELAH sebuah order sudah lebih dulu diproses (applyBatchResult), baris orderDb lama itu
+  // tetap membawa kategoriJual snapshot LAMA (null/normal), jadi estimasi di panel ini salah selamanya kalau
+  // dibaca dari baris, padahal sebenarnya cuma soal pengkategorian produk yg terlanjur telat ditandai. Panel
+  // ini MEMANG cuma estimasi cepat (bukan payout investor sungguhan dari STATE.payouts), jadi wajar & lebih
+  // benar kalau selalu ikut klasifikasi produk YANG BERLAKU SEKARANG, bukan status di tanggal order itu cair --
+  // fallback ke field snapshot r.brand/r.kategoriJual kalau produknya sudah tidak ada lagi di STATE.products.
+  const produkRef = findProduct(r.produk);
+  const brandUtkPayout = produkRef ? produkRef.brand : r.brand;
+  const kategoriJualUtkPayout = produkRef ? produkRef.kategoriJual : r.kategoriJual;
+  const payoutInvestor = (brandUtkPayout === 'URBAN OUTDOOR' && kategoriJualUtkPayout !== 'PO') ? qty * PAYOUT_INVESTOR_UOUT_PER_UNIT : 0;
   const nettProfit = grossProfit - modal - packingAksesoris - payoutInvestor;
   const nettProfitPct = pendapatan > 0 ? (nettProfit / pendapatan * 100) : null;
 
