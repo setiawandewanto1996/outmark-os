@@ -316,9 +316,16 @@ let STATE = {
   invoices: [],                     // invoice B2B/grosir (2026-11-19, replikasi Outmark Invoice Manager, langkah awal "struktur dasar" sblm
                                      // migrasi penuh): {id, nomor (bebas diisi manual ATAU auto-generate, Setiawan: "bisa otomatis bisa juga aku
                                      // yang input"), tanggal, tipe:'FULL'|'DP'|'SETTLEMENT', customerId, deskripsi, items:[{invoiceProductId,nama,
-                                     // warna,ukuran,harga,qty}], ongkir, potongan, subtotal, grandTotal, dpPercent (hanya tipe DP), dpPaid (hanya
-                                     // tipe DP), sisaBayar (hanya tipe DP, =grandTotal-dpPaid), settlementOfInvoiceId (hanya tipe SETTLEMENT, ref ke
-                                     // id invoice DP asalnya), tanpaTtdCap:false (disiapkan utk fitur menyusul, BELUM dipakai di PDF v1), createdAt}
+                                     // warna,ukuran,harga,qty}], ongkir, potongan, diskonId (opsional, ref STATE.diskon), subtotal, grandTotal,
+                                     // dpPercent (hanya tipe DP), dpPaid (hanya tipe DP), sisaBayar (hanya tipe DP, =grandTotal-dpPaid),
+                                     // ongkirMenyusul:false (hanya tipe DP -- tandai "ongkir ditagih di invoice pelunasan", 2026-11-19 lanjutan),
+                                     // settlementOfInvoiceId (hanya tipe SETTLEMENT, ref ke id invoice DP asalnya), tanpaTtdCap:false (dibaca di
+                                     // renderInvoicePrintHtml, 2026-11-19 lanjutan -- sembunyikan blok ttd/cap saat cetak kalau true), createdAt}
+  diskon: [],                       // katalog diskon invoice (2026-11-19 lanjutan, replikasi menu Diskon Outmark Invoice Manager): {id, nama,
+                                     // tipe:'persen'|'nominal', nilai, status:'Aktif'|'Nonaktif', createdAt}
+  kwitansi: [],                     // kwitansi pembayaran (2026-11-19 lanjutan, dokumen TERPISAH dari invoice -- Setiawan bisa tempel materai
+                                     // digital sendiri nanti di hasil cetaknya): {id, nomor, tanggal, invoiceId (opsional, ref STATE.invoices),
+                                     // customerId, jumlah, untukPembayaran, createdAt}
 };
 let stateFileId = null;
 let accessToken = null;
@@ -1440,7 +1447,7 @@ async function loadState(fileIdOverride) {
   const loaded = text ? JSON.parse(text) : {};
   // DEFAULT_STATE mencakup SEMUA field yg pernah ada -- supaya file lama (dari sebelum field baru ditambahkan)
   // tidak jadi undefined pas dimuat. Tiap kali nambah field baru ke STATE, tambahkan juga di sini.
-  const DEFAULT_STATE = { capitalPartners: [], stores: [], products: [], contracts: [], colorCodeMap: {}, pembagiPctManual: {}, orderDb: [], pendingOrderSku: {}, payouts: [], vendorPayouts: [], adsMingguan: [], biayaOperasional: [], opexKategori: OPEX_KATEGORI.slice(), alokasiProfit: [], alokasiKategori: ALOKASI_KATEGORI.slice(), saldoDiluarKontrak: {}, rolloverLog: [], customers: [], biayaRetur: [], karyawan: [], slipGaji: [], slipGajiSettings: { namaPerusahaan: 'UJUSO', alamatBaris: ['Jl. Permana Timur Blok D7 No. 28', 'Kel. Citeureup, Kec. Cimahi Utara', 'Kota Cimahi'], logoDataUri: DEFAULT_LOGO_UJUSO_DATA_URI, emailKontak: 'setiawandewanto@gmail.com' }, invoiceProducts: [], invoices: [] };
+  const DEFAULT_STATE = { capitalPartners: [], stores: [], products: [], contracts: [], colorCodeMap: {}, pembagiPctManual: {}, orderDb: [], pendingOrderSku: {}, payouts: [], vendorPayouts: [], adsMingguan: [], biayaOperasional: [], opexKategori: OPEX_KATEGORI.slice(), alokasiProfit: [], alokasiKategori: ALOKASI_KATEGORI.slice(), saldoDiluarKontrak: {}, rolloverLog: [], customers: [], biayaRetur: [], karyawan: [], slipGaji: [], slipGajiSettings: { namaPerusahaan: 'UJUSO', alamatBaris: ['Jl. Permana Timur Blok D7 No. 28', 'Kel. Citeureup, Kec. Cimahi Utara', 'Kota Cimahi'], logoDataUri: DEFAULT_LOGO_UJUSO_DATA_URI, emailKontak: 'setiawandewanto@gmail.com' }, invoiceProducts: [], invoices: [], diskon: [], kwitansi: [] };
   STATE = Object.assign({}, DEFAULT_STATE, loaded);
 }
 
@@ -4661,11 +4668,17 @@ let editingPelangganId = null;
 let expandedPelangganId = null;
 
 // ===== Invoice (2026-11-19, "struktur dasar" -- langkah awal migrasi dari Outmark Invoice Manager) =====
-let invoiceFilter = { tab: 'buat', search: '', tipe: '' }; // tab: 'buat' | 'daftar' | 'katalog'
+let invoiceFilter = { tab: 'buat', search: '', tipe: '' }; // tab: 'buat' | 'daftar' | 'katalog' | 'diskon' | 'kwitansi'
 let editingInvoiceProdukId = null;
 let editingInvoiceId = null;
 let expandedInvoiceId = null;
 let invoiceDraft = null; // form "Buat/Edit Invoice" sedang disusun -- null = belum mulai, diisi emptyInvoiceDraft() saat pertama render
+// ===== Diskon & Kwitansi (2026-11-19 lanjutan) =====
+let editingDiskonId = null;
+let editingKwitansiId = null;
+let expandedKwitansiId = null;
+let kwitansiFilter = { search: '' };
+let kwitansiDraft = null; // form "Buat/Edit Kwitansi" sedang disusun
 
 // Riwayat pembelian 1 pelanggan -- daftar order yg sudah dikaitkan ke pelanggan ini (STATE.orderDb[].customerId),
 // diurutkan terbaru dulu, dipakai di panel expand tiap baris pelanggan.
@@ -4868,7 +4881,15 @@ function hitungTotalInvoice(items, ongkir, potongan) {
 
 function emptyInvoiceDraft() {
   const tanggal = new Date().toISOString().slice(0, 10);
-  return { tipe: 'FULL', tanggal, nomor: suggestNomorInvoice(tanggal), customerId: '', deskripsi: '', items: [], ongkir: 0, potongan: 0, dpPercent: 50, settlementOfInvoiceId: '' };
+  return { tipe: 'FULL', tanggal, nomor: suggestNomorInvoice(tanggal), customerId: '', deskripsi: '', items: [], ongkir: 0, potongan: 0, diskonId: '', dpPercent: 50, settlementOfInvoiceId: '', tanpaTtdCap: false, ongkirMenyusul: false };
+}
+
+// Hitung nominal potongan dari 1 diskon katalog (persen dari subtotal, atau nominal tetap) -- dipanggil saat
+// user pilih diskon di dropdown, hasilnya diisi ke field Potongan (tetap bisa ditimpa manual sesudahnya).
+function hitungNilaiDiskon(diskon, subtotal) {
+  if (!diskon) return 0;
+  if (diskon.tipe === 'persen') return Math.round((subtotal || 0) * (Number(diskon.nilai) || 0) / 100);
+  return Number(diskon.nilai) || 0;
 }
 
 // Satu titik baca SEMUA field form (selain item -- item dikelola langsung di invoiceDraft.items oleh tombol
@@ -4885,8 +4906,11 @@ function syncInvoiceDraftFromDom() {
   if (get('inv_deskripsi')) d.deskripsi = get('inv_deskripsi').value;
   if (get('inv_ongkir')) d.ongkir = Number(get('inv_ongkir').value) || 0;
   if (get('inv_potongan')) d.potongan = Number(get('inv_potongan').value) || 0;
+  if (get('inv_diskon')) d.diskonId = get('inv_diskon').value;
   if (get('inv_dpPercent')) d.dpPercent = Number(get('inv_dpPercent').value) || 0;
   if (get('inv_settlementOf')) d.settlementOfInvoiceId = get('inv_settlementOf').value;
+  if (get('inv_tanpaTtdCap')) d.tanpaTtdCap = get('inv_tanpaTtdCap').checked;
+  if (get('inv_ongkirMenyusul')) d.ongkirMenyusul = get('inv_ongkirMenyusul').checked;
 }
 
 // Dipanggil bareng oleh SEMUA 3 jalur (Database Penjualan sudah pakai pola findCustName di atas) -- bukan,
@@ -4901,7 +4925,7 @@ function renderInvoiceDetailPanel(inv) {
     </table>
     <div class="kpi-row">
       <div class="kpi"><div class="kpi-label">Subtotal</div><div class="kpi-value">${fmtRp(inv.subtotal)}</div></div>
-      ${inv.ongkir ? `<div class="kpi"><div class="kpi-label">Ongkir</div><div class="kpi-value">${fmtRp(inv.ongkir)}</div></div>` : ''}
+      ${inv.tipe === 'DP' && inv.ongkirMenyusul ? `<div class="kpi"><div class="kpi-label">Ongkir</div><div class="kpi-value" style="font-size:13px;">Menyusul di pelunasan</div></div>` : inv.ongkir ? `<div class="kpi"><div class="kpi-label">Ongkir</div><div class="kpi-value">${fmtRp(inv.ongkir)}</div></div>` : ''}
       ${inv.potongan ? `<div class="kpi"><div class="kpi-label">Potongan</div><div class="kpi-value">${fmtRp(inv.potongan)}</div></div>` : ''}
       <div class="kpi"><div class="kpi-label">Grand Total</div><div class="kpi-value">${fmtRp(inv.grandTotal)}</div></div>
       ${inv.tipe === 'DP' ? `
@@ -4913,12 +4937,15 @@ function renderInvoiceDetailPanel(inv) {
         return src ? `<div class="kpi"><div class="kpi-label">Pelunasan dari</div><div class="kpi-value" style="font-size:14px;">${src.nomor}</div></div>` : '';
       })() : ''}
     </div>
+    <div style="font-size:11.5px; color:var(--ink-soft); margin-top:4px;">${inv.tanpaTtdCap ? 'Cetak: TANPA tanda tangan &amp; cap.' : ''}</div>
   `;
 }
 
 // Layout cetak A4 sederhana (dipakai lewat #invoicePrintArea + window.print(), lihat CSS @media print).
-// CATATAN: opsi "tanpa ttd/cap" BELUM diimplementasi di sini (fitur menyusul, field inv.tanpaTtdCap sudah
-// disiapkan di data model tapi belum dibaca di fungsi ini) -- blok ttd/cap SELALU tampil di v1 ini.
+// inv.tanpaTtdCap=true -> blok ttd/cap disembunyikan sepenuhnya (2026-11-19 lanjutan, permintaan Setiawan
+// "tanpa ttd dan cap agar bisa muncul pilihan seperti itu"). inv.ongkirMenyusul (tipe DP) -> baris Ongkir
+// diganti label "Menyusul di invoice pelunasan" (bukan Rp0 yg bisa disalahartikan sbg "tidak ada ongkir
+// sama sekali"); invoice SETTLEMENT yg tertaut ke DP spt itu melabeli baris Ongkir-nya "(dari DP sebelumnya)".
 function renderInvoicePrintHtml(inv) {
   const cust = STATE.customers.find(c => c.id === inv.customerId);
   return `
@@ -4938,7 +4965,13 @@ function renderInvoicePrintHtml(inv) {
         <tbody>
           ${(inv.items||[]).map((it,i) => `<tr><td>${i+1}</td><td>${it.nama}</td><td>${it.warna||'-'}</td><td>${it.ukuran||'-'}</td><td class="num">${fmtRp(it.harga)}</td><td class="num">${it.qty}</td><td class="num">${fmtRp((it.harga||0)*(it.qty||0))}</td></tr>`).join('')}
           <tr><td colspan="6"><b>Sub Total</b></td><td class="num"><b>${fmtRp(inv.subtotal)}</b></td></tr>
-          ${inv.ongkir ? `<tr><td colspan="6">Ongkir</td><td class="num">${fmtRp(inv.ongkir)}</td></tr>` : ''}
+          ${(() => {
+            if (inv.tipe === 'DP' && inv.ongkirMenyusul) return `<tr><td colspan="6">Ongkir</td><td class="num">Menyusul di invoice pelunasan</td></tr>`;
+            if (!inv.ongkir) return '';
+            const srcDp = inv.tipe === 'SETTLEMENT' && inv.settlementOfInvoiceId ? STATE.invoices.find(i => i.id === inv.settlementOfInvoiceId) : null;
+            const label = srcDp && srcDp.ongkirMenyusul ? 'Ongkir (dari invoice DP sebelumnya)' : 'Ongkir';
+            return `<tr><td colspan="6">${label}</td><td class="num">${fmtRp(inv.ongkir)}</td></tr>`;
+          })()}
           ${inv.potongan ? `<tr><td colspan="6">Potongan</td><td class="num">-${fmtRp(inv.potongan)}</td></tr>` : ''}
           <tr><td colspan="6"><b>GRAND TOTAL</b></td><td class="num"><b>${fmtRp(inv.grandTotal)}</b></td></tr>
           ${inv.tipe === 'DP' ? `
@@ -4951,12 +4984,13 @@ function renderInvoicePrintHtml(inv) {
         Pembayaran dapat dilakukan melalui transfer:<br>
         <b>BANK BSI SYARIAH</b><br>7321305916<br>PT OUTMARK INDUSTRI
       </div>
+      ${inv.tanpaTtdCap ? '' : `
       <div style="display:flex; justify-content:flex-end; font-size:12px; text-align:center;">
         <div>
           Mengetahui,<br>PT. Outmark Global Industri<br><br><br><br>
           Penanggung Jawab
         </div>
-      </div>
+      </div>`}
     </div>
   `;
 }
@@ -5051,7 +5085,8 @@ function renderInvoiceBuat(el, container) {
   const d = invoiceDraft;
   const customersSorted = STATE.customers.slice().sort((a,b) => (a.nama||'').localeCompare(b.nama||''));
   const katalogAktif = STATE.invoiceProducts.filter(p => p.status === 'Aktif');
-  const { subtotal, grandTotal } = hitungTotalInvoice(d.items, d.ongkir, d.potongan);
+  const ongkirEfektif = (d.tipe === 'DP' && d.ongkirMenyusul) ? 0 : d.ongkir; // ongkir "menyusul" TIDAK ikut total invoice DP ini
+  const { subtotal, grandTotal } = hitungTotalInvoice(d.items, ongkirEfektif, d.potongan);
   const dpPaid = d.tipe === 'DP' ? Math.round(grandTotal * (d.dpPercent||0) / 100) : 0;
   const sisaBayar = d.tipe === 'DP' ? grandTotal - dpPaid : 0;
   const dpInvoicesOutstanding = STATE.invoices.filter(i => i.tipe === 'DP' && (i.sisaBayar||0) > 0 && i.id !== editingInvoiceId);
@@ -5130,10 +5165,21 @@ function renderInvoiceBuat(el, container) {
 
       <h3 style="margin:16px 0 8px;">Total</h3>
       <div class="grid2">
-        <div class="field"><label>Ongkir (Rp)</label><input type="number" id="inv_ongkir" min="0" value="${d.ongkir}"></div>
-        <div class="field"><label>Potongan (Rp)</label><input type="number" id="inv_potongan" min="0" value="${d.potongan}"></div>
+        <div class="field"><label>Ongkir (Rp)</label><input type="number" id="inv_ongkir" min="0" value="${d.ongkir}" ${d.tipe === 'DP' && d.ongkirMenyusul ? 'disabled' : ''}></div>
+        <div class="field"><label>Diskon (Opsional)</label>
+          <select id="inv_diskon">
+            <option value="">-- Tanpa Diskon --</option>
+            ${STATE.diskon.filter(ds => ds.status==='Aktif').map(ds => `<option value="${ds.id}" ${d.diskonId===ds.id?'selected':''}>${ds.nama} (${ds.tipe==='persen' ? ds.nilai+'%' : fmtRp(ds.nilai)})</option>`).join('')}
+          </select>
+        </div>
       </div>
-      ${d.tipe === 'DP' ? `<div class="field" style="max-width:220px;"><label>DP (%)</label><input type="number" id="inv_dpPercent" min="1" max="99" value="${d.dpPercent}"></div>` : ''}
+      <div class="field" style="max-width:300px;"><label>Potongan (Rp)</label><input type="number" id="inv_potongan" min="0" value="${d.potongan}"></div>
+      ${d.tipe === 'DP' ? `
+      <div class="grid2">
+        <div class="field" style="max-width:220px;"><label>DP (%)</label><input type="number" id="inv_dpPercent" min="1" max="99" value="${d.dpPercent}"></div>
+        <div class="field" style="justify-content:flex-end;"><label style="display:flex; align-items:center; gap:6px; font-weight:400;"><input type="checkbox" id="inv_ongkirMenyusul" ${d.ongkirMenyusul?'checked':''}> Ongkir ditagih di invoice pelunasan (ongkir menyusul)</label></div>
+      </div>` : ''}
+      <div class="field"><label style="display:flex; align-items:center; gap:6px; font-weight:400;"><input type="checkbox" id="inv_tanpaTtdCap" ${d.tanpaTtdCap?'checked':''}> Cetak tanpa tanda tangan &amp; cap</label></div>
       <div class="kpi-row">
         <div class="kpi"><div class="kpi-label">Subtotal</div><div class="kpi-value">${fmtRp(subtotal)}</div></div>
         <div class="kpi"><div class="kpi-label">Grand Total</div><div class="kpi-value">${fmtRp(grandTotal)}</div></div>
@@ -5157,8 +5203,21 @@ function renderInvoiceBuat(el, container) {
   document.getElementById('inv_deskripsi').addEventListener('change', () => syncInvoiceDraftFromDom());
   document.getElementById('inv_ongkir').addEventListener('change', rerender);
   document.getElementById('inv_potongan').addEventListener('change', rerender);
+  document.getElementById('inv_diskon').addEventListener('change', (e) => {
+    syncInvoiceDraftFromDom();
+    const diskon = STATE.diskon.find(ds => ds.id === e.target.value);
+    invoiceDraft.potongan = hitungNilaiDiskon(diskon, hitungTotalInvoice(invoiceDraft.items, 0, 0).subtotal);
+    renderInvoiceBuat(el, container);
+  });
+  document.getElementById('inv_tanpaTtdCap').addEventListener('change', () => syncInvoiceDraftFromDom());
   const dpPercentEl = document.getElementById('inv_dpPercent');
   if (dpPercentEl) dpPercentEl.addEventListener('change', rerender);
+  const ongkirMenyusulEl = document.getElementById('inv_ongkirMenyusul');
+  if (ongkirMenyusulEl) ongkirMenyusulEl.addEventListener('change', (e) => {
+    syncInvoiceDraftFromDom();
+    if (e.target.checked) invoiceDraft.ongkir = 0; // ongkir dipindah ke invoice pelunasan, kosongkan di sini
+    renderInvoiceBuat(el, container);
+  });
   const settlementOfEl = document.getElementById('inv_settlementOf');
   if (settlementOfEl) settlementOfEl.addEventListener('change', rerender);
   document.getElementById('btnGenNomor').addEventListener('click', () => {
@@ -5209,16 +5268,19 @@ function renderInvoiceBuat(el, container) {
     if (!dd.nomor.trim()) { showMsg(msg, 'err', 'Nomor invoice wajib diisi.'); return; }
     if (!dd.customerId) { showMsg(msg, 'err', 'Pelanggan wajib dipilih.'); return; }
     if (!dd.items.length) { showMsg(msg, 'err', 'Tambahkan minimal 1 item produk.'); return; }
-    const totals = hitungTotalInvoice(dd.items, dd.ongkir, dd.potongan);
+    const ongkirDisimpan = (dd.tipe === 'DP' && dd.ongkirMenyusul) ? 0 : dd.ongkir; // ongkir "menyusul" tidak ikut total invoice DP ini
+    const totals = hitungTotalInvoice(dd.items, ongkirDisimpan, dd.potongan);
     const payload = {
       nomor: dd.nomor.trim(), tanggal: dd.tanggal, tipe: dd.tipe, customerId: dd.customerId, deskripsi: dd.deskripsi,
-      items: dd.items.map(it => ({ ...it })), ongkir: dd.ongkir, potongan: dd.potongan, subtotal: totals.subtotal, grandTotal: totals.grandTotal,
-      dpPercent: null, dpPaid: null, sisaBayar: null, settlementOfInvoiceId: null,
+      items: dd.items.map(it => ({ ...it })), ongkir: ongkirDisimpan, potongan: dd.potongan, diskonId: dd.diskonId || null,
+      subtotal: totals.subtotal, grandTotal: totals.grandTotal, tanpaTtdCap: !!dd.tanpaTtdCap,
+      dpPercent: null, dpPaid: null, sisaBayar: null, ongkirMenyusul: false, settlementOfInvoiceId: null,
     };
     if (dd.tipe === 'DP') {
       payload.dpPercent = dd.dpPercent;
       payload.dpPaid = Math.round(totals.grandTotal * (dd.dpPercent||0) / 100);
       payload.sisaBayar = totals.grandTotal - payload.dpPaid;
+      payload.ongkirMenyusul = !!dd.ongkirMenyusul;
     }
     if (dd.tipe === 'SETTLEMENT') payload.settlementOfInvoiceId = dd.settlementOfInvoiceId || null;
     if (editingInvoiceId) {
@@ -5226,7 +5288,6 @@ function renderInvoiceBuat(el, container) {
       Object.assign(existing, payload);
     } else {
       payload.id = uid('inv');
-      payload.tanpaTtdCap = false;
       payload.createdAt = new Date().toISOString();
       STATE.invoices.push(payload);
     }
@@ -5306,8 +5367,9 @@ function renderInvoiceDaftar(el, container) {
       editingInvoiceId = inv.id;
       invoiceDraft = {
         tipe: inv.tipe, tanggal: inv.tanggal, nomor: inv.nomor, customerId: inv.customerId, deskripsi: inv.deskripsi || '',
-        items: inv.items.map(it => ({ ...it })), ongkir: inv.ongkir || 0, potongan: inv.potongan || 0,
+        items: inv.items.map(it => ({ ...it })), ongkir: inv.ongkir || 0, potongan: inv.potongan || 0, diskonId: inv.diskonId || '',
         dpPercent: inv.dpPercent || 50, settlementOfInvoiceId: inv.settlementOfInvoiceId || '',
+        tanpaTtdCap: !!inv.tanpaTtdCap, ongkirMenyusul: !!inv.ongkirMenyusul,
       };
       invoiceFilter.tab = 'buat';
       renderInvoiceTab(container);
@@ -5320,7 +5382,7 @@ function renderInvoiceDaftar(el, container) {
       if (!srcInv) return;
       editingInvoiceId = null;
       const tanggal = new Date().toISOString().slice(0, 10);
-      invoiceDraft = { tipe: 'SETTLEMENT', tanggal, nomor: suggestNomorInvoice(tanggal), customerId: srcInv.customerId, deskripsi: '', items: [], ongkir: 0, potongan: 0, dpPercent: 50, settlementOfInvoiceId: srcInv.id };
+      invoiceDraft = { tipe: 'SETTLEMENT', tanggal, nomor: suggestNomorInvoice(tanggal), customerId: srcInv.customerId, deskripsi: '', items: [], ongkir: 0, potongan: 0, diskonId: '', dpPercent: 50, settlementOfInvoiceId: srcInv.id, tanpaTtdCap: false, ongkirMenyusul: false };
       invoiceFilter.tab = 'buat';
       renderInvoiceTab(container);
     });
@@ -5350,6 +5412,8 @@ function renderInvoiceTab(container) {
         <button class="btn-subtab ${invoiceFilter.tab==='buat'?'active':''}" data-subtab-invoice="buat">${editingInvoiceId ? 'Edit Invoice' : 'Buat Invoice'}</button>
         <button class="btn-subtab ${invoiceFilter.tab==='daftar'?'active':''}" data-subtab-invoice="daftar">Daftar Invoice</button>
         <button class="btn-subtab ${invoiceFilter.tab==='katalog'?'active':''}" data-subtab-invoice="katalog">Katalog Produk</button>
+        <button class="btn-subtab ${invoiceFilter.tab==='diskon'?'active':''}" data-subtab-invoice="diskon">Diskon</button>
+        <button class="btn-subtab ${invoiceFilter.tab==='kwitansi'?'active':''}" data-subtab-invoice="kwitansi">${editingKwitansiId ? 'Edit Kwitansi' : 'Kwitansi'}</button>
       </div>
     </div>
     <div id="invoiceSubArea"></div>
@@ -5360,7 +5424,297 @@ function renderInvoiceTab(container) {
   const subArea = document.getElementById('invoiceSubArea');
   if (invoiceFilter.tab === 'daftar') renderInvoiceDaftar(subArea, container);
   else if (invoiceFilter.tab === 'katalog') renderInvoiceKatalog(subArea, container);
+  else if (invoiceFilter.tab === 'diskon') renderInvoiceDiskon(subArea, container);
+  else if (invoiceFilter.tab === 'kwitansi') renderKwitansi(subArea, container);
   else renderInvoiceBuat(subArea, container);
+}
+
+/* =========================================================================
+   DISKON (2026-11-19 lanjutan) -- katalog kode diskon utk invoice, replikasi menu Diskon di Outmark Invoice
+   Manager. Dipilih di form Buat Invoice (dropdown di atas field Potongan) -- cuma MENGISI field Potongan
+   (persen dihitung dari subtotal saat itu, nominal langsung dipakai), tetap bisa ditimpa manual sesudahnya.
+   ========================================================================= */
+function renderInvoiceDiskon(el, container) {
+  const editing = editingDiskonId ? STATE.diskon.find(d => d.id === editingDiskonId) : null;
+  const list = STATE.diskon.slice().sort((a,b) => (a.nama||'').localeCompare(b.nama||''));
+  el.innerHTML = `
+    <div class="panel">
+      <h2>${editing ? 'Edit Diskon' : 'Tambah Diskon'}</h2>
+      <form id="formDiskon">
+        <div class="field"><label>Nama Diskon</label><input type="text" id="dsk_nama" required value="${editing ? editing.nama.replace(/"/g,'&quot;') : ''}" placeholder="mis. Subsidi Ongkir"></div>
+        <div class="grid2">
+          <div class="field"><label>Tipe</label>
+            <select id="dsk_tipe">
+              <option value="nominal" ${(!editing || editing.tipe==='nominal')?'selected':''}>Nominal (Rp)</option>
+              <option value="persen" ${(editing && editing.tipe==='persen')?'selected':''}>Persen (%)</option>
+            </select>
+          </div>
+          <div class="field"><label>Nilai</label><input type="number" id="dsk_nilai" min="0" required value="${editing ? editing.nilai : ''}"></div>
+        </div>
+        <div class="field" style="max-width:220px;"><label>Status</label>
+          <select id="dsk_status">
+            <option value="Aktif" ${(!editing || editing.status==='Aktif')?'selected':''}>Aktif</option>
+            <option value="Nonaktif" ${(editing && editing.status==='Nonaktif')?'selected':''}>Nonaktif</option>
+          </select>
+        </div>
+        <button type="submit" class="btn btn-primary">${editing ? 'Simpan Perubahan' : '+ Tambah Diskon'}</button>
+        ${editing ? `<button type="button" class="btn btn-ghost" id="btnBatalEditDsk" style="margin-left:8px;">Batal</button>` : ''}
+        <div class="status-box" id="dskFormMsg"></div>
+      </form>
+    </div>
+    <div class="panel">
+      <h2>Diskon Terdaftar <span class="pill">${STATE.diskon.length}</span></h2>
+      ${!list.length ? '<div class="empty-note">Belum ada diskon. Tambah dulu sebelum bisa dipilih di form Buat Invoice.</div>' : `
+      <div class="list-card">
+        ${list.map(ds => `
+        <div class="list-row">
+          <div class="list-row-main" style="flex:1 1 220px; max-width:none;">
+            <span class="list-row-title">${ds.nama}</span>
+            <span class="list-row-sub" style="font-family:inherit;">${ds.tipe === 'persen' ? ds.nilai + '%' : fmtRp(ds.nilai)}</span>
+          </div>
+          <span class="list-row-small" style="flex:0 0 80px;"><span class="pill ${ds.status==='Aktif'?'ok':'off'}">${ds.status}</span></span>
+          <button class="btn btn-ghost" data-edit-dsk="${ds.id}" style="padding:4px 10px; font-size:11px;">Edit</button>
+          <button class="btn btn-ghost" data-toggle-status-dsk="${ds.id}" style="padding:4px 10px; font-size:11px; margin-left:6px;">${ds.status==='Aktif'?'Nonaktifkan':'Aktifkan'}</button>
+        </div>`).join('')}
+      </div>`}
+    </div>
+  `;
+  document.getElementById('formDiskon').addEventListener('submit', async (ev) => {
+    ev.preventDefault();
+    const msg = document.getElementById('dskFormMsg');
+    const nama = document.getElementById('dsk_nama').value.trim();
+    const tipe = document.getElementById('dsk_tipe').value;
+    const nilai = Number(document.getElementById('dsk_nilai').value) || 0;
+    const status = document.getElementById('dsk_status').value;
+    if (!nama) { showMsg(msg, 'err', 'Nama diskon wajib diisi.'); return; }
+    if (editing) {
+      editing.nama = nama; editing.tipe = tipe; editing.nilai = nilai; editing.status = status;
+    } else {
+      STATE.diskon.push({ id: uid('dsk'), nama, tipe, nilai, status: status || 'Aktif', createdAt: new Date().toISOString() });
+    }
+    await withSaving(msg, editing ? 'Perubahan diskon disimpan.' : 'Diskon ditambahkan.', async () => {
+      await saveState();
+      editingDiskonId = null;
+      renderInvoiceDiskon(el, container);
+    });
+  });
+  const btnBatal = document.getElementById('btnBatalEditDsk');
+  if (btnBatal) btnBatal.addEventListener('click', () => { editingDiskonId = null; renderInvoiceDiskon(el, container); });
+  el.querySelectorAll('[data-edit-dsk]').forEach(btn => {
+    btn.addEventListener('click', () => { editingDiskonId = btn.dataset.editDsk; renderInvoiceDiskon(el, container); });
+  });
+  el.querySelectorAll('[data-toggle-status-dsk]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const ds = STATE.diskon.find(x => x.id === btn.dataset.toggleStatusDsk);
+      if (!ds) return;
+      const statusLama = ds.status;
+      ds.status = ds.status === 'Aktif' ? 'Nonaktif' : 'Aktif';
+      try {
+        await saveState();
+      } catch (err) {
+        ds.status = statusLama;
+        alert('Gagal menyimpan perubahan status: ' + err.message);
+      }
+      renderInvoiceDiskon(el, container);
+    });
+  });
+}
+
+/* =========================================================================
+   KWITANSI (2026-11-19 lanjutan) -- dokumen TERPISAH dari invoice (Setiawan: "aku juga ingin bisa
+   mengeluarkan kwitansi, agar bisa aku beri materai digital nantinya"), bisa ditautkan opsional ke 1
+   invoice (auto-isi pelanggan & jumlah) atau diisi manual berdiri sendiri. Layout cetak menyisakan baris
+   kosong "tempat tempel e-meterai" di dekat ttd -- penempelan materai digital sungguhan (lewat PERURI dkk)
+   TETAP dilakukan Setiawan sendiri di luar app ini, bukan sesuatu yg bisa digenerate app.
+   ========================================================================= */
+function suggestNomorKwitansi(tanggalStr) {
+  const d = tanggalStr ? new Date(tanggalStr) : new Date();
+  const yyyy = isNaN(d.getTime()) ? new Date().getFullYear() : d.getFullYear();
+  const mm = String((isNaN(d.getTime()) ? new Date().getMonth() : d.getMonth()) + 1).padStart(2, '0');
+  const prefix = `KWT/${yyyy}/${mm}/`;
+  let maxN = 0;
+  STATE.kwitansi.forEach(k => {
+    if (k.nomor && k.nomor.startsWith(prefix)) {
+      const m = k.nomor.match(/(\d+)\s*$/);
+      if (m) maxN = Math.max(maxN, parseInt(m[1], 10));
+    }
+  });
+  return prefix + String(maxN + 1).padStart(3, '0');
+}
+
+// Catatan: konversi angka->teks dipakai di sini lewat terbilangRupiah(n), fungsi yg sudah ada di app
+// (dibuat awalnya utk baris "Terbilang" di slip gaji) -- dipakai ulang, bukan ditulis dobel.
+
+function emptyKwitansiDraft() {
+  const tanggal = new Date().toISOString().slice(0, 10);
+  return { tanggal, nomor: suggestNomorKwitansi(tanggal), invoiceId: '', customerId: '', jumlah: 0, untukPembayaran: '' };
+}
+function syncKwitansiDraftFromDom() {
+  const d = kwitansiDraft;
+  if (!d) return;
+  const get = id => document.getElementById(id);
+  if (get('kwt_tanggal')) d.tanggal = get('kwt_tanggal').value;
+  if (get('kwt_nomor')) d.nomor = get('kwt_nomor').value;
+  if (get('kwt_invoice')) d.invoiceId = get('kwt_invoice').value;
+  if (get('kwt_customer')) d.customerId = get('kwt_customer').value;
+  if (get('kwt_jumlah')) d.jumlah = Number(get('kwt_jumlah').value) || 0;
+  if (get('kwt_untuk')) d.untukPembayaran = get('kwt_untuk').value;
+}
+
+function renderKwitansiPrintHtml(k) {
+  const cust = STATE.customers.find(c => c.id === k.customerId);
+  const inv = k.invoiceId ? STATE.invoices.find(i => i.id === k.invoiceId) : null;
+  return `
+    <div class="invoice-print-page">
+      <h2 style="margin-bottom:0;">PT. Outmark Global Industri</h2>
+      <div style="font-size:12px; color:#555; margin-bottom:16px;">Jalan Permana Timur Blok D7 No. 28B Kec. Cimahi Utara, Kota Cimahi, Prov. Jawa Barat</div>
+      <h3 style="margin-bottom:14px; text-align:center; letter-spacing:2px;">KWITANSI No. ${k.nomor}</h3>
+      <table style="margin-bottom:14px;">
+        <tr><td style="width:160px;">Telah terima dari</td><td>: ${cust ? cust.nama : '-'}</td></tr>
+        <tr><td>Uang sebesar</td><td>: <b>${fmtRp(k.jumlah)}</b></td></tr>
+        <tr><td>Terbilang</td><td>: <i>${terbilangRupiah(k.jumlah)}</i></td></tr>
+        <tr><td>Untuk pembayaran</td><td>: ${k.untukPembayaran || '-'}${inv ? ' (' + inv.nomor + ')' : ''}</td></tr>
+        <tr><td>Tanggal</td><td>: ${fmtTanggal(k.tanggal)}</td></tr>
+      </table>
+      <div style="display:flex; justify-content:flex-end; font-size:12px; text-align:center; margin-top:28px;">
+        <div>
+          Cimahi, ${fmtTanggal(k.tanggal)}<br><br>
+          <div style="width:140px; height:70px; border:1px dashed #999; display:flex; align-items:center; justify-content:center; font-size:10px; color:#999; margin:0 auto 6px;">tempat e-meterai</div>
+          Penanggung Jawab
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function renderKwitansi(el, container) {
+  if (!kwitansiDraft) kwitansiDraft = emptyKwitansiDraft();
+  const d = kwitansiDraft;
+  const editing = editingKwitansiId ? STATE.kwitansi.find(k => k.id === editingKwitansiId) : null;
+  const customersSorted = STATE.customers.slice().sort((a,b) => (a.nama||'').localeCompare(b.nama||''));
+  const invoicesSorted = STATE.invoices.slice().sort((a,b) => String(b.tanggal||'').localeCompare(String(a.tanggal||'')));
+  const searchLower = (kwitansiFilter.search||'').toLowerCase();
+  let list = STATE.kwitansi.slice();
+  if (searchLower) list = list.filter(k => (k.nomor||'').toLowerCase().includes(searchLower) || (findCustName(k.customerId)||'').toLowerCase().includes(searchLower));
+  list.sort((a,b) => String(b.tanggal||'').localeCompare(String(a.tanggal||'')) || String(b.nomor||'').localeCompare(String(a.nomor||'')));
+
+  el.innerHTML = `
+    <div class="panel">
+      <h2>${editingKwitansiId ? 'Edit Kwitansi' : 'Buat Kwitansi'}</h2>
+      <div class="desc">Kwitansi dicetak terpisah dari invoice. Materai digital ditempelkan sendiri oleh Setiawan sesudah diunduh -- disiapkan area kosong di hasil cetak.</div>
+      <div class="grid2">
+        <div class="field"><label>Tanggal</label><input type="date" id="kwt_tanggal" value="${d.tanggal}"></div>
+        <div class="field"><label>Nomor Kwitansi</label>
+          <div style="display:flex; gap:6px;">
+            <input type="text" id="kwt_nomor" value="${(d.nomor||'').replace(/"/g,'&quot;')}" style="flex:1;">
+            <button type="button" class="btn btn-ghost" id="btnGenNomorKwt" style="white-space:nowrap;">Buat Otomatis</button>
+          </div>
+        </div>
+      </div>
+      <div class="field"><label>Invoice Terkait (Opsional)</label>
+        <select id="kwt_invoice">
+          <option value="">-- Tidak terkait invoice --</option>
+          ${invoicesSorted.map(i => `<option value="${i.id}" ${d.invoiceId===i.id?'selected':''}>${i.nomor} -- ${findCustName(i.customerId)||'-'} (${fmtRp(i.tipe==='DP'?i.dpPaid:i.grandTotal)})</option>`).join('')}
+        </select>
+      </div>
+      <div class="grid2">
+        <div class="field"><label>Pelanggan</label>
+          <select id="kwt_customer">
+            <option value="">-- Pilih Pelanggan --</option>
+            ${customersSorted.map(c => `<option value="${c.id}" ${d.customerId===c.id?'selected':''}>${c.nama}</option>`).join('')}
+          </select>
+        </div>
+        <div class="field"><label>Jumlah (Rp)</label><input type="number" id="kwt_jumlah" min="0" value="${d.jumlah}"></div>
+      </div>
+      <div class="field"><label>Untuk Pembayaran</label><input type="text" id="kwt_untuk" value="${(d.untukPembayaran||'').replace(/"/g,'&quot;')}" placeholder="mis. Pelunasan invoice Wilson Windbreaker"></div>
+      ${d.jumlah ? `<div class="desc">Terbilang: <i>${terbilangRupiah(d.jumlah)}</i></div>` : ''}
+      <button type="button" class="btn btn-primary" id="btnSimpanKwitansi" style="margin-top:12px;">${editingKwitansiId ? 'Simpan Perubahan' : 'Simpan Kwitansi'}</button>
+      ${editingKwitansiId ? `<button type="button" class="btn btn-ghost" id="btnBatalEditKwt" style="margin-left:8px;">Batal</button>` : ''}
+      <div class="status-box" id="kwitansiFormMsg"></div>
+    </div>
+    <div class="panel">
+      <h2>Kwitansi Tersimpan <span class="pill">${STATE.kwitansi.length}</span></h2>
+      <div class="field" style="max-width:320px;"><label>Cari</label><input type="text" id="kwtFilterSearch" value="${kwitansiFilter.search||''}" placeholder="cari nomor/nama pelanggan..."></div>
+      ${!list.length ? '<div class="empty-note">Belum ada kwitansi.</div>' : `
+      <div class="list-card">
+        ${list.map(k => `
+        <div class="list-row">
+          <div class="list-row-main" style="flex:1 1 220px; max-width:none;">
+            <span class="list-row-title">${k.nomor}</span>
+            <span class="list-row-sub" style="font-family:inherit;">${fmtTanggal(k.tanggal)} &middot; ${findCustName(k.customerId)||'-'}</span>
+          </div>
+          <span class="list-row-num" style="flex:0 0 140px;">${fmtRp(k.jumlah)}</span>
+          <button class="btn btn-ghost" data-edit-kwt="${k.id}" style="padding:4px 10px; font-size:11px;">Edit</button>
+          <button class="btn btn-ghost" data-print-kwt="${k.id}" style="padding:4px 10px; font-size:11px; margin-left:6px;">Cetak / PDF</button>
+        </div>`).join('')}
+      </div>`}
+    </div>
+    <div id="kwitansiPrintArea"></div>
+  `;
+  document.getElementById('kwt_tanggal').addEventListener('change', () => syncKwitansiDraftFromDom());
+  document.getElementById('kwt_nomor').addEventListener('change', () => syncKwitansiDraftFromDom());
+  document.getElementById('kwt_customer').addEventListener('change', () => syncKwitansiDraftFromDom());
+  document.getElementById('kwt_untuk').addEventListener('change', () => syncKwitansiDraftFromDom());
+  document.getElementById('kwt_jumlah').addEventListener('change', () => { syncKwitansiDraftFromDom(); renderKwitansi(el, container); });
+  document.getElementById('btnGenNomorKwt').addEventListener('click', () => {
+    syncKwitansiDraftFromDom();
+    kwitansiDraft.nomor = suggestNomorKwitansi(kwitansiDraft.tanggal);
+    renderKwitansi(el, container);
+  });
+  document.getElementById('kwt_invoice').addEventListener('change', (e) => {
+    syncKwitansiDraftFromDom();
+    const inv = STATE.invoices.find(i => i.id === e.target.value);
+    if (inv) {
+      kwitansiDraft.customerId = inv.customerId;
+      kwitansiDraft.jumlah = inv.tipe === 'DP' ? inv.dpPaid : inv.grandTotal;
+      kwitansiDraft.untukPembayaran = (inv.tipe === 'DP' ? 'DP ' : inv.tipe === 'SETTLEMENT' ? 'Pelunasan ' : '') + 'Invoice ' + inv.nomor;
+    }
+    renderKwitansi(el, container);
+  });
+  document.getElementById('kwtFilterSearch').addEventListener('input', (e) => { kwitansiFilter.search = e.target.value; renderKwitansi(el, container); });
+  document.getElementById('btnSimpanKwitansi').addEventListener('click', async () => {
+    syncKwitansiDraftFromDom();
+    const msg = document.getElementById('kwitansiFormMsg');
+    const dd = kwitansiDraft;
+    if (!dd.nomor.trim()) { showMsg(msg, 'err', 'Nomor kwitansi wajib diisi.'); return; }
+    if (!dd.customerId) { showMsg(msg, 'err', 'Pelanggan wajib dipilih.'); return; }
+    if (!dd.jumlah || dd.jumlah <= 0) { showMsg(msg, 'err', 'Jumlah harus lebih dari 0.'); return; }
+    const payload = { nomor: dd.nomor.trim(), tanggal: dd.tanggal, invoiceId: dd.invoiceId || null, customerId: dd.customerId, jumlah: dd.jumlah, untukPembayaran: dd.untukPembayaran };
+    if (editingKwitansiId) {
+      const existing = STATE.kwitansi.find(k => k.id === editingKwitansiId);
+      Object.assign(existing, payload);
+    } else {
+      payload.id = uid('kwt');
+      payload.createdAt = new Date().toISOString();
+      STATE.kwitansi.push(payload);
+    }
+    await withSaving(msg, editingKwitansiId ? 'Perubahan kwitansi disimpan.' : 'Kwitansi disimpan.', async () => {
+      await saveState();
+      editingKwitansiId = null;
+      kwitansiDraft = null;
+      renderKwitansi(el, container);
+    });
+  });
+  const btnBatalEdit = document.getElementById('btnBatalEditKwt');
+  if (btnBatalEdit) btnBatalEdit.addEventListener('click', () => { editingKwitansiId = null; kwitansiDraft = null; renderKwitansi(el, container); });
+  el.querySelectorAll('[data-edit-kwt]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const k = STATE.kwitansi.find(x => x.id === btn.dataset.editKwt);
+      if (!k) return;
+      editingKwitansiId = k.id;
+      kwitansiDraft = { tanggal: k.tanggal, nomor: k.nomor, invoiceId: k.invoiceId || '', customerId: k.customerId, jumlah: k.jumlah, untukPembayaran: k.untukPembayaran || '' };
+      renderKwitansi(el, container);
+    });
+  });
+  el.querySelectorAll('[data-print-kwt]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const k = STATE.kwitansi.find(x => x.id === btn.dataset.printKwt);
+      if (!k) return;
+      const printArea = document.getElementById('kwitansiPrintArea');
+      printArea.innerHTML = renderKwitansiPrintHtml(k);
+      if (typeof window.print === 'function') window.print();
+    });
+  });
 }
 
 // Dipakai panel "Modal Terjual + Profit per Kelompok" di tab Kontrak (renderKontrak) -- "contracts" yg dioper
