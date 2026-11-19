@@ -208,6 +208,12 @@
   .invoice-print-page th { text-align: center; }
   .invoice-print-page th.num, .invoice-print-page td.num { text-align: right; }
   .invoice-print-page table.noborder td { border: none; padding: 2px 10px 2px 0; }
+  /* Kwitansi (2026-11-19, Setiawan: "formatnya jelek" -- blok info Telah Terima Dari/dll dirapikan,
+     spasi antar baris & ukuran font dibesarkan sedikit drpd table.noborder standar (yg dipakai jg di
+     Invoice dan sengaja tetap rapat di sana) spy tidak terlihat kosong/padat di halaman Kwitansi yg
+     kontennya memang lebih sedikit drpd Invoice -- HANYA berlaku utk .kwt-info-table, tidak mengubah
+     table.noborder Invoice. */
+  .invoice-print-page table.noborder.kwt-info-table td { padding: 7px 14px 7px 0; font-size: 14px; }
   .invoice-print-page .brand-mark { width: 38px; height: 38px; border-radius: 9px; background: #e8622c; flex-shrink: 0; }
   .invoice-print-page .brand-orange { color: #e8622c; }
   /* Jawaban Setiawan 2026-11-19: "kalau ttd/cap kepotong di bawah" -- blok tanda tangan&cap (+ info transfer di
@@ -5672,18 +5678,22 @@ function renderKwitansiPrintHtml(k) {
         <div class="print-title-block" style="text-align:center; margin:22px 0 18px;">
           <div style="font-size:19px; font-weight:800; letter-spacing:2px;">KWITANSI</div>
         </div>
-        <table class="noborder" style="margin-bottom:14px;">
-          <tr><td style="width:160px;">Telah terima dari</td><td>: ${cust ? cust.nama : '-'}</td></tr>
+        <table class="noborder kwt-info-table" style="margin-bottom:30px;">
+          <tr><td style="width:170px;">Telah terima dari</td><td>: ${cust ? cust.nama : '-'}</td></tr>
           <tr><td>Uang sebesar</td><td>: <b>${fmtRp(k.jumlah)}</b></td></tr>
           <tr><td>Terbilang</td><td>: <i>${terbilangRupiah(k.jumlah)}</i></td></tr>
           <tr><td>Untuk pembayaran</td><td>: ${k.untukPembayaran || '-'}${inv ? ' (' + inv.nomor + ')' : ''}</td></tr>
           <tr><td>Tanggal</td><td>: ${fmtTanggalPanjang(k.tanggal)}</td></tr>
         </table>
-        <div class="print-keep-block" style="display:flex; justify-content:flex-end; font-size:12px; text-align:center; margin-top:28px;">
+        <div class="print-keep-block" style="display:flex; justify-content:space-between; align-items:flex-start; font-size:12px; margin-top:28px;">
           <div>
-            Cimahi, ${fmtTanggalPanjang(k.tanggal)}<br><br>
-            <div style="width:140px; height:70px; border:1px dashed #999; display:flex; align-items:center; justify-content:center; font-size:10px; color:#999; margin:0 auto 6px;">tempat e-meterai</div>
+            Cimahi, ${fmtTanggalPanjang(k.tanggal)}
+          </div>
+          <div style="text-align:center;">
+            Mengetahui,<br>
+            <b style="text-decoration:underline;">PT. Outmark Global Industri</b><br>
             Penanggung Jawab
+            <img src="${STAMP_TTD_DATAURI}" alt="" style="height:85px; width:auto; display:block; margin:2px auto -8px;">
           </div>
         </div>
     </div>
