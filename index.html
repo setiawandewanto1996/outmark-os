@@ -193,6 +193,18 @@
   .breakdown-bar { display: flex; height: 26px; border-radius: 9px; overflow: hidden; margin-bottom: 12px; background: var(--paper); }
   .breakdown-legend-row { display: flex; justify-content: space-between; align-items: baseline; font-size: 13px; padding: 6px 0; }
   .breakdown-legend-row .dot3 { width: 9px; height: 9px; border-radius: 3px; display: inline-block; margin-right: 7px; flex: none; }
+  /* Invoice (2026-11-19): layout cetak A4 sederhana -- #invoicePrintArea disembunyikan di layar normal, cuma
+     ditampilkan saat window.print() dipanggil, elemen lain disembunyikan total supaya hasil cetak/PDF bersih. */
+  #invoicePrintArea { display: none; }
+  @media print {
+    body * { visibility: hidden; }
+    #invoicePrintArea, #invoicePrintArea * { visibility: visible; }
+    #invoicePrintArea { display: block !important; position: absolute; top: 0; left: 0; width: 100%; }
+  }
+  .invoice-print-page { font-family: Arial, sans-serif; color: #111; padding: 24px; max-width: 760px; margin: 0 auto; }
+  .invoice-print-page table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .invoice-print-page th, .invoice-print-page td { border: 1px solid #333; padding: 6px 8px; text-align: left; }
+  .invoice-print-page th.num, .invoice-print-page td.num { text-align: right; }
 </style>
 </head>
 <body>
@@ -205,6 +217,8 @@
       <button data-tab="dashboard" class="active"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1.5"></rect><rect x="14" y="3" width="7" height="7" rx="1.5"></rect><rect x="3" y="14" width="7" height="7" rx="1.5"></rect><rect x="14" y="14" width="7" height="7" rx="1.5"></rect></svg><span>Dashboard</span></button>
       <button data-tab="import"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15V4"></path><path d="M7 9l5-5 5 5"></path><path d="M4 16v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"></path></svg><span>Import Mingguan</span></button>
       <button data-tab="database"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="8" ry="3"></ellipse><path d="M4 5v6c0 1.7 3.6 3 8 3s8-1.3 8-3V5"></path><path d="M4 11v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"></path></svg><span>Database Penjualan</span></button>
+      <button data-tab="pelanggan"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"></circle><path d="M4 20c0-4.4 3.6-7 8-7s8 2.6 8 7"></path></svg><span>Pelanggan</span></button>
+      <button data-tab="invoice"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M7 2h10a1 1 0 0 1 1 1v18l-3-2-2 2-2-2-2 2-2-2-3 2V3a1 1 0 0 1 1-1z"></path><path d="M9 7h6M9 11h6M9 15h3"></path></svg><span>Invoice</span></button>
       <button data-tab="laporan"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3h12v18l-3-2-3 2-3-2-3 2V3z"></path><path d="M9 8h6M9 12h6"></path></svg><span>Laporan Penarikan</span></button>
       <div class="sidebar-group-label">Operasional</div>
       <button data-tab="ads"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9v6h3l9 4V5L6 9H3z"></path><path d="M16 9a4 4 0 0 1 0 6"></path></svg><span>Ads Mingguan</span></button>
@@ -284,6 +298,10 @@ let STATE = {
   alokasiProfit: [],               // Investasi/Dividen (alokasi dari profit, posisi spt Payout Capital Partner): {id, tanggalDari, tanggalSampai, kategori, jumlah, catatan}
   alokasiKategori: ALOKASI_KATEGORI.slice(), // daftar kategori Investasi & Dividen, dikelola user sendiri (tab Data Master)
   saldoDiluarKontrak: {},          // {capitalPartnerId: jumlahRp} -- sisa pembulatan dari rollover kontrak, lintas produk per investor
+  customers: [],                   // pelanggan manual (2026-11-19, pola dari Outmark Invoice -- B2B/grosir/manual, BEDA dgn pembeli
+                                    // e-commerce yg anonim via username platform): {id, nama, noHp, alamat, status:'Aktif'|'Nonaktif', createdAt}.
+                                    // Dikaitkan ke order (STATE.orderDb[].customerId) MANUAL per order lewat Database Penjualan -- TIDAK ada
+                                    // pencocokan otomatis ke Username (Pembeli) platform (disepakati eksplisit, krn 2 kelompok pembeli beda).
   rolloverLog: [],                 // riwayat KEPUTUSAN rollover (2026-11-13, laporan "rollover hari ini"): {id, waktu, tanggalPenarikanBatch,
                                     // produk, kode2, namaInvestor, capitalPartnerId, kodeKontrakLama, tipe:'putar_penuh'|'putar_modal'|'stop', ...}.
                                     // Permanen -- TIDAK terpengaruh kontrak barunya langsung habis/ditutup lagi atau tidak (beda dgn STATE.contracts
@@ -292,6 +310,15 @@ let STATE = {
   karyawan: [],                    // {id, nik, nama, status}
   slipGaji: [],                    // riwayat slip gaji per bulan: {id, karyawanId, bulan(1-12), tahun, pendapatan:[{label,jumlah}], potongan:[{label,jumlah}], createdAt, updatedAt}
   slipGajiSettings: { namaPerusahaan: 'UJUSO', alamatBaris: ['Jl. Permana Timur Blok D7 No. 28', 'Kel. Citeureup, Kec. Cimahi Utara', 'Kota Cimahi'], logoDataUri: DEFAULT_LOGO_UJUSO_DATA_URI, emailKontak: 'setiawandewanto@gmail.com' }, // letterhead slip gaji
+  invoiceProducts: [],              // katalog produk KHUSUS invoice (2026-11-19, replikasi Outmark Invoice Manager -- SENGAJA terpisah dari
+                                     // STATE.products e-commerce krn model data beda total, tidak ada kontrak/investor di sini): {id, nama,
+                                     // warna:[string], ukuran:[string], harga:number, status:'Aktif'|'Nonaktif', createdAt}
+  invoices: [],                     // invoice B2B/grosir (2026-11-19, replikasi Outmark Invoice Manager, langkah awal "struktur dasar" sblm
+                                     // migrasi penuh): {id, nomor (bebas diisi manual ATAU auto-generate, Setiawan: "bisa otomatis bisa juga aku
+                                     // yang input"), tanggal, tipe:'FULL'|'DP'|'SETTLEMENT', customerId, deskripsi, items:[{invoiceProductId,nama,
+                                     // warna,ukuran,harga,qty}], ongkir, potongan, subtotal, grandTotal, dpPercent (hanya tipe DP), dpPaid (hanya
+                                     // tipe DP), sisaBayar (hanya tipe DP, =grandTotal-dpPaid), settlementOfInvoiceId (hanya tipe SETTLEMENT, ref ke
+                                     // id invoice DP asalnya), tanpaTtdCap:false (disiapkan utk fitur menyusul, BELUM dipakai di PDF v1), createdAt}
 };
 let stateFileId = null;
 let accessToken = null;
@@ -1413,7 +1440,7 @@ async function loadState(fileIdOverride) {
   const loaded = text ? JSON.parse(text) : {};
   // DEFAULT_STATE mencakup SEMUA field yg pernah ada -- supaya file lama (dari sebelum field baru ditambahkan)
   // tidak jadi undefined pas dimuat. Tiap kali nambah field baru ke STATE, tambahkan juga di sini.
-  const DEFAULT_STATE = { capitalPartners: [], stores: [], products: [], contracts: [], colorCodeMap: {}, pembagiPctManual: {}, orderDb: [], pendingOrderSku: {}, payouts: [], vendorPayouts: [], adsMingguan: [], biayaOperasional: [], opexKategori: OPEX_KATEGORI.slice(), alokasiProfit: [], alokasiKategori: ALOKASI_KATEGORI.slice(), saldoDiluarKontrak: {}, rolloverLog: [], biayaRetur: [], karyawan: [], slipGaji: [], slipGajiSettings: { namaPerusahaan: 'UJUSO', alamatBaris: ['Jl. Permana Timur Blok D7 No. 28', 'Kel. Citeureup, Kec. Cimahi Utara', 'Kota Cimahi'], logoDataUri: DEFAULT_LOGO_UJUSO_DATA_URI, emailKontak: 'setiawandewanto@gmail.com' } };
+  const DEFAULT_STATE = { capitalPartners: [], stores: [], products: [], contracts: [], colorCodeMap: {}, pembagiPctManual: {}, orderDb: [], pendingOrderSku: {}, payouts: [], vendorPayouts: [], adsMingguan: [], biayaOperasional: [], opexKategori: OPEX_KATEGORI.slice(), alokasiProfit: [], alokasiKategori: ALOKASI_KATEGORI.slice(), saldoDiluarKontrak: {}, rolloverLog: [], customers: [], biayaRetur: [], karyawan: [], slipGaji: [], slipGajiSettings: { namaPerusahaan: 'UJUSO', alamatBaris: ['Jl. Permana Timur Blok D7 No. 28', 'Kel. Citeureup, Kec. Cimahi Utara', 'Kota Cimahi'], logoDataUri: DEFAULT_LOGO_UJUSO_DATA_URI, emailKontak: 'setiawandewanto@gmail.com' }, invoiceProducts: [], invoices: [] };
   STATE = Object.assign({}, DEFAULT_STATE, loaded);
 }
 
@@ -4176,7 +4203,7 @@ function renderColorCodeList(el) {
 /* =========================================================================
    TAB: DATABASE PENJUALAN
    ========================================================================= */
-let dbFilters = { produk: '', brand: '', sumber: '', search: '', tglPesanDari: '', tglPesanSampai: '', tglPenarikanDari: '', tglPenarikanSampai: '', page: 1 };
+let dbFilters = { produk: '', brand: '', sumber: '', search: '', customerId: '', tglPesanDari: '', tglPesanSampai: '', tglPenarikanDari: '', tglPenarikanSampai: '', page: 1 };
 const DB_PAGE_SIZE = 50;
 let showPendingOrders = false;
 let pendingPage = 1;
@@ -4233,7 +4260,7 @@ function computeGrossNettProfitPerOrder(r) {
 // sampingnya -- TAPI tetap menampilkan SEMUA 6 kategori biaya scr eksplisit (Biaya Layanan/Pembayaran/Dinamis/
 // Pajak digabung visual jadi 1 segmen "Biaya Lainnya" di bar, TAPI rinciannya tetap ditulis apa adanya di baris
 // kecil di bawah legend -- supaya tujuan awal fix 2026-10-23 "biaya yang lain tidak tercantum" TETAP terpenuhi).
-function renderOrderFeeDetail(r) {
+function renderOrderFeeDetail(r, rowId) {
   const hp = computeGrossNettProfitPerOrder(r);
   const pendapatan = r.pendapatan || 0;
   const komisi = Math.abs(r.komisiPlatform || 0);
@@ -4291,7 +4318,29 @@ function renderOrderFeeDetail(r) {
         <div style="display:flex; justify-content:space-between;"><span style="color:var(--ink-soft);">Tgl Penarikan</span><span>${fmtTanggal(r.tanggalPenarikan)}</span></div>
       </div>
       <div class="desc" style="margin-top:12px;">Total Biaya tersimpan: <b>${r.totalBiaya!=null?fmtRp(r.totalBiaya):'-'}</b><br>Net Settlement platform: <b>${r.netSettlement!=null?fmtRp(r.netSettlement):'-'}</b><br>Sumber data: ${r.sumberData||'-'}</div>
+      ${rowId ? renderAssignCustomerBlock(r, rowId) : ''}
     </div>
+  </div>`;
+}
+
+// Blok "Pelanggan" di dalam rincian order (Database Penjualan) -- 2026-11-19, kaitkan order MANUAL ke
+// STATE.customers (pelanggan B2B/grosir/langsung, BEDA dgn pembeli e-commerce yg anonim via username platform
+// -- disepakati TIDAK ada pencocokan otomatis). `rowId` dipakai bikin id DOM unik per baris (1 order bisa py
+// banyak baris termuat sekaligus di 1 halaman), dibaca ulang oleh wiring di renderDatabase lewat `rowIdToOrder`.
+function renderAssignCustomerBlock(r, rowId) {
+  const current = r.customerId ? STATE.customers.find(c => c.id === r.customerId) : null;
+  return `
+  <div style="margin-top:14px; padding-top:12px; border-top:1px solid var(--line);">
+    <div style="font-size:11.5px; font-weight:600; color:var(--ink-soft); letter-spacing:.04em; margin-bottom:8px; text-transform:uppercase;">Pelanggan</div>
+    ${!STATE.customers.length ? `<div class="desc">Belum ada pelanggan terdaftar -- tambah dulu di tab Pelanggan.</div>` : `
+    <select id="pelangganSelect_${rowId}" style="width:100%; margin-bottom:6px;">
+      <option value="">-- Belum ada pelanggan --</option>
+      ${STATE.customers.map(c => `<option value="${c.id}" ${r.customerId===c.id?'selected':''}>${c.nama}${c.status==='Nonaktif'?' (Nonaktif)':''}</option>`).join('')}
+    </select>
+    <button type="button" class="btn btn-ghost" data-assign-customer-btn="${rowId}" style="padding:4px 10px; font-size:11px;">Simpan Pelanggan</button>
+    <div class="status-box" id="pelangganAssignMsg_${rowId}"></div>
+    `}
+    ${current ? `<div class="desc" style="margin-top:6px;">Saat ini: <b>${current.nama}</b>${current.noHp?' &middot; '+current.noHp:''}</div>` : ''}
   </div>`;
 }
 
@@ -4385,6 +4434,10 @@ function renderDatabase(container) {
     const s = dbFilters.search.toLowerCase();
     filtered = filtered.filter(r => (r.orderId||'').toLowerCase().includes(s) || (r.sku||'').toLowerCase().includes(s));
   }
+  // Filter Pelanggan (2026-11-19): '__unassigned__' = order yg BELUM dikaitkan ke pelanggan manapun, selain itu
+  // cocokkan customerId persis -- dipakai utk lihat riwayat pembelian 1 pelanggan tertentu lintas semua order-nya.
+  if (dbFilters.customerId === '__unassigned__') filtered = filtered.filter(r => !r.customerId);
+  else if (dbFilters.customerId) filtered = filtered.filter(r => r.customerId === dbFilters.customerId);
   if (dbFilters.tglPesanDari) filtered = filtered.filter(r => r.tanggalPesan && r.tanggalPesan.slice(0,10) >= dbFilters.tglPesanDari);
   if (dbFilters.tglPesanSampai) filtered = filtered.filter(r => r.tanggalPesan && r.tanggalPesan.slice(0,10) <= dbFilters.tglPesanSampai);
   if (dbFilters.tglPenarikanDari) filtered = filtered.filter(r => r.tanggalPenarikan && r.tanggalPenarikan.slice(0,10) >= dbFilters.tglPenarikanDari);
@@ -4396,7 +4449,7 @@ function renderDatabase(container) {
   const pageRows = filtered.slice((dbFilters.page-1)*DB_PAGE_SIZE, dbFilters.page*DB_PAGE_SIZE);
   const fromImport = db.filter(r => r.sumberData === 'import_mingguan').length;
   const sumFiltered = (f) => filtered.reduce((s,r) => s + (r[f]||0), 0);
-  const anyFilterActive = dbFilters.produk || dbFilters.brand || dbFilters.sumber || dbFilters.search ||
+  const anyFilterActive = dbFilters.produk || dbFilters.brand || dbFilters.sumber || dbFilters.search || dbFilters.customerId ||
     dbFilters.tglPesanDari || dbFilters.tglPesanSampai || dbFilters.tglPenarikanDari || dbFilters.tglPenarikanSampai;
 
   // Total Gross/Nett Profit (sesuai filter yg lagi aktif) -- pakai perhitungan yg SAMA persis dgn kolom per baris di bawah
@@ -4418,6 +4471,7 @@ function renderDatabase(container) {
   const marginPerProduk = computeMarginPerJenisProduk(filteredForMargin);
 
   const marginColor = (pct) => pct==null ? 'var(--ink)' : (pct<0 ? 'var(--err)' : (pct<10 ? '#B8860B' : 'var(--ok)'));
+  const rowIdToOrder = {}; // diisi di dalam pageRows.map() di bawah, dipakai wiring "Simpan Pelanggan" setelah innerHTML di-set
 
   container.innerHTML = pendingPanel + `
     <div class="page-header">
@@ -4449,6 +4503,13 @@ function renderDatabase(container) {
       <div class="field"><label>Filter Sumber/Platform</label>
         <select id="dbFilterSumber"><option value="">Semua Sumber</option>${sumberList.map(s=>`<option value="${s}" ${dbFilters.sumber===s?'selected':''}>${s}</option>`).join('')}</select>
       </div>
+      ${STATE.customers.length ? `<div class="field"><label>Filter Pelanggan</label>
+        <select id="dbFilterCustomer">
+          <option value="">Semua (termasuk belum dikaitkan)</option>
+          <option value="__unassigned__" ${dbFilters.customerId==='__unassigned__'?'selected':''}>Belum dikaitkan ke pelanggan</option>
+          ${STATE.customers.map(c=>`<option value="${c.id}" ${dbFilters.customerId===c.id?'selected':''}>${c.nama}</option>`).join('')}
+        </select>
+      </div>` : ''}
       <div class="field"><label>Cari Order ID / SKU</label><input type="text" id="dbFilterSearch" value="${dbFilters.search}" placeholder="ketik order ID atau SKU..."></div>
       <div class="grid2">
         <div class="field"><label>Tgl Pesanan Dari</label><input type="date" id="dbFilterTglPesanDari" value="${dbFilters.tglPesanDari}"></div>
@@ -4475,12 +4536,14 @@ function renderDatabase(container) {
       ${!pageRows.length ? '<div class="empty-note">Tidak ada baris yg cocok dgn filter ini.</div>' : pageRows.map((r,i) => {
         const hp = computeGrossNettProfitPerOrder(r);
         const rowId = 'dbFeeDetail_' + dbFilters.page + '_' + i;
+        rowIdToOrder[rowId] = r; // dipakai wiring tombol "Simpan Pelanggan" di bawah (lihat renderAssignCustomerBlock)
+        const customerAssigned = r.customerId ? STATE.customers.find(c => c.id === r.customerId) : null;
         return `
         <div class="list-row" data-db-fee-detail="${rowId}" title="Klik utk lihat rincian biaya per order">
           <svg class="list-row-chevron" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"></path></svg>
           <div class="list-row-main">
             <span class="list-row-title">${r.produk||'-'} &middot; ${r.sku||'-'}</span>
-            <span class="list-row-sub">${r.orderId||'-'}</span>
+            <span class="list-row-sub">${r.orderId||'-'}${customerAssigned ? ` &middot; ${customerAssigned.nama}` : ''}</span>
           </div>
           <span class="list-row-toko">${platformDot(r.sumber)}${r.sumber||'-'}</span>
           <span class="list-row-num tnum">${r.pendapatan!=null?fmtRpCompact(r.pendapatan):'-'}</span>
@@ -4491,7 +4554,7 @@ function renderDatabase(container) {
           </span>
           <span class="list-row-small">${fmtTanggal(r.tanggalPenarikan,{short:true})}</span>
         </div>
-        <div id="${rowId}" style="display:none;">${renderOrderFeeDetail(r)}</div>
+        <div id="${rowId}" style="display:none;">${renderOrderFeeDetail(r, rowId)}</div>
         `;
       }).join('')}
     </div>
@@ -4521,6 +4584,8 @@ function renderDatabase(container) {
   document.getElementById('dbFilterProduk').addEventListener('change', (e) => { dbFilters.produk = e.target.value; dbFilters.page = 1; renderDatabase(container); });
   document.getElementById('dbFilterBrand').addEventListener('change', (e) => { dbFilters.brand = e.target.value; dbFilters.page = 1; renderDatabase(container); });
   document.getElementById('dbFilterSumber').addEventListener('change', (e) => { dbFilters.sumber = e.target.value; dbFilters.page = 1; renderDatabase(container); });
+  const customerFilterEl = document.getElementById('dbFilterCustomer');
+  if (customerFilterEl) customerFilterEl.addEventListener('change', (e) => { dbFilters.customerId = e.target.value; dbFilters.page = 1; renderDatabase(container); });
   document.getElementById('dbFilterSearch').addEventListener('input', (e) => { dbFilters.search = e.target.value; dbFilters.page = 1; renderDatabase(container); });
   document.getElementById('dbFilterTglPesanDari').addEventListener('change', (e) => { dbFilters.tglPesanDari = e.target.value; dbFilters.page = 1; renderDatabase(container); });
   document.getElementById('dbFilterTglPesanSampai').addEventListener('change', (e) => { dbFilters.tglPesanSampai = e.target.value; dbFilters.page = 1; renderDatabase(container); });
@@ -4528,8 +4593,22 @@ function renderDatabase(container) {
   document.getElementById('dbFilterTglPenarikanSampai').addEventListener('change', (e) => { dbFilters.tglPenarikanSampai = e.target.value; dbFilters.page = 1; renderDatabase(container); });
   const clearBtn = document.getElementById('btnClearFilters');
   if (clearBtn) clearBtn.addEventListener('click', () => {
-    dbFilters = { produk:'', brand:'', sumber:'', search:'', page:1, tglPesanDari:'', tglPesanSampai:'', tglPenarikanDari:'', tglPenarikanSampai:'' };
+    dbFilters = { produk:'', brand:'', sumber:'', search:'', customerId:'', page:1, tglPesanDari:'', tglPesanSampai:'', tglPenarikanDari:'', tglPenarikanSampai:'' };
     renderDatabase(container);
+  });
+  container.querySelectorAll('[data-assign-customer-btn]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const rowId = btn.dataset.assignCustomerBtn;
+      const r = rowIdToOrder[rowId];
+      const sel = document.getElementById('pelangganSelect_' + rowId);
+      const msg = document.getElementById('pelangganAssignMsg_' + rowId);
+      if (!r || !sel) return;
+      r.customerId = sel.value || null;
+      await withSaving(msg, 'Pelanggan disimpan.', async () => {
+        await saveState();
+        renderDatabase(container);
+      });
+    });
   });
   document.getElementById('dbPrevPage').addEventListener('click', () => { dbFilters.page--; renderDatabase(container); });
   document.getElementById('dbNextPage').addEventListener('click', () => { dbFilters.page++; renderDatabase(container); });
@@ -4568,6 +4647,720 @@ function wirePendingHandlers(container) {
   if (prev) prev.addEventListener('click', () => { pendingPage--; renderDatabase(container); });
   const next = document.getElementById('pendingNextPage');
   if (next) next.addEventListener('click', () => { pendingPage++; renderDatabase(container); });
+}
+
+/* =========================================================================
+   TAB: PELANGGAN (2026-11-19)
+   ========================================================================= */
+// Pelanggan MANUAL (pola dari Outmark Invoice: B2B/grosir/langsung -- BEDA KELOMPOK dgn pembeli e-commerce yg
+// anonim lewat username platform, dikonfirmasi eksplisit oleh Setiawan). Dikaitkan ke order (STATE.orderDb[].customerId)
+// satu-satu MANUAL lewat Database Penjualan -- TIDAK ada pencocokan otomatis ke Username (Pembeli), disepakati
+// krn 2 kelompok itu jarang cocok persis namanya.
+let pelangganFilters = { search: '', status: '' }; // status: '' (semua) | 'Aktif' | 'Nonaktif'
+let editingPelangganId = null;
+let expandedPelangganId = null;
+
+// ===== Invoice (2026-11-19, "struktur dasar" -- langkah awal migrasi dari Outmark Invoice Manager) =====
+let invoiceFilter = { tab: 'buat', search: '', tipe: '' }; // tab: 'buat' | 'daftar' | 'katalog'
+let editingInvoiceProdukId = null;
+let editingInvoiceId = null;
+let expandedInvoiceId = null;
+let invoiceDraft = null; // form "Buat/Edit Invoice" sedang disusun -- null = belum mulai, diisi emptyInvoiceDraft() saat pertama render
+
+// Riwayat pembelian 1 pelanggan -- daftar order yg sudah dikaitkan ke pelanggan ini (STATE.orderDb[].customerId),
+// diurutkan terbaru dulu, dipakai di panel expand tiap baris pelanggan.
+function renderRiwayatPelanggan(orders) {
+  if (!orders.length) return '<div class="empty-note">Belum ada order yg dikaitkan ke pelanggan ini. Kaitkan lewat Database Penjualan (buka rincian 1 order, pilih pelanggan di bagian bawah).</div>';
+  const sorted = orders.slice().sort((a,b) => new Date(b.tanggalPenarikan||b.tanggalPesan||0) - new Date(a.tanggalPenarikan||a.tanggalPesan||0));
+  const totalPendapatan = orders.reduce((s,o) => s + (o.pendapatan||0), 0);
+  return `
+    <div class="desc" style="margin-bottom:8px;">${orders.length} order terkait &middot; Total Pendapatan <b>${fmtRp(totalPendapatan)}</b></div>
+    <div style="overflow-x:auto;">
+    <table class="data compact">
+      <thead><tr><th>Tanggal</th><th>Produk / SKU</th><th>Sumber</th><th class="num">Qty</th><th class="num">Pendapatan</th></tr></thead>
+      <tbody>
+        ${sorted.map(o => `<tr>
+          <td>${fmtTanggal(o.tanggalPenarikan||o.tanggalPesan, {short:true})}</td>
+          <td>${o.produk||'-'} &middot; ${o.sku||'-'}</td>
+          <td>${o.sumber||'-'}</td>
+          <td class="num">${o.qty!=null?o.qty:1}</td>
+          <td class="num">${o.pendapatan!=null?fmtRp(o.pendapatan):'-'}</td>
+        </tr>`).join('')}
+      </tbody>
+    </table>
+    </div>
+  `;
+}
+
+function renderPelanggan(container) {
+  const searchLower = pelangganFilters.search.toLowerCase();
+  let list = STATE.customers.slice();
+  if (pelangganFilters.status) list = list.filter(p => p.status === pelangganFilters.status);
+  if (searchLower) list = list.filter(p =>
+    (p.nama||'').toLowerCase().includes(searchLower) || (p.noHp||'').toLowerCase().includes(searchLower) || (p.alamat||'').toLowerCase().includes(searchLower));
+  list.sort((a,b) => (a.nama||'').localeCompare(b.nama||''));
+
+  const editing = editingPelangganId ? STATE.customers.find(p => p.id === editingPelangganId) : null;
+
+  container.innerHTML = `
+    <div class="page-header">
+      <div>
+        <h1>Pelanggan</h1>
+        <p class="page-sub">Daftar pelanggan manual (B2B/grosir/langsung) -- terpisah dari pembeli Shopee/TikTok/Tokopedia yg anonim lewat username platform. Bisa dikaitkan manual ke order lewat Database Penjualan.</p>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>${editing ? 'Edit Pelanggan' : 'Tambah Pelanggan'}</h2>
+      <form id="formPelanggan">
+        <div class="field"><label>Nama Pelanggan</label><input type="text" id="pl_nama" required value="${editing ? editing.nama.replace(/"/g,'&quot;') : ''}"></div>
+        <div class="grid2">
+          <div class="field"><label>No HP</label><input type="text" id="pl_noHp" placeholder="mis. 0812xxxxxxx" value="${editing && editing.noHp ? editing.noHp.replace(/"/g,'&quot;') : ''}"></div>
+          <div class="field"><label>Status</label>
+            <select id="pl_status">
+              <option value="Aktif" ${(!editing || editing.status==='Aktif')?'selected':''}>Aktif</option>
+              <option value="Nonaktif" ${(editing && editing.status==='Nonaktif')?'selected':''}>Nonaktif</option>
+            </select>
+          </div>
+        </div>
+        <div class="field"><label>Alamat</label><textarea id="pl_alamat" rows="2">${editing && editing.alamat ? editing.alamat.replace(/</g,'&lt;') : ''}</textarea></div>
+        <button type="submit" class="btn btn-primary">${editing ? 'Simpan Perubahan' : '+ Tambah Pelanggan'}</button>
+        ${editing ? `<button type="button" class="btn btn-ghost" id="btnBatalEditPelanggan" style="margin-left:8px;">Batal</button>` : ''}
+        <div class="status-box" id="pelangganFormMsg"></div>
+      </form>
+    </div>
+
+    <div class="panel">
+      <h2>Pelanggan Terdaftar <span class="pill">${STATE.customers.length}</span></h2>
+      <div class="grid2" style="margin-bottom:10px;">
+        <div class="field"><label>Cari</label><input type="text" id="plFilterSearch" value="${pelangganFilters.search}" placeholder="cari nama/No HP/alamat..."></div>
+        <div class="field"><label>Filter Status</label>
+          <select id="plFilterStatus">
+            <option value="">Semua Status</option>
+            <option value="Aktif" ${pelangganFilters.status==='Aktif'?'selected':''}>Aktif</option>
+            <option value="Nonaktif" ${pelangganFilters.status==='Nonaktif'?'selected':''}>Nonaktif</option>
+          </select>
+        </div>
+      </div>
+      ${!list.length ? '<div class="empty-note">Tidak ada pelanggan yg cocok dgn filter ini.</div>' : `
+      <div class="list-card">
+        ${list.map(p => {
+          const orders = STATE.orderDb.filter(o => o.customerId === p.id);
+          const isOpen = expandedPelangganId === p.id;
+          return `
+          <div class="list-row" data-pelanggan-toggle="${p.id}" title="Klik utk lihat riwayat pembelian">
+            <svg class="list-row-chevron ${isOpen?'open':''}" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"></path></svg>
+            <div class="list-row-main" style="flex:1 1 260px; max-width:none;">
+              <span class="list-row-title">${p.nama}</span>
+              <span class="list-row-sub" style="font-family:inherit;">${p.noHp||'No HP -'} &middot; ${orders.length} order &middot; ${p.alamat||'Alamat -'}</span>
+            </div>
+            <span class="list-row-small" style="flex:0 0 90px;"><span class="pill ${p.status==='Aktif'?'ok':'off'}">${p.status}</span></span>
+          </div>
+          <div id="plDetail_${p.id}" style="display:${isOpen?'block':'none'};" class="list-detail" >
+            <div style="flex:1 1 100%;">
+              ${renderRiwayatPelanggan(orders)}
+              <div style="margin-top:10px;">
+                <button class="btn btn-ghost" data-edit-pelanggan="${p.id}" style="padding:4px 10px; font-size:11px;">Edit</button>
+                <button class="btn btn-ghost" data-toggle-status-pelanggan="${p.id}" style="padding:4px 10px; font-size:11px; margin-left:6px;">${p.status==='Aktif'?'Nonaktifkan':'Aktifkan'}</button>
+              </div>
+            </div>
+          </div>
+          `;
+        }).join('')}
+      </div>
+      `}
+    </div>
+  `;
+
+  document.getElementById('formPelanggan').addEventListener('submit', async (ev) => {
+    ev.preventDefault();
+    const msg = document.getElementById('pelangganFormMsg');
+    const nama = document.getElementById('pl_nama').value.trim();
+    const noHp = document.getElementById('pl_noHp').value.trim();
+    const alamat = document.getElementById('pl_alamat').value.trim();
+    const status = document.getElementById('pl_status').value;
+    if (!nama) { showMsg(msg, 'err', 'Nama pelanggan wajib diisi.'); return; }
+    if (editing) {
+      editing.nama = nama; editing.noHp = noHp; editing.alamat = alamat; editing.status = status;
+    } else {
+      STATE.customers.push({ id: uid('cust'), nama, noHp, alamat, status: status || 'Aktif', createdAt: new Date().toISOString() });
+    }
+    await withSaving(msg, editing ? 'Perubahan pelanggan disimpan.' : 'Pelanggan ditambahkan.', async () => {
+      await saveState();
+      editingPelangganId = null;
+      renderPelanggan(container);
+    });
+  });
+  const btnBatal = document.getElementById('btnBatalEditPelanggan');
+  if (btnBatal) btnBatal.addEventListener('click', () => { editingPelangganId = null; renderPelanggan(container); });
+  document.getElementById('plFilterSearch').addEventListener('input', (e) => { pelangganFilters.search = e.target.value; renderPelanggan(container); });
+  document.getElementById('plFilterStatus').addEventListener('change', (e) => { pelangganFilters.status = e.target.value; renderPelanggan(container); });
+  container.querySelectorAll('[data-pelanggan-toggle]').forEach(rowEl => {
+    rowEl.addEventListener('click', () => {
+      const id = rowEl.dataset.pelangganToggle;
+      expandedPelangganId = expandedPelangganId === id ? null : id;
+      renderPelanggan(container);
+    });
+  });
+  container.querySelectorAll('[data-edit-pelanggan]').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      editingPelangganId = btn.dataset.editPelanggan;
+      renderPelanggan(container);
+      if (typeof container.scrollIntoView === 'function') container.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  });
+  container.querySelectorAll('[data-toggle-status-pelanggan]').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const p = STATE.customers.find(c => c.id === btn.dataset.toggleStatusPelanggan);
+      if (!p) return;
+      const statusLama = p.status;
+      p.status = p.status === 'Aktif' ? 'Nonaktif' : 'Aktif';
+      try {
+        await saveState();
+      } catch (err) {
+        p.status = statusLama; // batalkan perubahan lokal kalau gagal simpan, supaya tampilan tidak menyesatkan
+        alert('Gagal menyimpan perubahan status: ' + err.message);
+      }
+      renderPelanggan(container);
+    });
+  });
+}
+
+/* =========================================================================
+   INVOICE (2026-11-19) -- "struktur dasar" invoice B2B/grosir di Outmark OS, langkah awal migrasi dari
+   Outmark Invoice Manager (app terpisah, React+GAS+Sheets). Replikasi field2 inti dari app lama (tipe
+   FULL/DP/SETTLEMENT, katalog produk warna/ukuran+harga tetap -- SENGAJA terpisah dari STATE.products
+   e-commerce, DP% -> sisa bayar -> link ke invoice Pelunasan). TIDAK termasuk di versi ini (menyusul kalau
+   diminta): menu Diskon terpisah (cukup field "Potongan" manual), opsi cetak tanpa ttd/cap, impor data lama
+   (Setiawan: tidak perlu, asal nomor invoice bisa auto-generate ATAU diisi manual sendiri).
+   ========================================================================= */
+
+function findCustName(customerId) {
+  const c = STATE.customers.find(x => x.id === customerId);
+  return c ? c.nama : '';
+}
+
+// Nomor invoice: SARAN otomatis format INV/YYYY/MM/NNN (urut per bulan), tapi field-nya SELALU bisa ditimpa
+// manual oleh user (Setiawan: "bisa otomatis bisa juga aku yang input") -- dipakai jg utk re-generate saat
+// tombol "Buat Otomatis" diklik atau tanggal invoice berubah.
+function suggestNomorInvoice(tanggalStr) {
+  const d = tanggalStr ? new Date(tanggalStr) : new Date();
+  const yyyy = isNaN(d.getTime()) ? new Date().getFullYear() : d.getFullYear();
+  const mm = String((isNaN(d.getTime()) ? new Date().getMonth() : d.getMonth()) + 1).padStart(2, '0');
+  const prefix = `INV/${yyyy}/${mm}/`;
+  let maxN = 0;
+  STATE.invoices.forEach(inv => {
+    if (inv.nomor && inv.nomor.startsWith(prefix)) {
+      const m = inv.nomor.match(/(\d+)\s*$/);
+      if (m) maxN = Math.max(maxN, parseInt(m[1], 10));
+    }
+  });
+  return prefix + String(maxN + 1).padStart(3, '0');
+}
+
+function hitungTotalInvoice(items, ongkir, potongan) {
+  const subtotal = (items || []).reduce((s, it) => s + (Number(it.harga) || 0) * (Number(it.qty) || 0), 0);
+  const grandTotal = Math.max(0, subtotal + (Number(ongkir) || 0) - (Number(potongan) || 0));
+  return { subtotal, grandTotal };
+}
+
+function emptyInvoiceDraft() {
+  const tanggal = new Date().toISOString().slice(0, 10);
+  return { tipe: 'FULL', tanggal, nomor: suggestNomorInvoice(tanggal), customerId: '', deskripsi: '', items: [], ongkir: 0, potongan: 0, dpPercent: 50, settlementOfInvoiceId: '' };
+}
+
+// Satu titik baca SEMUA field form (selain item -- item dikelola langsung di invoiceDraft.items oleh tombol
+// Tambah/Hapus Item) dari DOM ke invoiceDraft, dipanggil SEBELUM render ulang apapun supaya nilai yg sudah
+// diketik user di field lain tidak hilang tertimpa draft lama (krn render ulang ganti innerHTML sepenuhnya).
+function syncInvoiceDraftFromDom() {
+  const d = invoiceDraft;
+  if (!d) return;
+  const get = id => document.getElementById(id);
+  if (get('inv_tipe')) d.tipe = get('inv_tipe').value;
+  if (get('inv_tanggal')) d.tanggal = get('inv_tanggal').value;
+  if (get('inv_nomor')) d.nomor = get('inv_nomor').value;
+  if (get('inv_customer')) d.customerId = get('inv_customer').value;
+  if (get('inv_deskripsi')) d.deskripsi = get('inv_deskripsi').value;
+  if (get('inv_ongkir')) d.ongkir = Number(get('inv_ongkir').value) || 0;
+  if (get('inv_potongan')) d.potongan = Number(get('inv_potongan').value) || 0;
+  if (get('inv_dpPercent')) d.dpPercent = Number(get('inv_dpPercent').value) || 0;
+  if (get('inv_settlementOf')) d.settlementOfInvoiceId = get('inv_settlementOf').value;
+}
+
+// Dipanggil bareng oleh SEMUA 3 jalur (Database Penjualan sudah pakai pola findCustName di atas) -- bukan,
+// ini dipakai KHUSUS panel rincian invoice di tab Daftar Invoice (list-detail) & jadi dasar renderInvoicePrintHtml.
+function renderInvoiceDetailPanel(inv) {
+  return `
+    <table class="data" style="margin-bottom:10px;">
+      <thead><tr><th>Produk</th><th>Warna</th><th>Ukuran</th><th class="num">Harga</th><th class="num">Qty</th><th class="num">Total</th></tr></thead>
+      <tbody>
+        ${(inv.items||[]).map(it => `<tr><td>${it.nama}</td><td>${it.warna||'-'}</td><td>${it.ukuran||'-'}</td><td class="num">${fmtRp(it.harga)}</td><td class="num">${it.qty}</td><td class="num">${fmtRp((it.harga||0)*(it.qty||0))}</td></tr>`).join('')}
+      </tbody>
+    </table>
+    <div class="kpi-row">
+      <div class="kpi"><div class="kpi-label">Subtotal</div><div class="kpi-value">${fmtRp(inv.subtotal)}</div></div>
+      ${inv.ongkir ? `<div class="kpi"><div class="kpi-label">Ongkir</div><div class="kpi-value">${fmtRp(inv.ongkir)}</div></div>` : ''}
+      ${inv.potongan ? `<div class="kpi"><div class="kpi-label">Potongan</div><div class="kpi-value">${fmtRp(inv.potongan)}</div></div>` : ''}
+      <div class="kpi"><div class="kpi-label">Grand Total</div><div class="kpi-value">${fmtRp(inv.grandTotal)}</div></div>
+      ${inv.tipe === 'DP' ? `
+      <div class="kpi"><div class="kpi-label">DP Dibayar (${inv.dpPercent}%)</div><div class="kpi-value">${fmtRp(inv.dpPaid)}</div></div>
+      <div class="kpi"><div class="kpi-label">Sisa Bayar</div><div class="kpi-value">${fmtRp(inv.sisaBayar)}</div></div>
+      ` : ''}
+      ${inv.tipe === 'SETTLEMENT' && inv.settlementOfInvoiceId ? (() => {
+        const src = STATE.invoices.find(i => i.id === inv.settlementOfInvoiceId);
+        return src ? `<div class="kpi"><div class="kpi-label">Pelunasan dari</div><div class="kpi-value" style="font-size:14px;">${src.nomor}</div></div>` : '';
+      })() : ''}
+    </div>
+  `;
+}
+
+// Layout cetak A4 sederhana (dipakai lewat #invoicePrintArea + window.print(), lihat CSS @media print).
+// CATATAN: opsi "tanpa ttd/cap" BELUM diimplementasi di sini (fitur menyusul, field inv.tanpaTtdCap sudah
+// disiapkan di data model tapi belum dibaca di fungsi ini) -- blok ttd/cap SELALU tampil di v1 ini.
+function renderInvoicePrintHtml(inv) {
+  const cust = STATE.customers.find(c => c.id === inv.customerId);
+  return `
+    <div class="invoice-print-page">
+      <h2 style="margin-bottom:0;">PT. Outmark Global Industri</h2>
+      <div style="font-size:12px; color:#555; margin-bottom:16px;">Jalan Permana Timur Blok D7 No. 28B Kec. Cimahi Utara, Kota Cimahi, Prov. Jawa Barat</div>
+      <h3 style="margin-bottom:4px;">INVOICE ${inv.tipe === 'DP' ? '(DP)' : inv.tipe === 'SETTLEMENT' ? '(PELUNASAN)' : ''} : ${inv.nomor}</h3>
+      <table style="margin-bottom:14px;">
+        <tr><td style="width:120px;">Tanggal</td><td>${fmtTanggal(inv.tanggal)}</td></tr>
+        <tr><td>Kepada</td><td>${cust ? cust.nama : '-'}</td></tr>
+        <tr><td>Alamat</td><td>${cust && cust.alamat ? cust.alamat : '-'}</td></tr>
+        <tr><td>No Telepon</td><td>${cust && cust.noHp ? cust.noHp : '-'}</td></tr>
+        ${inv.deskripsi ? `<tr><td>Deskripsi</td><td>${inv.deskripsi}</td></tr>` : ''}
+      </table>
+      <table style="margin-bottom:14px;">
+        <thead><tr><th>No.</th><th>Produk</th><th>Warna</th><th>Size</th><th class="num">Harga</th><th class="num">Qty</th><th class="num">Total</th></tr></thead>
+        <tbody>
+          ${(inv.items||[]).map((it,i) => `<tr><td>${i+1}</td><td>${it.nama}</td><td>${it.warna||'-'}</td><td>${it.ukuran||'-'}</td><td class="num">${fmtRp(it.harga)}</td><td class="num">${it.qty}</td><td class="num">${fmtRp((it.harga||0)*(it.qty||0))}</td></tr>`).join('')}
+          <tr><td colspan="6"><b>Sub Total</b></td><td class="num"><b>${fmtRp(inv.subtotal)}</b></td></tr>
+          ${inv.ongkir ? `<tr><td colspan="6">Ongkir</td><td class="num">${fmtRp(inv.ongkir)}</td></tr>` : ''}
+          ${inv.potongan ? `<tr><td colspan="6">Potongan</td><td class="num">-${fmtRp(inv.potongan)}</td></tr>` : ''}
+          <tr><td colspan="6"><b>GRAND TOTAL</b></td><td class="num"><b>${fmtRp(inv.grandTotal)}</b></td></tr>
+          ${inv.tipe === 'DP' ? `
+          <tr><td colspan="6">DP Dibayar (${inv.dpPercent}%)</td><td class="num">${fmtRp(inv.dpPaid)}</td></tr>
+          <tr><td colspan="6"><b>Sisa Bayar</b></td><td class="num"><b>${fmtRp(inv.sisaBayar)}</b></td></tr>
+          ` : ''}
+        </tbody>
+      </table>
+      <div style="font-size:12px; margin-bottom:24px;">
+        Pembayaran dapat dilakukan melalui transfer:<br>
+        <b>BANK BSI SYARIAH</b><br>7321305916<br>PT OUTMARK INDUSTRI
+      </div>
+      <div style="display:flex; justify-content:flex-end; font-size:12px; text-align:center;">
+        <div>
+          Mengetahui,<br>PT. Outmark Global Industri<br><br><br><br>
+          Penanggung Jawab
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function renderInvoiceKatalog(el, container) {
+  const editing = editingInvoiceProdukId ? STATE.invoiceProducts.find(p => p.id === editingInvoiceProdukId) : null;
+  const list = STATE.invoiceProducts.slice().sort((a,b) => (a.nama||'').localeCompare(b.nama||''));
+  el.innerHTML = `
+    <div class="panel">
+      <h2>${editing ? 'Edit Produk Invoice' : 'Tambah Produk Invoice'}</h2>
+      <form id="formInvoiceProduk">
+        <div class="field"><label>Nama Produk</label><input type="text" id="ip_nama" required value="${editing ? editing.nama.replace(/"/g,'&quot;') : ''}"></div>
+        <div class="grid2">
+          <div class="field"><label>Harga (Rp)</label><input type="number" id="ip_harga" min="0" required value="${editing ? editing.harga : ''}"></div>
+          <div class="field"><label>Status</label>
+            <select id="ip_status">
+              <option value="Aktif" ${(!editing || editing.status==='Aktif')?'selected':''}>Aktif</option>
+              <option value="Nonaktif" ${(editing && editing.status==='Nonaktif')?'selected':''}>Nonaktif</option>
+            </select>
+          </div>
+        </div>
+        <div class="grid2">
+          <div class="field"><label>Warna (pisah koma)</label><input type="text" id="ip_warna" placeholder="mis. Black, Navy, Army" value="${editing ? (editing.warna||[]).join(', ') : ''}"></div>
+          <div class="field"><label>Ukuran (pisah koma)</label><input type="text" id="ip_ukuran" placeholder="mis. S, M, L, XL" value="${editing ? (editing.ukuran||[]).join(', ') : ''}"></div>
+        </div>
+        <button type="submit" class="btn btn-primary">${editing ? 'Simpan Perubahan' : '+ Tambah Produk'}</button>
+        ${editing ? `<button type="button" class="btn btn-ghost" id="btnBatalEditIp" style="margin-left:8px;">Batal</button>` : ''}
+        <div class="status-box" id="ipFormMsg"></div>
+      </form>
+    </div>
+    <div class="panel">
+      <h2>Produk Invoice Terdaftar <span class="pill">${STATE.invoiceProducts.length}</span></h2>
+      ${!list.length ? '<div class="empty-note">Belum ada produk invoice. Tambah dulu sebelum bisa dipakai di form Buat Invoice.</div>' : `
+      <div class="list-card">
+        ${list.map(p => `
+        <div class="list-row">
+          <div class="list-row-main" style="flex:1 1 260px; max-width:none;">
+            <span class="list-row-title">${p.nama}</span>
+            <span class="list-row-sub" style="font-family:inherit;">${fmtRp(p.harga)} &middot; Warna: ${(p.warna||[]).join(', ')||'-'} &middot; Ukuran: ${(p.ukuran||[]).join(', ')||'-'}</span>
+          </div>
+          <span class="list-row-small" style="flex:0 0 80px;"><span class="pill ${p.status==='Aktif'?'ok':'off'}">${p.status}</span></span>
+          <button class="btn btn-ghost" data-edit-ip="${p.id}" style="padding:4px 10px; font-size:11px;">Edit</button>
+          <button class="btn btn-ghost" data-toggle-status-ip="${p.id}" style="padding:4px 10px; font-size:11px; margin-left:6px;">${p.status==='Aktif'?'Nonaktifkan':'Aktifkan'}</button>
+        </div>`).join('')}
+      </div>`}
+    </div>
+  `;
+  document.getElementById('formInvoiceProduk').addEventListener('submit', async (ev) => {
+    ev.preventDefault();
+    const msg = document.getElementById('ipFormMsg');
+    const nama = document.getElementById('ip_nama').value.trim();
+    const harga = Number(document.getElementById('ip_harga').value) || 0;
+    const status = document.getElementById('ip_status').value;
+    const warna = document.getElementById('ip_warna').value.split(',').map(s => s.trim()).filter(Boolean);
+    const ukuran = document.getElementById('ip_ukuran').value.split(',').map(s => s.trim()).filter(Boolean);
+    if (!nama) { showMsg(msg, 'err', 'Nama produk wajib diisi.'); return; }
+    if (editing) {
+      editing.nama = nama; editing.harga = harga; editing.status = status; editing.warna = warna; editing.ukuran = ukuran;
+    } else {
+      STATE.invoiceProducts.push({ id: uid('ipr'), nama, harga, status: status || 'Aktif', warna, ukuran, createdAt: new Date().toISOString() });
+    }
+    await withSaving(msg, editing ? 'Perubahan produk invoice disimpan.' : 'Produk invoice ditambahkan.', async () => {
+      await saveState();
+      editingInvoiceProdukId = null;
+      renderInvoiceKatalog(el, container);
+    });
+  });
+  const btnBatal = document.getElementById('btnBatalEditIp');
+  if (btnBatal) btnBatal.addEventListener('click', () => { editingInvoiceProdukId = null; renderInvoiceKatalog(el, container); });
+  el.querySelectorAll('[data-edit-ip]').forEach(btn => {
+    btn.addEventListener('click', () => { editingInvoiceProdukId = btn.dataset.editIp; renderInvoiceKatalog(el, container); });
+  });
+  el.querySelectorAll('[data-toggle-status-ip]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const p = STATE.invoiceProducts.find(x => x.id === btn.dataset.toggleStatusIp);
+      if (!p) return;
+      const statusLama = p.status;
+      p.status = p.status === 'Aktif' ? 'Nonaktif' : 'Aktif';
+      try {
+        await saveState();
+      } catch (err) {
+        p.status = statusLama;
+        alert('Gagal menyimpan perubahan status: ' + err.message);
+      }
+      renderInvoiceKatalog(el, container);
+    });
+  });
+}
+
+function renderInvoiceBuat(el, container) {
+  if (!invoiceDraft) invoiceDraft = emptyInvoiceDraft();
+  const d = invoiceDraft;
+  const customersSorted = STATE.customers.slice().sort((a,b) => (a.nama||'').localeCompare(b.nama||''));
+  const katalogAktif = STATE.invoiceProducts.filter(p => p.status === 'Aktif');
+  const { subtotal, grandTotal } = hitungTotalInvoice(d.items, d.ongkir, d.potongan);
+  const dpPaid = d.tipe === 'DP' ? Math.round(grandTotal * (d.dpPercent||0) / 100) : 0;
+  const sisaBayar = d.tipe === 'DP' ? grandTotal - dpPaid : 0;
+  const dpInvoicesOutstanding = STATE.invoices.filter(i => i.tipe === 'DP' && (i.sisaBayar||0) > 0 && i.id !== editingInvoiceId);
+  const sumberDp = d.settlementOfInvoiceId ? STATE.invoices.find(i => i.id === d.settlementOfInvoiceId) : null;
+
+  el.innerHTML = `
+    <div class="panel">
+      <h2>${editingInvoiceId ? 'Edit Invoice' : 'Buat Invoice Baru'}</h2>
+      <div class="grid2">
+        <div class="field"><label>Tipe Invoice</label>
+          <select id="inv_tipe">
+            <option value="FULL" ${d.tipe==='FULL'?'selected':''}>Invoice Full</option>
+            <option value="DP" ${d.tipe==='DP'?'selected':''}>Invoice DP</option>
+            <option value="SETTLEMENT" ${d.tipe==='SETTLEMENT'?'selected':''}>Invoice Pelunasan</option>
+          </select>
+        </div>
+        <div class="field"><label>Tanggal</label><input type="date" id="inv_tanggal" value="${d.tanggal}"></div>
+      </div>
+      <div class="grid2">
+        <div class="field"><label>Nomor Invoice</label>
+          <div style="display:flex; gap:6px;">
+            <input type="text" id="inv_nomor" value="${(d.nomor||'').replace(/"/g,'&quot;')}" style="flex:1;">
+            <button type="button" class="btn btn-ghost" id="btnGenNomor" style="white-space:nowrap;">Buat Otomatis</button>
+          </div>
+        </div>
+        <div class="field"><label>Customer</label>
+          <select id="inv_customer">
+            <option value="">-- Pilih Pelanggan --</option>
+            ${customersSorted.map(c => `<option value="${c.id}" ${d.customerId===c.id?'selected':''}>${c.nama}${c.status==='Nonaktif'?' (Nonaktif)':''}</option>`).join('')}
+          </select>
+          ${!customersSorted.length ? '<div class="desc">Belum ada pelanggan -- tambah dulu di tab Pelanggan.</div>' : ''}
+        </div>
+      </div>
+      <div class="field"><label>Deskripsi (Opsional)</label><input type="text" id="inv_deskripsi" value="${(d.deskripsi||'').replace(/"/g,'&quot;')}" placeholder="mis. Wilson Windbreaker"></div>
+
+      ${d.tipe === 'SETTLEMENT' ? `
+      <div class="field"><label>Invoice DP Terkait</label>
+        <select id="inv_settlementOf">
+          <option value="">-- Tidak terkait DP manapun --</option>
+          ${dpInvoicesOutstanding.map(i => `<option value="${i.id}" ${d.settlementOfInvoiceId===i.id?'selected':''}>${i.nomor} -- ${findCustName(i.customerId)||'-'} (sisa ${fmtRp(i.sisaBayar)})</option>`).join('')}
+        </select>
+        ${sumberDp ? `<div class="desc">Sisa dari invoice DP <b>${sumberDp.nomor}</b>: <b>${fmtRp(sumberDp.sisaBayar)}</b>. Kalau ongkir belum termasuk di invoice DP itu, isi di field Ongkir di bawah.</div>` : ''}
+      </div>` : ''}
+
+      <h3 style="margin:16px 0 8px;">Item Produk</h3>
+      ${!d.items.length ? '<div class="empty-note">Belum ada item produk.</div>' : `
+      <table class="data" style="margin-bottom:10px;">
+        <thead><tr><th>Produk</th><th>Warna</th><th>Ukuran</th><th class="num">Harga</th><th class="num">Qty</th><th class="num">Total</th><th></th></tr></thead>
+        <tbody>
+          ${d.items.map((it,idx) => `<tr>
+            <td>${it.nama}</td><td>${it.warna||'-'}</td><td>${it.ukuran||'-'}</td>
+            <td class="num">${fmtRp(it.harga)}</td><td class="num">${it.qty}</td><td class="num">${fmtRp((it.harga||0)*(it.qty||0))}</td>
+            <td><button type="button" class="btn btn-ghost" data-remove-item="${idx}" style="padding:2px 8px; font-size:11px;">Hapus</button></td>
+          </tr>`).join('')}
+        </tbody>
+      </table>`}
+
+      <div class="grid2" style="align-items:flex-end;">
+        <div class="field"><label>Pilih Produk</label>
+          <select id="inv_itemProduk">
+            <option value="">-- Pilih --</option>
+            ${katalogAktif.map(p => `<option value="${p.id}">${p.nama}</option>`).join('')}
+          </select>
+        </div>
+        <div class="field"><label>Warna</label><select id="inv_itemWarna"><option value="-">-</option></select></div>
+      </div>
+      <div class="grid2" style="align-items:flex-end;">
+        <div class="field"><label>Ukuran</label><select id="inv_itemUkuran"><option value="-">-</option></select></div>
+        <div class="field"><label>Harga (Rp)</label><input type="number" id="inv_itemHarga" min="0" value="0"></div>
+      </div>
+      <div class="grid2" style="align-items:flex-end;">
+        <div class="field"><label>Qty</label><input type="number" id="inv_itemQty" min="1" value="1"></div>
+        <div class="field"><button type="button" class="btn btn-ghost" id="btnTambahItem">+ Tambah Item</button></div>
+      </div>
+      ${!katalogAktif.length ? '<div class="desc">Belum ada produk invoice aktif -- tambah dulu di sub-tab Katalog Produk.</div>' : ''}
+
+      <h3 style="margin:16px 0 8px;">Total</h3>
+      <div class="grid2">
+        <div class="field"><label>Ongkir (Rp)</label><input type="number" id="inv_ongkir" min="0" value="${d.ongkir}"></div>
+        <div class="field"><label>Potongan (Rp)</label><input type="number" id="inv_potongan" min="0" value="${d.potongan}"></div>
+      </div>
+      ${d.tipe === 'DP' ? `<div class="field" style="max-width:220px;"><label>DP (%)</label><input type="number" id="inv_dpPercent" min="1" max="99" value="${d.dpPercent}"></div>` : ''}
+      <div class="kpi-row">
+        <div class="kpi"><div class="kpi-label">Subtotal</div><div class="kpi-value">${fmtRp(subtotal)}</div></div>
+        <div class="kpi"><div class="kpi-label">Grand Total</div><div class="kpi-value">${fmtRp(grandTotal)}</div></div>
+        ${d.tipe === 'DP' ? `
+        <div class="kpi"><div class="kpi-label">DP Dibayar</div><div class="kpi-value">${fmtRp(dpPaid)}</div></div>
+        <div class="kpi"><div class="kpi-label">Sisa Bayar</div><div class="kpi-value">${fmtRp(sisaBayar)}</div></div>
+        ` : ''}
+      </div>
+
+      <button type="button" class="btn btn-primary" id="btnSimpanInvoice" style="margin-top:12px;">${editingInvoiceId ? 'Simpan Perubahan' : 'Simpan Invoice'}</button>
+      ${editingInvoiceId ? `<button type="button" class="btn btn-ghost" id="btnBatalEditInvoice" style="margin-left:8px;">Batal</button>` : ''}
+      <div class="status-box" id="invoiceFormMsg"></div>
+    </div>
+  `;
+
+  const rerender = () => { syncInvoiceDraftFromDom(); renderInvoiceBuat(el, container); };
+  document.getElementById('inv_tipe').addEventListener('change', rerender);
+  document.getElementById('inv_tanggal').addEventListener('change', rerender);
+  document.getElementById('inv_nomor').addEventListener('change', () => syncInvoiceDraftFromDom());
+  document.getElementById('inv_customer').addEventListener('change', () => syncInvoiceDraftFromDom());
+  document.getElementById('inv_deskripsi').addEventListener('change', () => syncInvoiceDraftFromDom());
+  document.getElementById('inv_ongkir').addEventListener('change', rerender);
+  document.getElementById('inv_potongan').addEventListener('change', rerender);
+  const dpPercentEl = document.getElementById('inv_dpPercent');
+  if (dpPercentEl) dpPercentEl.addEventListener('change', rerender);
+  const settlementOfEl = document.getElementById('inv_settlementOf');
+  if (settlementOfEl) settlementOfEl.addEventListener('change', rerender);
+  document.getElementById('btnGenNomor').addEventListener('click', () => {
+    syncInvoiceDraftFromDom();
+    invoiceDraft.nomor = suggestNomorInvoice(invoiceDraft.tanggal);
+    renderInvoiceBuat(el, container);
+  });
+  document.getElementById('inv_itemProduk').addEventListener('change', (e) => {
+    const prod = STATE.invoiceProducts.find(p => p.id === e.target.value);
+    const warnaSel = document.getElementById('inv_itemWarna');
+    const ukuranSel = document.getElementById('inv_itemUkuran');
+    const hargaInput = document.getElementById('inv_itemHarga');
+    if (prod) {
+      warnaSel.innerHTML = (prod.warna && prod.warna.length ? prod.warna : ['-']).map(w => `<option value="${w}">${w}</option>`).join('');
+      ukuranSel.innerHTML = (prod.ukuran && prod.ukuran.length ? prod.ukuran : ['-']).map(s => `<option value="${s}">${s}</option>`).join('');
+      hargaInput.value = prod.harga;
+    } else {
+      warnaSel.innerHTML = '<option value="-">-</option>';
+      ukuranSel.innerHTML = '<option value="-">-</option>';
+      hargaInput.value = 0;
+    }
+  });
+  document.getElementById('btnTambahItem').addEventListener('click', () => {
+    syncInvoiceDraftFromDom();
+    const msg = document.getElementById('invoiceFormMsg');
+    const prodId = document.getElementById('inv_itemProduk').value;
+    const prod = STATE.invoiceProducts.find(p => p.id === prodId);
+    if (!prod) { showMsg(msg, 'err', 'Pilih produk dulu sebelum tambah item.'); return; }
+    const warnaVal = document.getElementById('inv_itemWarna').value;
+    const ukuranVal = document.getElementById('inv_itemUkuran').value;
+    const harga = Number(document.getElementById('inv_itemHarga').value) || 0;
+    const qty = Number(document.getElementById('inv_itemQty').value) || 0;
+    if (qty <= 0) { showMsg(msg, 'err', 'Qty harus lebih dari 0.'); return; }
+    invoiceDraft.items.push({ invoiceProductId: prod.id, nama: prod.nama, warna: warnaVal === '-' ? '' : warnaVal, ukuran: ukuranVal === '-' ? '' : ukuranVal, harga, qty });
+    renderInvoiceBuat(el, container);
+  });
+  el.querySelectorAll('[data-remove-item]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      syncInvoiceDraftFromDom();
+      invoiceDraft.items.splice(Number(btn.dataset.removeItem), 1);
+      renderInvoiceBuat(el, container);
+    });
+  });
+  document.getElementById('btnSimpanInvoice').addEventListener('click', async () => {
+    syncInvoiceDraftFromDom();
+    const msg = document.getElementById('invoiceFormMsg');
+    const dd = invoiceDraft;
+    if (!dd.nomor.trim()) { showMsg(msg, 'err', 'Nomor invoice wajib diisi.'); return; }
+    if (!dd.customerId) { showMsg(msg, 'err', 'Pelanggan wajib dipilih.'); return; }
+    if (!dd.items.length) { showMsg(msg, 'err', 'Tambahkan minimal 1 item produk.'); return; }
+    const totals = hitungTotalInvoice(dd.items, dd.ongkir, dd.potongan);
+    const payload = {
+      nomor: dd.nomor.trim(), tanggal: dd.tanggal, tipe: dd.tipe, customerId: dd.customerId, deskripsi: dd.deskripsi,
+      items: dd.items.map(it => ({ ...it })), ongkir: dd.ongkir, potongan: dd.potongan, subtotal: totals.subtotal, grandTotal: totals.grandTotal,
+      dpPercent: null, dpPaid: null, sisaBayar: null, settlementOfInvoiceId: null,
+    };
+    if (dd.tipe === 'DP') {
+      payload.dpPercent = dd.dpPercent;
+      payload.dpPaid = Math.round(totals.grandTotal * (dd.dpPercent||0) / 100);
+      payload.sisaBayar = totals.grandTotal - payload.dpPaid;
+    }
+    if (dd.tipe === 'SETTLEMENT') payload.settlementOfInvoiceId = dd.settlementOfInvoiceId || null;
+    if (editingInvoiceId) {
+      const existing = STATE.invoices.find(i => i.id === editingInvoiceId);
+      Object.assign(existing, payload);
+    } else {
+      payload.id = uid('inv');
+      payload.tanpaTtdCap = false;
+      payload.createdAt = new Date().toISOString();
+      STATE.invoices.push(payload);
+    }
+    await withSaving(msg, editingInvoiceId ? 'Perubahan invoice disimpan.' : 'Invoice disimpan.', async () => {
+      await saveState();
+      editingInvoiceId = null;
+      invoiceDraft = null;
+      invoiceFilter.tab = 'daftar';
+      renderInvoiceTab(container);
+    });
+  });
+  const btnBatalEdit = document.getElementById('btnBatalEditInvoice');
+  if (btnBatalEdit) btnBatalEdit.addEventListener('click', () => { editingInvoiceId = null; invoiceDraft = null; renderInvoiceBuat(el, container); });
+}
+
+function renderInvoiceDaftar(el, container) {
+  const searchLower = (invoiceFilter.search||'').toLowerCase();
+  let list = STATE.invoices.slice();
+  if (invoiceFilter.tipe) list = list.filter(i => i.tipe === invoiceFilter.tipe);
+  if (searchLower) list = list.filter(i => (i.nomor||'').toLowerCase().includes(searchLower) || (findCustName(i.customerId)||'').toLowerCase().includes(searchLower));
+  list.sort((a,b) => String(b.tanggal||'').localeCompare(String(a.tanggal||'')) || String(b.nomor||'').localeCompare(String(a.nomor||'')));
+
+  el.innerHTML = `
+    <div class="panel">
+      <h2>Daftar Invoice <span class="pill">${STATE.invoices.length}</span></h2>
+      <div class="grid2" style="margin-bottom:10px;">
+        <div class="field"><label>Cari</label><input type="text" id="invFilterSearch" value="${invoiceFilter.search||''}" placeholder="cari nomor/nama pelanggan..."></div>
+        <div class="field"><label>Filter Tipe</label>
+          <select id="invFilterTipe">
+            <option value="">Semua Tipe</option>
+            <option value="FULL" ${invoiceFilter.tipe==='FULL'?'selected':''}>Full</option>
+            <option value="DP" ${invoiceFilter.tipe==='DP'?'selected':''}>DP</option>
+            <option value="SETTLEMENT" ${invoiceFilter.tipe==='SETTLEMENT'?'selected':''}>Pelunasan</option>
+          </select>
+        </div>
+      </div>
+      ${!list.length ? '<div class="empty-note">Tidak ada invoice yg cocok dgn filter ini.</div>' : `
+      <div class="list-card">
+        ${list.map(inv => {
+          const isOpen = expandedInvoiceId === inv.id;
+          return `
+          <div class="list-row" data-invoice-toggle="${inv.id}" title="Klik utk lihat rincian">
+            <svg class="list-row-chevron ${isOpen?'open':''}" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"></path></svg>
+            <div class="list-row-main" style="flex:1 1 220px; max-width:none;">
+              <span class="list-row-title">${inv.nomor}</span>
+              <span class="list-row-sub" style="font-family:inherit;">${fmtTanggal(inv.tanggal)} &middot; ${findCustName(inv.customerId)||'-'}</span>
+            </div>
+            <span class="list-row-small" style="flex:0 0 70px;"><span class="pill">${inv.tipe}</span></span>
+            <span class="list-row-num" style="flex:0 0 140px;">${fmtRp(inv.grandTotal)}</span>
+          </div>
+          <div id="invDetail_${inv.id}" style="display:${isOpen?'block':'none'};" class="list-detail">
+            <div style="flex:1 1 100%;">
+              ${renderInvoiceDetailPanel(inv)}
+              <div style="margin-top:10px;">
+                <button class="btn btn-ghost" data-edit-invoice="${inv.id}" style="padding:4px 10px; font-size:11px;">Edit</button>
+                <button class="btn btn-ghost" data-print-invoice="${inv.id}" style="padding:4px 10px; font-size:11px; margin-left:6px;">Cetak / PDF</button>
+                ${inv.tipe==='DP' && (inv.sisaBayar||0) > 0 ? `<button class="btn btn-ghost" data-buat-pelunasan="${inv.id}" style="padding:4px 10px; font-size:11px; margin-left:6px;">Buat Invoice Pelunasan</button>` : ''}
+              </div>
+            </div>
+          </div>`;
+        }).join('')}
+      </div>`}
+    </div>
+    <div id="invoicePrintArea"></div>
+  `;
+
+  document.getElementById('invFilterSearch').addEventListener('input', (e) => { invoiceFilter.search = e.target.value; renderInvoiceDaftar(el, container); });
+  document.getElementById('invFilterTipe').addEventListener('change', (e) => { invoiceFilter.tipe = e.target.value; renderInvoiceDaftar(el, container); });
+  el.querySelectorAll('[data-invoice-toggle]').forEach(rowEl => {
+    rowEl.addEventListener('click', () => { const id = rowEl.dataset.invoiceToggle; expandedInvoiceId = expandedInvoiceId === id ? null : id; renderInvoiceDaftar(el, container); });
+  });
+  el.querySelectorAll('[data-edit-invoice]').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const inv = STATE.invoices.find(i => i.id === btn.dataset.editInvoice);
+      if (!inv) return;
+      editingInvoiceId = inv.id;
+      invoiceDraft = {
+        tipe: inv.tipe, tanggal: inv.tanggal, nomor: inv.nomor, customerId: inv.customerId, deskripsi: inv.deskripsi || '',
+        items: inv.items.map(it => ({ ...it })), ongkir: inv.ongkir || 0, potongan: inv.potongan || 0,
+        dpPercent: inv.dpPercent || 50, settlementOfInvoiceId: inv.settlementOfInvoiceId || '',
+      };
+      invoiceFilter.tab = 'buat';
+      renderInvoiceTab(container);
+    });
+  });
+  el.querySelectorAll('[data-buat-pelunasan]').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const srcInv = STATE.invoices.find(i => i.id === btn.dataset.buatPelunasan);
+      if (!srcInv) return;
+      editingInvoiceId = null;
+      const tanggal = new Date().toISOString().slice(0, 10);
+      invoiceDraft = { tipe: 'SETTLEMENT', tanggal, nomor: suggestNomorInvoice(tanggal), customerId: srcInv.customerId, deskripsi: '', items: [], ongkir: 0, potongan: 0, dpPercent: 50, settlementOfInvoiceId: srcInv.id };
+      invoiceFilter.tab = 'buat';
+      renderInvoiceTab(container);
+    });
+  });
+  el.querySelectorAll('[data-print-invoice]').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const inv = STATE.invoices.find(i => i.id === btn.dataset.printInvoice);
+      if (!inv) return;
+      const printArea = document.getElementById('invoicePrintArea');
+      printArea.innerHTML = renderInvoicePrintHtml(inv);
+      if (typeof window.print === 'function') window.print();
+    });
+  });
+}
+
+function renderInvoiceTab(container) {
+  container.innerHTML = `
+    <div class="page-header">
+      <div>
+        <h1>Invoice</h1>
+        <p class="page-sub">Invoice B2B/grosir/langsung (Full/DP/Pelunasan) -- struktur dasar, replikasi dari Outmark Invoice Manager, berangsur dipindah ke sini.</p>
+      </div>
+    </div>
+    <div class="panel" style="padding-bottom:0;">
+      <div style="display:flex; gap:2px; border-bottom:1px solid var(--line);">
+        <button class="btn-subtab ${invoiceFilter.tab==='buat'?'active':''}" data-subtab-invoice="buat">${editingInvoiceId ? 'Edit Invoice' : 'Buat Invoice'}</button>
+        <button class="btn-subtab ${invoiceFilter.tab==='daftar'?'active':''}" data-subtab-invoice="daftar">Daftar Invoice</button>
+        <button class="btn-subtab ${invoiceFilter.tab==='katalog'?'active':''}" data-subtab-invoice="katalog">Katalog Produk</button>
+      </div>
+    </div>
+    <div id="invoiceSubArea"></div>
+  `;
+  container.querySelectorAll('[data-subtab-invoice]').forEach(btn => {
+    btn.addEventListener('click', () => { invoiceFilter.tab = btn.dataset.subtabInvoice; renderInvoiceTab(container); });
+  });
+  const subArea = document.getElementById('invoiceSubArea');
+  if (invoiceFilter.tab === 'daftar') renderInvoiceDaftar(subArea, container);
+  else if (invoiceFilter.tab === 'katalog') renderInvoiceKatalog(subArea, container);
+  else renderInvoiceBuat(subArea, container);
 }
 
 // Dipakai panel "Modal Terjual + Profit per Kelompok" di tab Kontrak (renderKontrak) -- "contracts" yg dioper
@@ -8075,7 +8868,7 @@ function renderGaji(container) {
   });
 }
 
-const renderers = { master: renderMaster, kontrak: renderKontrak, import: renderImport, database: renderDatabase, laporan: renderLaporan, ads: renderAds, opex: renderOpex, alokasi: renderAlokasiProfit, pnl: renderPnl, dashboard: renderDashboard, gaji: renderGaji };
+const renderers = { master: renderMaster, kontrak: renderKontrak, import: renderImport, database: renderDatabase, pelanggan: renderPelanggan, invoice: renderInvoiceTab, laporan: renderLaporan, ads: renderAds, opex: renderOpex, alokasi: renderAlokasiProfit, pnl: renderPnl, dashboard: renderDashboard, gaji: renderGaji };
 function switchTab(tab) {
   document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
   renderers[tab](document.getElementById('app'));
