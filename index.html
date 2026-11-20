@@ -462,6 +462,13 @@ function dateStrToExcelSerial(dateStr) {
 const SIZE_CODE_MAP = { '01':'S','02':'M','03':'L','04':'XL','05':'XXL','06':'3XL','07':'4XL','08':'5XL','09':'6XL','10':'7XL' };
 const SIZES = ['S','M','L','XL','XXL','3XL','4XL','5XL','6XL','7XL'];
 const SIZE_TOKENS = new Set(['S','M','L','XL','XXL','2XL','3XL','4XL','5XL','6XL','7XL','8XL']);
+// Kunci sentinel size utk produk "Tanpa Ukuran" (2026-11-20, permintaan user: produk spt Deodoran tidak punya
+// variasi ukuran sama sekali -- 2 huruf akhir SKU-nya, mis. "NS" = No Smell/tanpa aroma, adalah kode VARIAN/TIPE,
+// BUKAN kode ukuran, jadi tidak boleh dicocokkan ke SIZE_CODE_MAP). Produk yg ditandai p.tanpaUkuran=true
+// (lihat form Tambah/Kelola Produk) menyimpan 1 harga konveksi tunggal di hargaKonveksi[UKURAN_TANPA_SIZE_KEY],
+// berlaku utk SEMUA SKU produk itu apapun akhirannya. String ini sengaja dipilih supaya TIDAK PERNAH bentrok
+// dgn isi SIZES/SIZE_CODE_MAP (yg semuanya kode ukuran pakaian S/M/L/.../7XL).
+const UKURAN_TANPA_SIZE_KEY = 'UNISIZE';
 const CAPITAL_PARTNER_PRODUCT_ALIAS = { 'FORSAKERWB': 'FORSAKERVOL2' }; // FORSAKERWB berbagi pool modal dgn FORSAKERVOL2 (ditemukan dari data nyata)
 function capitalPartnerProduk(produk) { return CAPITAL_PARTNER_PRODUCT_ALIAS[produk] || produk; }
 
@@ -810,8 +817,14 @@ function lookupHargaKonveksiBySku(sku) {
   if (!sku) return null;
   const skuUpper = String(sku).toUpperCase();
   const prefix = skuUpper.slice(0,3);
-  const sizeCode = skuUpper.slice(-2);
   const p = STATE.products.find(pr => pr.prefix === prefix);
+  // Produk "Tanpa Ukuran" (2026-11-20, kasus DEO/"NS") -- lewati pencocokan kode ukuran SEPENUHNYA, langsung
+  // pakai 1 harga tunggal yg disimpan di hargaKonveksi[UKURAN_TANPA_SIZE_KEY]. Cek ini SEBELUM baca 2 huruf
+  // akhir SKU sbg sizeCode, krn utk produk ini 2 huruf itu adalah kode VARIAN/TIPE (bukan ukuran) dan memang
+  // tidak boleh dicocokkan ke SIZE_CODE_MAP. Produk yg TIDAK ditandai (tanpaUkuran falsy -- termasuk SEMUA
+  // produk lama yg sudah ada sebelum fitur ini) jalan lewat path asli di bawah, tidak berubah sama sekali.
+  if (p && p.tanpaUkuran) return getCurrentHarga(p.nama, UKURAN_TANPA_SIZE_KEY);
+  const sizeCode = skuUpper.slice(-2);
   const ukuran = SIZE_CODE_MAP[sizeCode];
   if (p && ukuran) return getCurrentHarga(p.nama, ukuran);
   return null;
@@ -823,10 +836,17 @@ function diagnoseMissingHargaKonveksi(sku) {
   if (!sku) return 'SKU kosong pada baris order (data import tidak lengkap)';
   const skuUpper = String(sku).toUpperCase();
   const prefix = skuUpper.slice(0,3);
-  const sizeCode = skuUpper.slice(-2);
   const p = STATE.products.find(pr => pr.prefix === prefix);
-  const ukuran = SIZE_CODE_MAP[sizeCode];
   if (!p) return `Prefix SKU "${prefix}" belum terdaftar ke produk manapun (Data Master > Produk)`;
+  // Produk "Tanpa Ukuran" (lihat lookupHargaKonveksiBySku) -- rincian sebabnya beda, tidak menyinggung soal
+  // "kode ukuran" sama sekali krn memang tidak relevan utk produk ini.
+  if (p.tanpaUkuran) {
+    const h = getCurrentHarga(p.nama, UKURAN_TANPA_SIZE_KEY);
+    if (h == null) return `Harga konveksi ${p.nama} (produk Tanpa Ukuran) belum pernah diisi`;
+    return 'Sebab tidak diketahui -- cek manual';
+  }
+  const sizeCode = skuUpper.slice(-2);
+  const ukuran = SIZE_CODE_MAP[sizeCode];
   if (!ukuran) return `2 digit akhir SKU ("${sizeCode}") bukan kode ukuran yg dikenali`;
   const h = getCurrentHarga(p.nama, ukuran);
   if (h == null) return `Harga konveksi ${p.nama} ukuran ${ukuran} belum pernah diisi`;
@@ -4228,14 +4248,22 @@ function renderProdukDetailHtml(p) {
       <button class="btn btn-ghost" id="btnSimpanKategoriJual" data-produk-id="${p.id}">Simpan Kategori Jual</button>
       <div class="status-box" id="kategoriJualMsg" style="margin-top:8px;"></div>
       <hr style="border:none; border-top:1px solid var(--line); margin:16px 0;">
-      <div style="font-weight:600; margin-bottom:10px;">Harga Konveksi per Size</div>
+      <div class="field" style="margin-bottom:14px; max-width:460px;">
+        <label style="display:flex; align-items:center; gap:8px; font-weight:400; cursor:pointer;"><input type="checkbox" id="pr_tanpaUkuran_${p.id}" style="width:auto;" ${p.tanpaUkuran ? 'checked' : ''}> Produk Tanpa Ukuran (unisize -- harga konveksi sama semua)</label>
+        <div class="desc" style="margin-top:4px;">Tandai ini kalau produk TIDAK punya variasi ukuran sama sekali (mis. deodoran) -- 2 huruf/digit akhir SKU-nya menandakan VARIAN/TIPE (mis. "NS" = No Smell), BUKAN kode ukuran. Harga lama yg sudah pernah diisi per size (kalau ada) TIDAK dihapus, cuma tidak lagi dipakai -- isi ulang 1 harga tunggalnya di bagian "Harga Konveksi" di bawah setelah disimpan.</div>
+      </div>
+      <button class="btn btn-ghost" id="btnSimpanTanpaUkuran" data-produk-id="${p.id}">Simpan Tanpa Ukuran</button>
+      <div class="status-box" id="tanpaUkuranMsg" style="margin-top:8px;"></div>
+      <hr style="border:none; border-top:1px solid var(--line); margin:16px 0;">
+      <div style="font-weight:600; margin-bottom:10px;">${p.tanpaUkuran ? 'Harga Konveksi (Tanpa Ukuran)' : 'Harga Konveksi per Size'}</div>
       <div class="grid2">
-        ${SIZES.map(s => {
+        ${(p.tanpaUkuran ? [UKURAN_TANPA_SIZE_KEY] : SIZES).map(s => {
           const cur = getCurrentHarga(p.nama, s);
           const hist = (p.hargaKonveksi && p.hargaKonveksi[s]) || [];
+          const label = p.tanpaUkuran ? 'Harga Konveksi (semua SKU)' : s;
           return `
             <div class="field" style="margin-bottom:10px;">
-              <label>${s} ${hist.length > 1 ? `<span class="pill" data-hist-toggle="${p.nama}_${s}" style="cursor:pointer;">${hist.length}x</span>` : ''}</label>
+              <label>${label} ${hist.length > 1 ? `<span class="pill" data-hist-toggle="${p.nama}_${s}" style="cursor:pointer;">${hist.length}x</span>` : ''}</label>
               <input type="number" class="update-harga-size-input" data-size="${s}" value="${cur != null ? cur : ''}" placeholder="belum ada">
               <div id="hist_${p.nama}_${s}" style="display:none; font-size:11px; color:var(--ink-soft); margin-top:4px;">
                 ${hist.slice().reverse().map(h => `${fmtRp(h.harga)} &middot; ${h.tanggal ? fmtTanggal(h.tanggal) : 'migrasi'} (${h.sumber})`).join('<br>')}
@@ -5888,8 +5916,17 @@ function renderKontrak(container) {
           <label style="display:flex; align-items:center; gap:8px; font-weight:400; cursor:pointer;"><input type="checkbox" id="pr_po" style="width:auto;"> Produk PO (Pre Order -- dana dari konsumen, TANPA investor)</label>
           <div class="desc" style="margin-top:4px;">Brand tetap diisi spt biasa. Tandai ini kalau produk TIDAK ada kontrak investor (modal konveksi dibayar dari dana pembeli/PO), spt yg dulu ditentukan utk ROVEE.</div>
         </div>
-        <div class="desc" style="margin-top:10px; margin-bottom:6px;">Harga konveksi per size (Rp) -- isi yg tersedia saja:</div>
-        <div class="grid2">${SIZES.map(s => `<div class="field"><label>${s}</label><input type="number" class="pr-harga-size" data-size="${s}" min="0" placeholder="Rp"></div>`).join('')}</div>
+        <div class="field" style="margin-top:2px;">
+          <label style="display:flex; align-items:center; gap:8px; font-weight:400; cursor:pointer;"><input type="checkbox" id="pr_tanpaUkuran" style="width:auto;"> Produk Tanpa Ukuran (unisize -- harga konveksi sama semua)</label>
+          <div class="desc" style="margin-top:4px;">Tandai ini kalau produk TIDAK punya variasi ukuran sama sekali (mis. deodoran) -- 2 huruf/digit akhir SKU-nya menandakan VARIAN/TIPE (mis. "NS" = No Smell), BUKAN kode ukuran, jadi tidak perlu dicocokkan ke tabel ukuran S/M/L/dst. Harga konveksinya 1 harga saja, berlaku utk semua SKU produk ini.</div>
+        </div>
+        <div id="pr_hargaSizeWrap">
+          <div class="desc" style="margin-top:10px; margin-bottom:6px;">Harga konveksi per size (Rp) -- isi yg tersedia saja:</div>
+          <div class="grid2">${SIZES.map(s => `<div class="field"><label>${s}</label><input type="number" class="pr-harga-size" data-size="${s}" min="0" placeholder="Rp"></div>`).join('')}</div>
+        </div>
+        <div id="pr_hargaUniWrap" style="display:none;">
+          <div class="field" style="margin-top:10px;"><label>Harga Konveksi (Rp) -- berlaku utk semua SKU produk ini</label><input type="number" id="pr_hargaUni" min="0" placeholder="Rp"></div>
+        </div>
         <button type="submit" class="btn btn-primary">+ Tambah Produk</button>
         <div class="status-box" id="produkMsg"></div>
       </form>
@@ -5904,9 +5941,11 @@ function renderKontrak(container) {
         <tbody>
           ${STATE.products.map(p => {
             const nSize = SIZES.filter(s => p.hargaKonveksi && p.hargaKonveksi[s] && p.hargaKonveksi[s].length).length;
+            const adaHargaUni = p.hargaKonveksi && p.hargaKonveksi[UKURAN_TANPA_SIZE_KEY] && p.hargaKonveksi[UKURAN_TANPA_SIZE_KEY].length;
+            const sizeColLabel = p.tanpaUkuran ? `<span class="pill" style="font-size:9px;">Tanpa Ukuran</span> ${adaHargaUni ? 'sudah diisi' : 'belum diisi'}` : `${nSize}/${SIZES.length}`;
             return `<tr>
               <td><span class="produk-link" data-produk="${p.nama}" style="color:var(--accent); text-decoration:underline; cursor:pointer;">${p.nama}</span></td>
-              <td>${p.brand||'-'} ${p.kategoriJual === 'PO' ? '<span class="pill">PO</span>' : ''}</td><td>${p.prefix}</td><td class="num">${nSize}/${SIZES.length}</td>
+              <td>${p.brand||'-'} ${p.kategoriJual === 'PO' ? '<span class="pill">PO</span>' : ''}</td><td>${p.prefix}</td><td class="num">${sizeColLabel}</td>
             </tr>
             ${expandedProduk === p.nama ? `<tr><td colspan="4">${renderProdukDetailHtml(p)}</td></tr>` : ''}`;
           }).join('')}
@@ -6063,20 +6102,38 @@ function renderKontrak(container) {
     if (prefix.length !== 3) { showMsg(msg, 'err', 'Prefix harus persis 3 huruf.'); return; }
     if (STATE.products.some(p => p.prefix === prefix)) { showMsg(msg, 'err', `Prefix "${prefix}" sudah dipakai produk lain.`); return; }
     if (STATE.products.some(p => p.nama === nama)) { showMsg(msg, 'err', `Produk "${nama}" sudah terdaftar.`); return; }
+    // Produk "Tanpa Ukuran" (2026-11-20, kasus DEO/"NS") -- 1 harga tunggal disimpan di
+    // hargaKonveksi[UKURAN_TANPA_SIZE_KEY], menggantikan grid 10 size biasa, supaya lookupHargaKonveksiBySku
+    // bisa langsung pakai harga ini tanpa perlu cocok ke SIZE_CODE_MAP (lihat komentar di fungsi itu).
+    const tanpaUkuran = document.getElementById('pr_tanpaUkuran').checked;
     const hargaKonveksi = {};
-    document.querySelectorAll('.pr-harga-size').forEach(inp => {
-      const v = Number(inp.value);
-      if (v > 0) hargaKonveksi[inp.dataset.size] = [{ harga: v, tanggal: new Date().toISOString(), sumber: 'manual' }];
-    });
+    if (tanpaUkuran) {
+      const vUni = Number(document.getElementById('pr_hargaUni').value);
+      if (vUni > 0) hargaKonveksi[UKURAN_TANPA_SIZE_KEY] = [{ harga: vUni, tanggal: new Date().toISOString(), sumber: 'manual' }];
+    } else {
+      document.querySelectorAll('.pr-harga-size').forEach(inp => {
+        const v = Number(inp.value);
+        if (v > 0) hargaKonveksi[inp.dataset.size] = [{ harga: v, tanggal: new Date().toISOString(), sumber: 'manual' }];
+      });
+    }
     // Kategori Jual "PO" (Pre Order, 2026-11-06, permintaan user via produk ROVEE): brand TETAP diisi apa
     // adanya (bisa sama dgn produk investor, mis. "URBAN OUTDOOR") -- field INI yg jadi penentu apakah produk
     // ikut dialokasikan ke kontrak investor atau tidak, BUKAN brand lagi. Lihat semua pemakaian kategoriJual
     // di processWeeklyBatch/applyBatchResult/computeGrossNettProfitPerOrder dst.
     const kategoriJual = document.getElementById('pr_po').checked ? 'PO' : '';
-    STATE.products.push({ id: uid('pr'), nama, brand, prefix, hargaKonveksi, kategoriJual });
+    STATE.products.push({ id: uid('pr'), nama, brand, prefix, hargaKonveksi, kategoriJual, tanpaUkuran });
     await withSaving(msg, `Produk "${nama}" ditambahkan.`, async () => { await saveState(); });
     setTimeout(() => renderKontrak(container), 800);
   });
+
+  // ---- Handler: toggle tampilan form harga sesuai checkbox "Tanpa Ukuran" ----
+  const prTanpaUkuranChk = document.getElementById('pr_tanpaUkuran');
+  if (prTanpaUkuranChk) {
+    prTanpaUkuranChk.addEventListener('change', () => {
+      document.getElementById('pr_hargaSizeWrap').style.display = prTanpaUkuranChk.checked ? 'none' : '';
+      document.getElementById('pr_hargaUniWrap').style.display = prTanpaUkuranChk.checked ? '' : 'none';
+    });
+  }
 
   // ---- Handlers: Filter Kontrak Aktif ----
   const kaFilterProduk = document.getElementById('ka_filterProduk');
@@ -6106,6 +6163,20 @@ function renderKontrak(container) {
       p.kategoriJual = sel.value || '';
       await saveState();
       showMsg(msg, 'ok', `Kategori Jual "${p.nama}" disimpan: ${p.kategoriJual === 'PO' ? 'PO / Pre Order (tanpa investor)' : 'Normal'}.`);
+      setTimeout(() => renderKontrak(container), 900);
+    });
+  }
+  const btnSimpanTanpaUkuran = document.getElementById('btnSimpanTanpaUkuran');
+  if (btnSimpanTanpaUkuran) {
+    btnSimpanTanpaUkuran.addEventListener('click', async () => {
+      const prodId = btnSimpanTanpaUkuran.dataset.produkId;
+      const p = STATE.products.find(pr => pr.id === prodId);
+      const chk = document.getElementById('pr_tanpaUkuran_' + prodId);
+      const msg = document.getElementById('tanpaUkuranMsg');
+      if (!p || !chk) return;
+      p.tanpaUkuran = chk.checked;
+      await saveState();
+      showMsg(msg, 'ok', `Produk "${p.nama}" ditandai: ${p.tanpaUkuran ? 'Tanpa Ukuran (unisize)' : 'Pakai Ukuran biasa'}.`);
       setTimeout(() => renderKontrak(container), 900);
     });
   }
