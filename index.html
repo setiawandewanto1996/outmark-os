@@ -397,6 +397,10 @@ let STATE = {
   produksiSettings: { targetMinggu: 4, windowMinggu: 8 }, // target cadangan stok (minggu) & jendela histori kecepatan jual (minggu)
   preOrderListRaw: [],              // hasil parse mentah sheet "Pre-Order List" > tab ROVEE (tempel teks): [{no,tglOrder,username,artikel,warnaRaw,sizeRaw,qtyRaw,noPesanan,status,warehouse}]
   preOrderListFetchedAt: null,      // ISO string kapan STATE.preOrderListRaw terakhir diproses (2026-11-22, fitur "Impor Pre-Order List")
+  produksiOverrideQty: {},          // override manual qty per produk+ukuran di kartu "Order Produksi" (kunci "PRODUK||UKURAN", lihat
+                                     // hitungKartuProduksi) -- kalau ada, SELALU menang drpd angka rekomendasi sistem & tersimpan
+                                     // permanen (2026-11-22, Setiawan: "aku bisa rubah dan sesuaikan...tidak hanya berdasarkan
+                                     // hasil rekomendasi sistem saja")
 };
 let stateFileId = null;
 let accessToken = null;
@@ -907,6 +911,43 @@ function nilaiWarnaUkuranDariForm(selId, otherId) {
   const other = document.getElementById(otherId);
   if (sel && sel.value === '__custom__') return (other ? other.value : '').trim();
   return sel ? sel.value.trim() : '';
+}
+
+// Grid "qty per ukuran" utk form Tambah WIP/PO (2026-11-22, Setiawan: "langsung muncul sizenya apa saja aku
+// tinggal isi qty per masing masing size nya, agar tidak perlu satu-satu") -- dipakai HANYA saat TAMBAH data
+// baru (mode Edit tetap pakai 1 pasang Ukuran+Qty spt sebelumnya, krn 1 entri yg diedit memang cuma 1 ukuran).
+// User isi qty di baris ukuran mana saja yg relevan (boleh banyak sekaligus), submit bikin 1 entri WIP/PO
+// per baris yg qty-nya > 0, semua share produk+warna+catatan yg sama (lihat kumpulkanQtyUkuranDariGrid).
+function htmlQtyGridUkuran(prefix, produkNama) {
+  const { ukurans } = daftarWarnaUkuranProduk(produkNama);
+  const baris = ukurans.map(u => `
+    <div style="display:flex; align-items:center; gap:8px; margin-bottom:4px;">
+      <label style="min-width:70px; margin:0; font-weight:600;">${u}</label>
+      <input type="number" min="0" class="${prefix}_qty_ukuran" data-ukuran="${String(u).replace(/"/g, '&quot;')}" placeholder="0" style="width:90px;">
+    </div>`).join('');
+  return `
+    ${baris || '<div class="empty-note">Belum ada data ukuran utk produk ini -- isi manual di bawah.</div>'}
+    <div style="display:flex; align-items:center; gap:8px; margin-top:4px;">
+      <input type="text" id="${prefix}_ukuran_manual" placeholder="+ ukuran lain (ketik manual)" style="flex:1;">
+      <input type="number" min="0" id="${prefix}_qty_manual" placeholder="qty" style="width:90px;">
+    </div>`;
+}
+// Kumpulkan {ukuran, qty} dari grid di atas -- hanya baris dgn qty > 0 (baris kosong/0 diabaikan, bukan error).
+// Baris manual (kalau ukuran DAN qty>0 diisi) ikut ditambahkan sbg baris tersendiri.
+function kumpulkanQtyUkuranDariGrid(prefix) {
+  const hasil = [];
+  document.querySelectorAll('.' + prefix + '_qty_ukuran').forEach(inp => {
+    const qty = Number(inp.value);
+    if (qty > 0) hasil.push({ ukuran: inp.dataset.ukuran, qty });
+  });
+  const manualUkuran = document.getElementById(prefix + '_ukuran_manual');
+  const manualQty = document.getElementById(prefix + '_qty_manual');
+  if (manualUkuran && manualQty) {
+    const u = manualUkuran.value.trim();
+    const q = Number(manualQty.value);
+    if (u && q > 0) hasil.push({ ukuran: u, qty: q });
+  }
+  return hasil;
 }
 
 function findProduct(nama) { return STATE.products.find(p => p.nama === nama); }
@@ -1957,7 +1998,7 @@ async function loadState(fileIdOverride) {
   const DEFAULT_STATE = { capitalPartners: [], stores: [], products: [], contracts: [], colorCodeMap: {}, colorCodeAlias: {}, pembagiPctManual: {}, orderDb: [], pendingOrderSku: {}, payouts: [], vendorPayouts: [], adsMingguan: [], biayaOperasional: [], opexKategori: OPEX_KATEGORI.slice(), alokasiProfit: [], alokasiKategori: ALOKASI_KATEGORI.slice(), saldoDiluarKontrak: {}, rolloverLog: [], customers: [], biayaRetur: [], karyawan: [], slipGaji: [], slipGajiSettings: { namaPerusahaan: 'UJUSO', alamatBaris: ['Jl. Permana Timur Blok D7 No. 28', 'Kel. Citeureup, Kec. Cimahi Utara', 'Kota Cimahi'], logoDataUri: DEFAULT_LOGO_UJUSO_DATA_URI, emailKontak: 'setiawandewanto@gmail.com' }, invoiceProducts: [], invoices: [], diskon: [], kwitansi: [],
     produksiWip: [], produksiPO: [], produksiStockMapping: { groups: {}, variants: {}, rowProduk: {} }, produksiStockRaw: [],
     produksiStockFetchedAt: null, produksiSheetFileId: null, produksiSettings: { targetMinggu: 4, windowMinggu: 8 },
-    preOrderListRaw: [], preOrderListFetchedAt: null };
+    preOrderListRaw: [], preOrderListFetchedAt: null, produksiOverrideQty: {} };
   STATE = Object.assign({}, DEFAULT_STATE, loaded);
 }
 
@@ -10141,6 +10182,49 @@ function hitungRekomendasiProduksi() {
   return { poItems, restockItems, allRows: hasil, warnings };
 }
 
+// Kunci "kartu produksi" (produk+ukuran, DIGABUNG lintas warna -- kartu ini cuma utk kebutuhan potong/jahit
+// per ukuran, bukan per warna, lihat hitungKartuProduksi).
+function kunciKartuProduksi(produkNama, ukuran) {
+  return String(produkNama || '').trim().toUpperCase() + '||' + String(ukuran || '').trim().toUpperCase();
+}
+// Kartu "Order Produksi" per produk (2026-11-22, Setiawan kirim contoh sheet referensi: 1 kartu per produk,
+// tabel SIZE+QTY+baris TOTAL, spt yg biasa dia pakai) -- menggantikan tabel "Rekomendasi Restock" di sub-tab
+// Rekomendasi Produksi dgn 1 angka qty per produk+ukuran (digabung lintas warna): qty PO yg SUDAH ADA (kalau
+// ada) ATAU rekomendasi restock (kalau belum ada PO). Angka SISTEM ini bisa ditimpa manual per sel
+// (STATE.produksiOverrideQty, kunci via kunciKartuProduksi) yg SELALU menang kalau ada & tersimpan PERMANEN
+// (bukan sekadar tampilan sementara) -- Setiawan eksplisit: "aku bisa rubah dan sesuaikan stoknya tidak hanya
+// berdasarkan hasil rekomendasi sistem saja". CATATAN KONTRAK: fungsi ini cuma MEMBACA hasil
+// hitungRekomendasiProduksi() (yg sendirinya sudah terbukti tidak pernah menyentuh kontrak/payout) + STATE.
+// produksiOverrideQty (field baru, tidak dibaca fungsi kontrak manapun) -- tidak ada jalur ke computePembagiPct.
+function hitungKartuProduksi() {
+  const { allRows } = hitungRekomendasiProduksi();
+  const overrides = STATE.produksiOverrideQty || {};
+  const perProduk = {};
+  const urutanProduk = [];
+  allRows.forEach(h => {
+    if (h.statusProduksi === 'stop') return;
+    if (!perProduk[h.produkNama]) { perProduk[h.produkNama] = {}; urutanProduk.push(h.produkNama); }
+    if (!perProduk[h.produkNama][h.ukuran]) perProduk[h.produkNama][h.ukuran] = { sistem: 0, stokKritis: false };
+    perProduk[h.produkNama][h.ukuran].sistem += (h.poQty > 0 ? h.poQty : h.qtyNeeded);
+    if (h.stokKritis) perProduk[h.produkNama][h.ukuran].stokKritis = true;
+  });
+  return urutanProduk.map(produkNama => {
+    const ukuranMap = perProduk[produkNama];
+    const semuaUkuran = Object.keys(ukuranMap);
+    const ukuranStandar = SIZES.filter(s => semuaUkuran.includes(s));
+    const ukuranLain = semuaUkuran.filter(u => !SIZES.includes(u)).sort();
+    const baris = [...ukuranStandar, ...ukuranLain].map(ukuran => {
+      const kunci = kunciKartuProduksi(produkNama, ukuran);
+      const { sistem, stokKritis } = ukuranMap[ukuran];
+      const adaOverride = Object.prototype.hasOwnProperty.call(overrides, kunci);
+      const final = adaOverride ? overrides[kunci] : sistem;
+      return { ukuran, sistem, final, adaOverride, kunci, stokKritis };
+    });
+    const total = baris.reduce((s, b) => s + (Number(b.final) || 0), 0);
+    return { produkNama, baris, total };
+  });
+}
+
 function htmlProduksiStok(groups, stockRows, warnings) {
   const mapping = STATE.produksiStockMapping || { groups: {}, variants: {} };
   const totalByProduk = {};
@@ -10340,7 +10424,7 @@ function htmlProduksiWip() {
   return `
     <div class="panel">
       <h2>${editing ? 'Edit' : 'Tambah'} Data Sedang Dijahit (WIP)</h2>
-      <div class="desc">Input manual qty yg SEDANG diproduksi/dijahit per produk + warna + ukuran -- dipakai utk mengurangi kebutuhan produksi tambahan (stok + WIP dianggap "akan ada" lebih dulu). Pilihan Warna/Ukuran otomatis menyesuaikan Produk yg dipilih (dari data Stok &amp; Pemetaan) spy tercocokkan otomatis.</div>
+      <div class="desc">Input manual qty yg SEDANG diproduksi/dijahit per produk + warna + ukuran -- dipakai utk mengurangi kebutuhan produksi tambahan (stok + WIP dianggap "akan ada" lebih dulu). ${editing ? 'Pilihan Warna/Ukuran otomatis menyesuaikan Produk yg dipilih (dari data Stok &amp; Pemetaan) spy tercocokkan otomatis.' : 'Pilih produk &amp; warna dulu, lalu isi qty di ukuran mana saja yg sedang dijahit -- bisa langsung beberapa ukuran sekaligus (2026-11-22, permintaan Setiawan), tidak perlu tambah satu-satu.'}</div>
       <form id="formProduksiWip">
         <div class="grid2">
           <div class="field"><label>Produk</label>
@@ -10349,18 +10433,22 @@ function htmlProduksiWip() {
               ${produkUoutList().map(p => `<option value="${p.nama}" ${editing && editing.produkNama === p.nama ? 'selected' : ''}>${p.nama}</option>`).join('')}
             </select>
           </div>
-          <div class="field"><label>Qty</label><input type="number" id="wip_qty" min="1" required value="${editing ? editing.qty : ''}"></div>
-        </div>
-        <div class="grid2">
           <div class="field"><label>Warna</label>
             <select id="wip_warna" required>${warnaHtml}</select>
             <input type="text" id="wip_warna_other" placeholder="ketik nama warna" style="display:none; margin-top:4px;" value="${editing ? (editing.warna || '').replace(/"/g, '&quot;') : ''}">
           </div>
+        </div>
+        ${editing ? `
+        <div class="grid2">
           <div class="field"><label>Ukuran</label>
             <select id="wip_ukuran" required>${ukuranHtml}</select>
-            <input type="text" id="wip_ukuran_other" placeholder="S/M/L/dst atau label varian" style="display:none; margin-top:4px;" value="${editing ? (editing.ukuran || '').replace(/"/g, '&quot;') : ''}">
+            <input type="text" id="wip_ukuran_other" placeholder="S/M/L/dst atau label varian" style="display:none; margin-top:4px;" value="${(editing.ukuran || '').replace(/"/g, '&quot;')}">
           </div>
+          <div class="field"><label>Qty</label><input type="number" id="wip_qty" min="1" required value="${editing.qty}"></div>
         </div>
+        ` : `
+        <div class="field"><label>Qty per Ukuran</label><div id="wip_qty_grid">${htmlQtyGridUkuran('wip', '')}</div></div>
+        `}
         <div class="field"><label>Catatan (opsional)</label><input type="text" id="wip_catatan" value="${editing && editing.catatan ? editing.catatan.replace(/"/g, '&quot;') : ''}"></div>
         <button type="submit" class="btn btn-primary">${editing ? 'Simpan Perubahan' : '+ Tambah WIP'}</button>
         ${editing ? `<button type="button" class="btn btn-ghost" id="btnBatalEditWip" style="margin-top:8px;">Batal Edit</button>` : ''}
@@ -10392,30 +10480,39 @@ function attachListenersProduksiWip(container) {
   wireSelectOtherToggle('wip_ukuran', 'wip_ukuran_other');
   const selProdukWip = document.getElementById('wip_produk');
   if (selProdukWip) selProdukWip.addEventListener('change', () => {
-    // Ganti produk -> opsi Warna/Ukuran ikut menyesuaikan (2026-11-22, permintaan Setiawan), reset ke
-    // kosong (bukan bawa2 pilihan lama dari produk sebelumnya yg bisa jadi tidak nyambung).
+    // Ganti produk -> opsi Warna/Ukuran (atau grid qty-per-ukuran, mode tambah baru) ikut menyesuaikan
+    // (2026-11-22, permintaan Setiawan), reset ke kosong (bukan bawa2 pilihan lama dari produk sebelumnya
+    // yg bisa jadi tidak nyambung).
     const { warnaHtml, ukuranHtml } = htmlOptsWarnaUkuran(selProdukWip.value, '', '');
     document.getElementById('wip_warna').innerHTML = warnaHtml;
-    document.getElementById('wip_ukuran').innerHTML = ukuranHtml;
     wireSelectOtherToggle('wip_warna', 'wip_warna_other');
-    wireSelectOtherToggle('wip_ukuran', 'wip_ukuran_other');
+    const ukuranSel = document.getElementById('wip_ukuran');
+    if (ukuranSel) { ukuranSel.innerHTML = ukuranHtml; wireSelectOtherToggle('wip_ukuran', 'wip_ukuran_other'); }
+    const grid = document.getElementById('wip_qty_grid');
+    if (grid) grid.innerHTML = htmlQtyGridUkuran('wip', selProdukWip.value);
   });
   const form = document.getElementById('formProduksiWip');
   if (form) form.addEventListener('submit', async (ev) => {
     ev.preventDefault();
     const msg = document.getElementById('wipMsg');
     const produkNama = document.getElementById('wip_produk').value;
-    const qty = Number(document.getElementById('wip_qty').value);
     const warna = nilaiWarnaUkuranDariForm('wip_warna', 'wip_warna_other');
-    const ukuran = nilaiWarnaUkuranDariForm('wip_ukuran', 'wip_ukuran_other');
     const catatan = document.getElementById('wip_catatan').value.trim();
-    if (!produkNama || !warna || !ukuran || !qty || qty < 1) { showMsg(msg, 'err', 'Lengkapi semua field wajib (qty minimal 1).'); return; }
     if (editingWipId) {
+      const qty = Number(document.getElementById('wip_qty').value);
+      const ukuran = nilaiWarnaUkuranDariForm('wip_ukuran', 'wip_ukuran_other');
+      if (!produkNama || !warna || !ukuran || !qty || qty < 1) { showMsg(msg, 'err', 'Lengkapi semua field wajib (qty minimal 1).'); return; }
       const w = STATE.produksiWip.find(x => x.id === editingWipId);
       if (w) { w.produkNama = produkNama; w.qty = qty; w.warna = warna; w.ukuran = ukuran; w.catatan = catatan || null; w.updatedAt = new Date().toISOString(); }
       editingWipId = null;
     } else {
-      STATE.produksiWip.push({ id: uid('wip'), produkNama, qty, warna, ukuran, catatan: catatan || null, updatedAt: new Date().toISOString() });
+      if (!produkNama || !warna) { showMsg(msg, 'err', 'Pilih produk & warna dulu.'); return; }
+      const entriUkuran = kumpulkanQtyUkuranDariGrid('wip');
+      if (!entriUkuran.length) { showMsg(msg, 'err', 'Isi qty di minimal 1 ukuran (qty harus lebih dari 0).'); return; }
+      const now = new Date().toISOString();
+      entriUkuran.forEach(({ ukuran, qty }) => {
+        STATE.produksiWip.push({ id: uid('wip'), produkNama, qty, warna, ukuran, catatan: catatan || null, updatedAt: now });
+      });
     }
     await saveState();
     renderProduksi(container);
@@ -10471,7 +10568,7 @@ function htmlProduksiPO() {
     ${htmlPreOrderListImport()}
     <div class="panel">
       <h2>${editing ? 'Edit' : 'Tambah'} Data PO (Pre-Order)</h2>
-      <div class="desc">Input manual apa saja yg sudah di-PO ke konveksi, per produk + warna + ukuran. Akan dicocokkan otomatis ke data pesanan pelanggan yg sudah diupload (tab Rekomendasi Produksi) utk tentukan urutan prioritas (tanggal pesanan TERLAMA dikerjakan lebih dulu). Pilihan Warna/Ukuran otomatis menyesuaikan Produk yg dipilih (dari data Stok &amp; Pemetaan).</div>
+      <div class="desc">Input manual apa saja yg sudah di-PO ke konveksi, per produk + warna + ukuran. Akan dicocokkan otomatis ke data pesanan pelanggan yg sudah diupload (tab Rekomendasi Produksi) utk tentukan urutan prioritas (tanggal pesanan TERLAMA dikerjakan lebih dulu). ${editing ? 'Pilihan Warna/Ukuran otomatis menyesuaikan Produk yg dipilih (dari data Stok &amp; Pemetaan).' : 'Pilih produk &amp; warna dulu, lalu isi qty di ukuran mana saja yg di-PO -- bisa langsung beberapa ukuran sekaligus, tidak perlu tambah satu-satu.'}</div>
       <form id="formProduksiPO">
         <div class="grid2">
           <div class="field"><label>Produk</label>
@@ -10480,18 +10577,22 @@ function htmlProduksiPO() {
               ${produkUoutList().map(p => `<option value="${p.nama}" ${editing && editing.produkNama === p.nama ? 'selected' : ''}>${p.nama}</option>`).join('')}
             </select>
           </div>
-          <div class="field"><label>Qty PO</label><input type="number" id="po_qty" min="1" required value="${editing ? editing.qtyPO : ''}"></div>
-        </div>
-        <div class="grid2">
           <div class="field"><label>Warna</label>
             <select id="po_warna" required>${warnaHtml}</select>
             <input type="text" id="po_warna_other" placeholder="ketik nama warna" style="display:none; margin-top:4px;" value="${editing ? (editing.warna || '').replace(/"/g, '&quot;') : ''}">
           </div>
+        </div>
+        ${editing ? `
+        <div class="grid2">
           <div class="field"><label>Ukuran</label>
             <select id="po_ukuran" required>${ukuranHtml}</select>
-            <input type="text" id="po_ukuran_other" placeholder="S/M/L/dst atau label varian" style="display:none; margin-top:4px;" value="${editing ? (editing.ukuran || '').replace(/"/g, '&quot;') : ''}">
+            <input type="text" id="po_ukuran_other" placeholder="S/M/L/dst atau label varian" style="display:none; margin-top:4px;" value="${(editing.ukuran || '').replace(/"/g, '&quot;')}">
           </div>
+          <div class="field"><label>Qty PO</label><input type="number" id="po_qty" min="1" required value="${editing.qtyPO}"></div>
         </div>
+        ` : `
+        <div class="field"><label>Qty per Ukuran</label><div id="po_qty_grid">${htmlQtyGridUkuran('po', '')}</div></div>
+        `}
         <div class="field"><label>Catatan (opsional)</label><input type="text" id="po_catatan" value="${editing && editing.catatan ? editing.catatan.replace(/"/g, '&quot;') : ''}"></div>
         <button type="submit" class="btn btn-primary">${editing ? 'Simpan Perubahan' : '+ Tambah PO'}</button>
         ${editing ? `<button type="button" class="btn btn-ghost" id="btnBatalEditPO" style="margin-top:8px;">Batal Edit</button>` : ''}
@@ -10545,9 +10646,11 @@ function attachListenersProduksiPO(container) {
   if (selProdukPo) selProdukPo.addEventListener('change', () => {
     const { warnaHtml, ukuranHtml } = htmlOptsWarnaUkuran(selProdukPo.value, '', '');
     document.getElementById('po_warna').innerHTML = warnaHtml;
-    document.getElementById('po_ukuran').innerHTML = ukuranHtml;
     wireSelectOtherToggle('po_warna', 'po_warna_other');
-    wireSelectOtherToggle('po_ukuran', 'po_ukuran_other');
+    const ukuranSel = document.getElementById('po_ukuran');
+    if (ukuranSel) { ukuranSel.innerHTML = ukuranHtml; wireSelectOtherToggle('po_ukuran', 'po_ukuran_other'); }
+    const grid = document.getElementById('po_qty_grid');
+    if (grid) grid.innerHTML = htmlQtyGridUkuran('po', selProdukPo.value);
   });
 
   const form = document.getElementById('formProduksiPO');
@@ -10555,17 +10658,23 @@ function attachListenersProduksiPO(container) {
     ev.preventDefault();
     const msg = document.getElementById('poMsg');
     const produkNama = document.getElementById('po_produk').value;
-    const qtyPO = Number(document.getElementById('po_qty').value);
     const warna = nilaiWarnaUkuranDariForm('po_warna', 'po_warna_other');
-    const ukuran = nilaiWarnaUkuranDariForm('po_ukuran', 'po_ukuran_other');
     const catatan = document.getElementById('po_catatan').value.trim();
-    if (!produkNama || !warna || !ukuran || !qtyPO || qtyPO < 1) { showMsg(msg, 'err', 'Lengkapi semua field wajib (qty minimal 1).'); return; }
     if (editingPOId) {
+      const qtyPO = Number(document.getElementById('po_qty').value);
+      const ukuran = nilaiWarnaUkuranDariForm('po_ukuran', 'po_ukuran_other');
+      if (!produkNama || !warna || !ukuran || !qtyPO || qtyPO < 1) { showMsg(msg, 'err', 'Lengkapi semua field wajib (qty minimal 1).'); return; }
       const po = STATE.produksiPO.find(x => x.id === editingPOId);
       if (po) { po.produkNama = produkNama; po.qtyPO = qtyPO; po.warna = warna; po.ukuran = ukuran; po.catatan = catatan || null; po.updatedAt = new Date().toISOString(); }
       editingPOId = null;
     } else {
-      STATE.produksiPO.push({ id: uid('po'), produkNama, qtyPO, warna, ukuran, catatan: catatan || null, updatedAt: new Date().toISOString() });
+      if (!produkNama || !warna) { showMsg(msg, 'err', 'Pilih produk & warna dulu.'); return; }
+      const entriUkuran = kumpulkanQtyUkuranDariGrid('po');
+      if (!entriUkuran.length) { showMsg(msg, 'err', 'Isi qty di minimal 1 ukuran (qty harus lebih dari 0).'); return; }
+      const now = new Date().toISOString();
+      entriUkuran.forEach(({ ukuran, qty }) => {
+        STATE.produksiPO.push({ id: uid('po'), produkNama, qtyPO: qty, warna, ukuran, catatan: catatan || null, updatedAt: now });
+      });
     }
     await saveState();
     renderProduksi(container);
@@ -10583,7 +10692,8 @@ function attachListenersProduksiPO(container) {
 
 function htmlProduksiRekomendasi() {
   const settings = STATE.produksiSettings || { targetMinggu: 4, windowMinggu: 8 };
-  const { poItems, restockItems, warnings } = hitungRekomendasiProduksi();
+  const { poItems, warnings } = hitungRekomendasiProduksi();
+  const kartuProduksi = hitungKartuProduksi();
   return `
     <div class="panel">
       <h2>Pengaturan Proyeksi</h2>
@@ -10611,19 +10721,40 @@ function htmlProduksiRekomendasi() {
     </div>
 
     <div class="panel">
-      <h2>Rekomendasi Restock (berdasarkan kecepatan jual histori)</h2>
-      ${!restockItems.length ? '<div class="empty-note">Tidak ada rekomendasi restock saat ini (stok+WIP sudah cukup, atau belum ada data kecepatan jual).</div>' : `
-      <table class="data compact">
-        <thead><tr><th>Produk</th><th>Warna</th><th>Ukuran</th><th class="num">Stok</th><th class="num">WIP</th><th class="num">Jual/Minggu</th><th class="num">Perlu Diproduksi</th><th></th></tr></thead>
-        <tbody>
-          ${restockItems.map(h => `<tr>
-            <td>${h.produkNama}</td><td>${h.warna}</td><td>${h.ukuran}</td><td class="num">${h.stok}</td><td class="num">${h.wip}</td>
-            <td class="num">${h.velocityPerMinggu.toFixed(1)}</td><td class="num"><strong>${h.qtyNeeded}</strong></td>
-            <td>${h.stokKritis ? '<span class="pill off">Stok Kritis</span>' : ''}</td>
-          </tr>`).join('')}
-        </tbody>
-      </table>
-      ${restockItems.some(h => h.stokKritis) ? `<div class="desc" style="margin-top:8px;">"Stok Kritis" = stok+WIP produk ini sudah HABIS. Qty di atas BUKAN murni dari kecepatan jual historis -- kecepatan jual rendah/nol saat stok sudah habis bisa krn stockout/produksi tidak terkejar, BUKAN krn memang kurang diminati, jadi selalu disarankan minimal ${BASELINE_QTY_STOK_KRITIS} pcs walau histori belum ada/sedikit. Cek manual sebelum putuskan qty final.</div>` : ''}`}
+      <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+        <h2 style="margin:0;">Order Produksi -- ${fmtTanggalPanjang(new Date().toISOString())}</h2>
+        <div style="display:flex; gap:8px;">
+          <button class="btn btn-primary" id="btnSimpanKartuProduksi">Simpan Qty</button>
+          <button class="btn btn-ghost" id="btnResetKartuProduksi">Reset ke Saran Sistem</button>
+        </div>
+      </div>
+      <div class="desc">1 kartu per produk, qty digabung lintas warna (per ukuran) -- qty awal dari saran sistem (PO yg sudah ada ATAU rekomendasi restock, mana yg berlaku), tapi SEMUA angka bisa kamu ubah manual &amp; tersimpan sbg angka final (klik "Simpan Qty") -- tidak cuma ikut hasil rekomendasi sistem begitu saja. Sel yg sudah ditimpa manual ditandai warna oranye.</div>
+      <div class="status-box" id="kartuProduksiMsg"></div>
+      ${!kartuProduksi.length ? '<div class="empty-note" style="margin-top:8px;">Belum ada data stok yg terpetakan utk dihitung.</div>' : `
+      <div style="display:flex; flex-wrap:wrap; gap:14px; margin-top:12px;">
+        ${kartuProduksi.map(k => `
+        <div style="width:220px; border:1px solid var(--line); border-radius:8px; padding:10px;">
+          <div style="font-weight:700; margin-bottom:6px;">${k.produkNama}</div>
+          <table class="data compact" style="width:100%;">
+            <thead><tr><th>SIZE</th><th class="num">QTY</th></tr></thead>
+            <tbody>
+              ${k.baris.map(b => `<tr>
+                <td>${b.ukuran}${b.stokKritis ? ' <span title="Stok Kritis (stok+WIP sudah habis)" style="color:#b45309;">&#9888;</span>' : ''}</td>
+                <td class="num">
+                  <input type="number" min="0" class="inp-kartu-qty" data-kunci="${b.kunci}" data-produk="${k.produkNama.replace(/"/g, '&quot;')}" data-sistem="${b.sistem}" value="${b.final}"
+                    style="width:60px; text-align:right; ${b.adaOverride ? 'border-color:#f59e0b; background:#fff7ed;' : ''}"
+                    title="Saran sistem: ${b.sistem}${b.adaOverride ? ' (angka ini sudah ditimpa manual)' : ''}">
+                </td>
+              </tr>`).join('')}
+              <tr style="font-weight:700; border-top:2px solid var(--line);">
+                <td>TOTAL</td><td class="num" data-total-produk="${k.produkNama.replace(/"/g, '&quot;')}">${k.total}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>`).join('')}
+      </div>
+      <div class="desc" style="margin-top:10px;">&#9888; = "Stok Kritis" (stok+WIP produk+ukuran ini sudah HABIS) -- qty minimal disarankan ${BASELINE_QTY_STOK_KRITIS} pcs walau histori jual belum ada/sedikit, krn histori rendah/nol saat stok habis bisa krn stockout, bukan krn kurang diminati. Cek manual sebelum putuskan qty final.</div>
+      `}
       ${warnings.length ? `<div class="desc" style="margin-top:10px; color:#b45309;">Peringatan (${warnings.length}): ${warnings.slice(0, 10).join(' | ')}${warnings.length > 10 ? ' ...' : ''}</div>` : ''}
     </div>
   `;
@@ -10638,6 +10769,40 @@ function attachListenersProduksiRekomendasi(container) {
     STATE.produksiSettings = { targetMinggu, windowMinggu };
     await saveState();
     showMsg(msg, 'ok', 'Pengaturan disimpan.');
+    renderProduksi(container);
+  });
+
+  // Kartu Order Produksi (2026-11-22): update TOTAL per kartu live saat angka diketik (belum tersimpan),
+  // simpan semua sbg override permanen sekaligus, atau hapus semua override & kembali ke saran sistem.
+  const updateTotalKartu = (produk) => {
+    const total = Array.from(container.querySelectorAll('.inp-kartu-qty'))
+      .filter(el => el.dataset.produk === produk)
+      .reduce((s, el) => s + (Number(el.value) || 0), 0);
+    const totalEl = Array.from(container.querySelectorAll('[data-total-produk]')).find(el => el.dataset.totalProduk === produk);
+    if (totalEl) totalEl.textContent = total;
+  };
+  container.querySelectorAll('.inp-kartu-qty').forEach(inp => {
+    inp.addEventListener('input', () => updateTotalKartu(inp.dataset.produk));
+  });
+  const btnSimpanKartu = document.getElementById('btnSimpanKartuProduksi');
+  if (btnSimpanKartu) btnSimpanKartu.addEventListener('click', async () => {
+    STATE.produksiOverrideQty = STATE.produksiOverrideQty || {};
+    container.querySelectorAll('.inp-kartu-qty').forEach(inp => {
+      const kunci = inp.dataset.kunci;
+      const sistem = Number(inp.dataset.sistem);
+      const nilai = Number(inp.value) || 0;
+      if (nilai === sistem) delete STATE.produksiOverrideQty[kunci];
+      else STATE.produksiOverrideQty[kunci] = nilai;
+    });
+    const msg = document.getElementById('kartuProduksiMsg');
+    await withSaving(msg, 'Qty produksi tersimpan.', async () => { await saveState(); });
+    setTimeout(() => renderProduksi(container), 700);
+  });
+  const btnResetKartu = document.getElementById('btnResetKartuProduksi');
+  if (btnResetKartu) btnResetKartu.addEventListener('click', async () => {
+    if (!confirm('Hapus SEMUA angka override manual di kartu Order Produksi, kembali ke saran sistem?')) return;
+    STATE.produksiOverrideQty = {};
+    await saveState();
     renderProduksi(container);
   });
 }
