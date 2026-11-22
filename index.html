@@ -155,6 +155,31 @@
   .kpi-icon-badge.purple { background: var(--accent-purple); color: #fff; }
   .kpi-icon-badge.amber { background: var(--accent-amber); color: #fff; }
   .kpi-icon-badge.rose { background: var(--accent-rose); color: #fff; }
+
+  /* Kartu Order Produksi (2026-11-22 round 14, Setiawan: "bagus, tinggal beri sedikit aksen agar lebih enak
+     di lihat") -- aksen warna cycling per kartu (sama siklus accent/purple/amber/rose spt .kpi-icon-badge di
+     atas), biar tiap kartu produk gampang dibedakan sekilas pas banyak kartu berjejer. */
+  .kartu-produksi-card { background: var(--surface); backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px); border: 1px solid var(--glass-border); border-top: 4px solid var(--accent); border-radius: 16px !important; box-shadow: 0 14px 34px rgba(17,24,39,.08), 0 2px 8px rgba(17,24,39,.04); transition: transform .15s ease, box-shadow .15s ease; }
+  .kartu-produksi-card:hover { transform: translateY(-2px); box-shadow: 0 18px 40px rgba(17,24,39,.12), 0 4px 10px rgba(17,24,39,.06); }
+  .kartu-produksi-card.purple { border-top-color: var(--accent-purple); }
+  .kartu-produksi-card.amber { border-top-color: var(--accent-amber); }
+  .kartu-produksi-card.rose { border-top-color: var(--accent-rose); }
+  .kartu-produksi-card .kartu-produksi-title { color: var(--accent-ink); font-size: 14.5px; }
+  .kartu-produksi-card.purple .kartu-produksi-title { color: #4C3FBF; }
+  .kartu-produksi-card.amber .kartu-produksi-title { color: #92400E; }
+  .kartu-produksi-card.rose .kartu-produksi-title { color: #9D174D; }
+  .kartu-produksi-card table.data thead th { background: var(--accent-soft); color: var(--accent-ink); }
+  .kartu-produksi-card.purple table.data thead th { background: rgba(124,106,237,.14); color: #4C3FBF; }
+  .kartu-produksi-card.amber table.data thead th { background: rgba(245,158,11,.14); color: #92400E; }
+  .kartu-produksi-card.rose table.data thead th { background: rgba(236,72,153,.14); color: #9D174D; }
+  .kartu-produksi-card tbody tr:nth-child(even) td { background: rgba(17,24,39,.025); }
+  .kartu-produksi-card tbody tr:last-child td { background: rgba(17,24,39,.05); font-weight: 700; }
+  .btn-unduh-kartu { border-radius: 999px !important; font-weight: 600; border-color: var(--accent) !important; color: var(--accent-ink) !important; }
+  .kartu-produksi-card.purple .btn-unduh-kartu { border-color: var(--accent-purple) !important; color: #4C3FBF !important; }
+  .kartu-produksi-card.amber .btn-unduh-kartu { border-color: var(--accent-amber) !important; color: #92400E !important; }
+  .kartu-produksi-card.rose .btn-unduh-kartu { border-color: var(--accent-rose) !important; color: #9D174D !important; }
+  .btn-unduh-kartu:hover { background: rgba(0,0,0,.04) !important; }
+
   .pct-badge { font-size: 12px; font-weight: 700; border-radius: 999px; padding: 2px 8px; white-space: nowrap; }
   .pct-badge.ok { color: var(--ok); background: rgba(22,163,74,.12); }
   .pct-badge.err { color: var(--err); background: rgba(220,38,38,.10); }
@@ -4866,6 +4891,14 @@ function renderProdukDetailHtml(p) {
     <div style="background:var(--paper); border:1px solid var(--line); border-radius:12px; padding:14px; margin:4px 0;">
       <div style="font-weight:600; margin-bottom:10px;">Kelola Harga -- ${p.nama}</div>
       <div class="field" style="margin-bottom:14px; max-width:460px;">
+        <label>Nama Tampilan (opsional)</label>
+        <input type="text" id="pr_namaTampilan_${p.id}" placeholder="mis. OSWALDER WATERPROOF" value="${(p.namaTampilan || '').replace(/"/g, '&quot;')}">
+        <div class="desc" style="margin-top:4px;">Nama produk resmi ("${p.nama}") TIDAK berubah sama sekali & tetap dipakai di semua pencocokan data (kontrak, pesanan, SKU, dll) -- field ini CUMA nama yg lebih jelas/panjang utk ditampilkan di Kartu Order Produksi (mis. supaya "${p.nama}" muncul sbg "OSWALDER WATERPROOF"). Kosongkan utk pakai nama resmi apa adanya.</div>
+      </div>
+      <button class="btn btn-ghost" id="btnSimpanNamaTampilan" data-produk-id="${p.id}">Simpan Nama Tampilan</button>
+      <div class="status-box" id="namaTampilanMsg" style="margin-top:8px;"></div>
+      <hr style="border:none; border-top:1px solid var(--line); margin:16px 0;">
+      <div class="field" style="margin-bottom:14px; max-width:460px;">
         <label>Kategori Jual</label>
         <select id="pr_kategoriJual_${p.id}">
           <option value="" ${p.kategoriJual !== 'PO' ? 'selected' : ''}>Normal (ikut Investor kalau Brand = URBAN OUTDOOR)</option>
@@ -6808,6 +6841,20 @@ function renderKontrak(container) {
   });
   const btnTutupDetail = document.getElementById('btnTutupDetailProduk');
   if (btnTutupDetail) btnTutupDetail.addEventListener('click', () => { expandedProduk = null; renderKontrak(container); });
+  const btnSimpanNamaTampilan = document.getElementById('btnSimpanNamaTampilan');
+  if (btnSimpanNamaTampilan) {
+    btnSimpanNamaTampilan.addEventListener('click', async () => {
+      const prodId = btnSimpanNamaTampilan.dataset.produkId;
+      const p = STATE.products.find(pr => pr.id === prodId);
+      const inp = document.getElementById('pr_namaTampilan_' + prodId);
+      const msg = document.getElementById('namaTampilanMsg');
+      if (!p || !inp) return;
+      const v = inp.value.trim();
+      p.namaTampilan = v || null;
+      await withSaving(msg, v ? `Nama Tampilan "${p.nama}" disimpan: "${v}".` : `Nama Tampilan "${p.nama}" dikosongkan, kembali pakai nama resmi.`, async () => { await saveState(); });
+      setTimeout(() => renderKontrak(container), 900);
+    });
+  }
   const btnSimpanKategoriJual = document.getElementById('btnSimpanKategoriJual');
   if (btnSimpanKategoriJual) {
     btnSimpanKategoriJual.addEventListener('click', async () => {
@@ -10204,40 +10251,65 @@ function hitungRekomendasiProduksi() {
   const velocityBySku = hitungKecepatanJualPerSku(settings.windowMinggu || 8);
   const targetMinggu = settings.targetMinggu || 4;
 
-  const wipBySku = {}, wipByKunci = {};
+  const wipBySku = {}, wipByKunci = {}, wipMeta = {};
   (STATE.produksiWip || []).forEach(w => {
     const sku = skuDariEntriManual(w);
     const kunci = kunciEntriProduksi(w.produkNama, w.warna, w.ukuran);
     if (sku) wipBySku[sku] = (wipBySku[sku] || 0) + (w.qty || 0);
     wipByKunci[kunci] = (wipByKunci[kunci] || 0) + (w.qty || 0);
+    if (!wipMeta[kunci]) wipMeta[kunci] = { produkNama: w.produkNama, warna: w.warna, ukuran: w.ukuran };
   });
-  const poBySku = {}, poByKunci = {};
+  const poBySku = {}, poByKunci = {}, poMeta = {};
   (STATE.produksiPO || []).forEach(po => {
     const sku = skuDariEntriManual(po);
     const kunci = kunciEntriProduksi(po.produkNama, po.warna, po.ukuran);
     if (sku) poBySku[sku] = (poBySku[sku] || 0) + (po.qtyPO || 0);
     poByKunci[kunci] = (poByKunci[kunci] || 0) + (po.qtyPO || 0);
+    if (!poMeta[kunci]) poMeta[kunci] = { produkNama: po.produkNama, warna: po.warna, ukuran: po.ukuran };
   });
 
-  const hasil = stockRows.map(row => {
-    const p = findProduct(row.produkNama);
-    const sku = row.sku;
-    const kunci = kunciEntriProduksi(row.produkNama, row.warna, row.ukuranLabel);
+  // Hitung 1 baris rekomendasi -- diekstrak jadi fungsi (2026-11-22 round 14) supaya bisa dipakai utk baris
+  // yg PUNYA data stok fisik (dari stockRows) MAUPUN baris SINTETIS utk kombinasi produk+warna+ukuran yg
+  // CUMA py PO/WIP tapi TIDAK PERNAH ada sbg baris stok sama sekali (lihat komentar "kunciDariStockRows" di
+  // bawah) -- logic SAMA PERSIS, tidak digandakan/didrift.
+  const hitungBarisRekomendasi = (produkNama, warna, ukuran, sku, stok) => {
+    const p = findProduct(produkNama);
+    const kunci = kunciEntriProduksi(produkNama, warna, ukuran);
     const wip = (sku && wipBySku[sku]) || wipByKunci[kunci] || 0;
     const poQty = (sku && poBySku[sku]) || poByKunci[kunci] || 0;
     const velocity = (sku && velocityBySku[sku]) || 0;
     const target = velocity * targetMinggu;
-    const qtyNeededMentah = Math.max(0, Math.ceil(target - (row.qtyStok + wip)));
+    const qtyNeededMentah = Math.max(0, Math.ceil(target - (stok + wip)));
     // "Stok Kritis" (2026-11-22, permintaan user): stok+WIP sudah 0 (habis) -- di titik ini kecepatan jual
     // HISTORIS BISA MENYESATKAN (rendah/nol bukan krn kurang diminati, tapi krn stockout/produksi tidak
     // terkejar, jadi pembeli tidak sempat terekam beli sama sekali). Jadi: JANGAN PERNAH simpulkan "tidak perlu
     // produksi" murni dari histori kosong/rendah saat stok sudah habis -- selalu sarankan minimal
     // BASELINE_QTY_STOK_KRITIS pcs & tandai utk dicek manual, bukan didiamkan/dianggap qty 0.
-    const stokKritis = (row.qtyStok + wip) <= 0;
+    const stokKritis = (stok + wip) <= 0;
     const qtyNeeded = stokKritis ? Math.max(qtyNeededMentah, BASELINE_QTY_STOK_KRITIS) : qtyNeededMentah;
     const statusProduksi = (p && p.statusProduksi === 'stop') ? 'stop' : 'aktif';
     const tanggalPesanTerlama = poQty > 0 ? cariTanggalPesanTerlamaUntukSku(sku) : null;
-    return { produkNama: row.produkNama, warna: row.warna, ukuran: row.ukuranLabel, sku, stok: row.qtyStok, wip, poQty, velocityPerMinggu: velocity, target, qtyNeeded, stokKritis, statusProduksi, tanggalPesanTerlama };
+    return { produkNama, warna, ukuran, sku, stok, wip, poQty, velocityPerMinggu: velocity, target, qtyNeeded, stokKritis, statusProduksi, tanggalPesanTerlama };
+  };
+
+  const hasil = stockRows.map(row => hitungBarisRekomendasi(row.produkNama, row.warna, row.ukuranLabel, row.sku, row.qtyStok));
+
+  // BUG NYATA (2026-11-22 round 14, Setiawan: "untuk yang rovee saja di produksi hanya warna pure grey
+  // padahal kalau berdasarkan list PO masih banyak yang belum tercapai") -- SEBELUM baris di bawah ini ada,
+  // `hasil` di atas CUMA dibangun dari stockRows (baris stok FISIK yg sudah dipetakan) -- jadi PO/WIP utk
+  // kombinasi produk+warna+ukuran yg TIDAK PERNAH ada sbg baris stok sama sekali (mis. warna baru yg sudah
+  // di-PO ke konveksi tapi belum/tidak pernah dicatat di sheet stok gudang -- lazim utk produk kategori PO
+  // spt ROVEE yg warnanya terus bertambah sesuai demand) SAMA SEKALI TIDAK PERNAH MUNCUL di Prioritas PO
+  // ATAUPUN Kartu Order Produksi, walau STATE.produksiPO sudah py datanya & sudah tersinkron dari Pre-Order
+  // List. Fix: tambahkan baris SINTETIS (stok dianggap 0, krn memang blm pernah tercatat ada stoknya) utk
+  // setiap kunci PO/WIP yg belum kecover oleh baris stok manapun di atas.
+  const kunciDariStockRows = new Set(hasil.map(h => kunciEntriProduksi(h.produkNama, h.warna, h.ukuran)));
+  const metaPoWipGabungan = Object.assign({}, wipMeta, poMeta);
+  Object.keys(metaPoWipGabungan).forEach(kunci => {
+    if (kunciDariStockRows.has(kunci)) return;
+    const meta = metaPoWipGabungan[kunci];
+    const sku = skuDariEntriManual(meta);
+    hasil.push(hitungBarisRekomendasi(meta.produkNama, meta.warna, meta.ukuran, sku, 0));
   });
 
   // Produk berstatus "stop" TIDAK PERNAH masuk rekomendasi apapun (PO maupun restock biasa) -- stoknya tetap
@@ -10467,6 +10539,12 @@ function htmlProduksiStok(groups, stockRows, warnings) {
             const nilaiTxt = fmtRp(nilai) + (nilaiKurang[nama] ? ' <span title="Sebagian baris blm ada harga konveksinya -- nilai ini blm lengkap" style="color:#b45309;">&#9888;</span>' : '');
             return `<tr><td>${nama}</td><td class="num">${total}</td><td class="num">${nilaiTxt}</td><td>${stop ? '<span class="pill off">Stop Produksi</span>' : '<span class="pill ok">Aktif</span>'}</td></tr>`;
           }).join('')}
+          <tr style="font-weight:700; border-top:2px solid var(--line);">
+            <td>TOTAL</td>
+            <td class="num">${Object.values(totalByProduk).reduce((s, v) => s + v, 0)}</td>
+            <td class="num">${fmtRp(Object.values(nilaiByProduk).reduce((s, v) => s + v, 0))}${Object.keys(nilaiKurang).length ? ' <span title="Sebagian produk py baris blm ada harga konveksinya -- total ini blm lengkap" style="color:#b45309;">&#9888;</span>' : ''}</td>
+            <td></td>
+          </tr>
         </tbody>
       </table>`}
       ${warnings.length ? `<div class="desc" style="margin-top:10px; color:#b45309;">Peringatan (${warnings.length}): ${warnings.slice(0, 10).join(' | ')}${warnings.length > 10 ? ' ...' : ''}</div>` : ''}
@@ -10884,6 +10962,11 @@ function htmlProduksiRekomendasi() {
   const settings = STATE.produksiSettings || { targetMinggu: 4, windowMinggu: 8 };
   const { poItems, warnings } = hitungRekomendasiProduksi();
   const kartuProduksi = hitungKartuProduksi();
+  // Tanggal kartu (2026-11-22 round 14, Setiawan: "setelah di unduh seharusnya ada tulisan tanggalnya juga
+  // agar tidak bingung") -- dihitung SEKALI di sini & diselipkan ke DALAM tiap kartu (bukan cuma di judul
+  // panel di luar), krn "Unduh PNG" cuma screenshot div kartu itu sendiri -- judul panel di luar tidak ikut
+  // kefoto, jadi tanpa ini gambar yg diunduh/dishare lewat WA tidak ada keterangan tanggalnya sama sekali.
+  const tanggalKartu = fmtTanggalPanjang(new Date().toISOString());
   return `
     <div class="panel">
       <h2>Pengaturan Proyeksi</h2>
@@ -10912,7 +10995,7 @@ function htmlProduksiRekomendasi() {
 
     <div class="panel">
       <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
-        <h2 style="margin:0;">Order Produksi -- ${fmtTanggalPanjang(new Date().toISOString())}</h2>
+        <h2 style="margin:0;">Order Produksi -- ${tanggalKartu}</h2>
         <div style="display:flex; gap:8px;">
           <button class="btn btn-primary" id="btnSimpanKartuProduksi">Simpan Qty</button>
           <button class="btn btn-ghost" id="btnResetKartuProduksi">Reset ke Saran Sistem</button>
@@ -10924,11 +11007,20 @@ function htmlProduksiRekomendasi() {
       <div style="display:flex; flex-wrap:wrap; gap:14px; margin-top:12px;">
         ${kartuProduksi.map((k, kIdx) => {
           const piv = pivotKartuProduksi(k);
+          // Nama Tampilan (2026-11-22 round 14, Setiawan: "sebaiknya namanya jelas, jika oswalder waterproof
+          // atau oswalder windbreaker, bomber warfield dll") -- CUMA utk label di kartu & nama file unduhan;
+          // k.produkNama (nama RESMI, kunci pencocokan kontrak/SKU/dll) TIDAK disentuh sama sekali di manapun.
+          const prodRef = findProduct(k.produkNama);
+          const namaTampil = (prodRef && prodRef.namaTampilan) || k.produkNama;
+          const aksenKartu = ['', 'purple', 'amber', 'rose'][kIdx % 4];
           return `
-        <div class="kartu-produksi-card" id="kartuProduksiCard_${kIdx}" style="min-width:260px; border:1px solid var(--line); border-radius:8px; padding:10px; background:#fff;">
-          <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:6px;">
-            <div style="font-weight:700;">${k.produkNama}</div>
-            <button type="button" class="btn btn-ghost btn-unduh-kartu" data-kartu-idx="${kIdx}" data-produk="${k.produkNama.replace(/"/g, '&quot;')}" style="padding:3px 8px; font-size:11px;">Unduh PNG</button>
+        <div class="kartu-produksi-card ${aksenKartu}" id="kartuProduksiCard_${kIdx}" style="min-width:260px; padding:10px;">
+          <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:8px; margin-bottom:6px;">
+            <div>
+              <div class="kartu-produksi-title" style="font-weight:700;">${namaTampil}</div>
+              <div class="kartu-produksi-tanggal" style="font-size:11px; color:var(--ink-soft); margin-top:2px;">${tanggalKartu}</div>
+            </div>
+            <button type="button" class="btn btn-ghost btn-unduh-kartu" data-kartu-idx="${kIdx}" data-produk="${namaTampil.replace(/"/g, '&quot;')}" style="padding:3px 8px; font-size:11px; flex:none;">Unduh PNG</button>
           </div>
           <div style="overflow-x:auto;">
           <table class="data compact" style="width:auto;">
