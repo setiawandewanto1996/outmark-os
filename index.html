@@ -724,6 +724,70 @@ function gantiNamaUtamaKodeWarna(kode, namaBaruMentah) {
   STATE.colorCodeMap[kode] = namaBaru;
   return { ok: true, pesan: `Nama utama kode ${kode}: "${namaLama}" -> "${namaBaru}" (nama lama otomatis jadi alias).`, namaLama };
 }
+// Gabungkan 2 KODE WARNA jadi 1 (2026-11-22 round 20, Setiawan: "burgundy maroon dan maroon itu sama... buat
+// agar lebih rapi") -- beda dari alias biasa (yg cuma nambah nama LAIN utk 1 kode yg SUDAH ada): ini utk kasus
+// user sadar 2 KODE TERDAFTAR TERPISAH (mis. "MRN"->"MAROON" & "MAR"->"BURGUNDY MAROON") ternyata warna yg
+// SAMA PERSIS di lapangan. `gantiNamaUtamaKodeWarna` saja TIDAK CUKUP di sini -- ganti nama utama kodeSumber
+// jadi "BURGUNDY MAROON" bakal DITOLAK (bentrok nama dgn kodeTujuan, by design, lihat fungsi itu) krn maksudnya
+// MEMANG mau 2 kode jadi SATU, bukan cuma ganti nama tampil kodeSumber sendirian.
+// PENTING: kodeSumber TIDAK dihapus dari STATE.colorCodeMap (sengaja) -- `deriveWarnaFromSku` (Dashboard,
+// breakdown "Warna Terlaris") decode kode 3-huruf dari SKU HISTORIS yg mungkin SUDAH terlanjur ke-generate pakai
+// kodeSumber ini; kalau entrinya dihapus total, SKU lama jadi tidak bisa di-decode sama sekali (warna jd blank).
+// Sebagai gantinya nama utama kodeSumber diganti jd placeholder unik "<nama lama> (digabung ke <kodeTujuan>)"
+// -- SKU lama msh bisa didecode (nama placeholder ini, bukan blank), TAPI nama lama + semua alias kodeSumber
+// dipindah jadi alias BARU di kodeTujuan, jadi SEMUA data BARU/looku yg nulis teks lama (mis. "MAROON") otomatis
+// ke-resolve ke kodeTujuan (cariKodeWarnaByNama cek match PERSIS ke colorCodeMap dulu -- makanya nama lama HARUS
+// diganti, bukan dibiarkan, supaya tidak menang duluan drpd alias barunya sendiri di kodeTujuan).
+function gabungkanKodeWarna(kodeSumber, kodeTujuan) {
+  if (!kodeSumber || !STATE.colorCodeMap[kodeSumber]) return { ok: false, pesan: 'Kode sumber tidak ditemukan.' };
+  if (!kodeTujuan || !STATE.colorCodeMap[kodeTujuan]) return { ok: false, pesan: 'Kode tujuan tidak ditemukan.' };
+  if (kodeSumber === kodeTujuan) return { ok: false, pesan: 'Kode sumber & tujuan tidak boleh sama.' };
+  const namaLamaSumber = STATE.colorCodeMap[kodeSumber];
+  const namaTujuan = STATE.colorCodeMap[kodeTujuan];
+  const placeholder = `${namaLamaSumber} (digabung ke ${kodeTujuan})`;
+  const konflikPlaceholder = Object.entries(STATE.colorCodeMap).find(([k, n]) => k !== kodeSumber && normalisasiNamaUtkBanding(n) === normalisasiNamaUtkBanding(placeholder));
+  if (konflikPlaceholder) return { ok: false, pesan: `Gagal: nama placeholder "${placeholder}" kebetulan bentrok dgn kode ${konflikPlaceholder[0]} -- coba ganti nama kode ${kodeSumber} manual dulu.` };
+
+  STATE.colorCodeAlias = STATE.colorCodeAlias || {};
+  const aliasLamaSumber = STATE.colorCodeAlias[kodeSumber] || [];
+  const calonAliasBaru = [namaLamaSumber, ...aliasLamaSumber];
+  const aliasTujuanSkrg = STATE.colorCodeAlias[kodeTujuan] || [];
+  const aliasTujuanBaru = aliasTujuanSkrg.slice();
+  calonAliasBaru.forEach(nm => {
+    if (normalisasiNamaUtkBanding(nm) === normalisasiNamaUtkBanding(namaTujuan)) return; // sama dgn nama utama tujuan sendiri, tdk perlu alias
+    if (aliasTujuanBaru.some(a => normalisasiNamaUtkBanding(a) === normalisasiNamaUtkBanding(nm))) return; // sudah ada, jgn dobel
+    aliasTujuanBaru.push(nm);
+  });
+  STATE.colorCodeAlias[kodeTujuan] = aliasTujuanBaru;
+  STATE.colorCodeAlias[kodeSumber] = []; // alias lama sudah pindah semua ke tujuan -- kosongkan di sumber spy tidak ambigu/dobel referensi
+  STATE.colorCodeMap[kodeSumber] = placeholder;
+  return { ok: true, pesan: `Kode ${kodeSumber} ("${namaLamaSumber}") digabung ke ${kodeTujuan} ("${namaTujuan}") -- nama lama + semua alias ${kodeSumber} sekarang jd alias ${kodeTujuan}. Kode ${kodeSumber} TETAP ADA (bukan dihapus) supaya SKU lama yg sudah terlanjur pakai kode ini tetap bisa dikenali, cuma nama tampilnya diganti jd "${placeholder}".`, namaLamaSumber, placeholder };
+}
+// Tambah 1 alias nama ke 1 kode warna (2026-11-22 round 19, dipisah jd fungsi murni round 20 spy testable tanpa
+// simulasi DOM -- sebelumnya logic ini nempel langsung di handler klik #btnAddColorAlias). Round 20 nambah 1
+// validasi BARU (sebelumnya TIDAK ADA, beda dari gantiNamaUtamaKodeWarna yg SUDAH py validasi serupa sejak
+// awal): tolak kalau nama alias yg mau ditambahkan SUDAH terdaftar (sbg nama utama ATAU alias) di kode warna
+// LAIN -- kasus nyata Setiawan: abis ganti nama utama MRN "MAROON"->"MARUN" (nama lama "MAROON" otomatis jd
+// alias MRN), lalu mau tambah alias "MAROON" ke kode MAR (krn "maroon dan burgundy maroon sama") -- TANPA
+// validasi ini, "MAROON" bisa kedaftar dobel di 2 kode (MRN & MAR) sekaligus & cariKodeWarnaByNama jadi AMBIGU
+// (Object.entries(...).find(...) cuma ambil yg ketemu PERTAMA, urutan objeknya tidak dijamin, bisa diam2 salah
+// pilih kode). User HARUS hapus dulu alias lama di kode asal (tombol x) sebelum bisa pindahkan ke kode baru --
+// pesan error di sini sebut jelas kode mana yg bentrok, supaya tidak bingung kenapa ditolak.
+function tambahAliasKodeWarna(kode, aliasMentah) {
+  const alias = String(aliasMentah || '').trim().toUpperCase();
+  if (!kode || !STATE.colorCodeMap[kode]) return { ok: false, pesan: 'Pilih kode warna yg valid dulu.' };
+  if (!alias) return { ok: false, pesan: 'Nama alias wajib diisi.' };
+  if (normalisasiNamaUtkBanding(alias) === normalisasiNamaUtkBanding(STATE.colorCodeMap[kode])) return { ok: false, pesan: 'Nama alias sama dgn nama utama, tidak perlu ditambahkan.' };
+  STATE.colorCodeAlias = STATE.colorCodeAlias || {};
+  STATE.colorCodeAlias[kode] = STATE.colorCodeAlias[kode] || [];
+  if (STATE.colorCodeAlias[kode].some(a => normalisasiNamaUtkBanding(a) === normalisasiNamaUtkBanding(alias))) return { ok: false, pesan: 'Alias ini sudah ada utk kode tsb.' };
+  const konflikUtama = Object.entries(STATE.colorCodeMap).find(([k, n]) => k !== kode && normalisasiNamaUtkBanding(n) === normalisasiNamaUtkBanding(alias));
+  const konflikAlias = Object.entries(STATE.colorCodeAlias).find(([k, arr]) => k !== kode && (arr || []).some(a => normalisasiNamaUtkBanding(a) === normalisasiNamaUtkBanding(alias)));
+  const bentrok = konflikUtama || konflikAlias;
+  if (bentrok) return { ok: false, pesan: `Nama "${alias}" sudah dipakai sbg nama/alias kode warna lain (${bentrok[0]}) -- hapus dulu alias itu dari kode ${bentrok[0]} (tombol x) kalau memang mau dipindahkan ke kode ${kode}.` };
+  STATE.colorCodeAlias[kode].push(alias);
+  return { ok: true, pesan: `Alias "${alias}" utk kode ${kode} tersimpan.` };
+}
 // "Kualifier" nama produk (2026-11-22 round 20, Setiawan: "disini ga perlu ada tulisan tanpa hijab lagi di
 // warna, kan di judul sudah jelas rovee tanpa hijab") -- kata ke-2 dst nama produk (mis. "ROVEE TANPA HIJAB"
 // -> "TANPA HIJAB") dianggap kualifier pembeda dari produk "induk"-nya (kata pertama). Kalau teks warna
@@ -7018,6 +7082,20 @@ function renderKontrak(container) {
         <button class="btn btn-ghost" id="btnAddColorAlias">+ Tambah Alias Warna</button>
         <div class="status-box" id="colorAliasMsg"></div>
       </div>
+
+      <div style="margin-top:14px; padding-top:12px; border-top:1px solid var(--line);">
+        <div class="desc">Gabungkan 2 Kode (2026-11-22): kalau ternyata ada 2 KODE TERPISAH yg warnanya SAMA PERSIS (mis. kode "MAROON" & kode "BURGUNDY MAROON" ternyata dianggap warna yg sama) -- beda dari Alias di atas (yg utk 1 kode py >1 nama), ini gabungkan SELURUH kode Sumber (nama utama + semua aliasnya) jadi alias baru di kode Tujuan. Kode Sumber TIDAK dihapus (tetap ada, cuma nama tampilnya ditandai "(digabung ke ...)"), supaya SKU lama yg sudah terlanjur pakai kode itu tetap bisa dikenali.</div>
+        <div class="grid2" style="margin-top:8px;">
+          <div class="field"><label>Kode Sumber (akan digabung)</label>
+            <select id="cw_gabung_sumber"><option value="">Pilih kode warna</option>${Object.keys(STATE.colorCodeMap).sort().map(k => `<option value="${k}">${k} (${STATE.colorCodeMap[k]})</option>`).join('')}</select>
+          </div>
+          <div class="field"><label>Kode Tujuan (yg dipertahankan)</label>
+            <select id="cw_gabung_tujuan"><option value="">Pilih kode warna</option>${Object.keys(STATE.colorCodeMap).sort().map(k => `<option value="${k}">${k} (${STATE.colorCodeMap[k]})</option>`).join('')}</select>
+          </div>
+        </div>
+        <button class="btn btn-ghost" id="btnGabungkanKodeWarna">Gabungkan Kode</button>
+        <div class="status-box" id="colorGabungMsg"></div>
+      </div>
     </div>
   `;
 
@@ -7280,18 +7358,23 @@ function renderKontrak(container) {
   // Alias Kode Warna (2026-11-22): 1 kode bisa dikenali lewat lebih dari 1 nama (lihat cariKodeWarnaByNama).
   document.getElementById('btnAddColorAlias').addEventListener('click', async () => {
     const kode = document.getElementById('cw_alias_kode').value;
-    const alias = document.getElementById('cw_alias_nama').value.trim().toUpperCase();
+    const aliasInput = document.getElementById('cw_alias_nama');
     const msg = document.getElementById('colorAliasMsg');
-    if (!kode || !STATE.colorCodeMap[kode]) { showMsg(msg, 'err', 'Pilih kode warna yg valid dulu.'); return; }
-    if (!alias) { showMsg(msg, 'err', 'Nama alias wajib diisi.'); return; }
-    if (normalisasiNamaUtkBanding(alias) === normalisasiNamaUtkBanding(STATE.colorCodeMap[kode])) { showMsg(msg, 'err', 'Nama alias sama dgn nama utama, tidak perlu ditambahkan.'); return; }
-    STATE.colorCodeAlias = STATE.colorCodeAlias || {};
-    STATE.colorCodeAlias[kode] = STATE.colorCodeAlias[kode] || [];
-    if (STATE.colorCodeAlias[kode].some(a => normalisasiNamaUtkBanding(a) === normalisasiNamaUtkBanding(alias))) { showMsg(msg, 'err', 'Alias ini sudah ada utk kode tsb.'); return; }
-    STATE.colorCodeAlias[kode].push(alias);
-    await withSaving(msg, `Alias "${alias}" utk kode ${kode} tersimpan.`, async () => { await saveState(); });
-    document.getElementById('cw_alias_nama').value = '';
+    const hasil = tambahAliasKodeWarna(kode, aliasInput.value);
+    if (!hasil.ok) { showMsg(msg, 'err', hasil.pesan); return; }
+    await withSaving(msg, hasil.pesan, async () => { await saveState(); });
+    aliasInput.value = '';
     renderColorCodeList(document.getElementById('colorCodeList'));
+  });
+  // Gabungkan 2 Kode Warna (2026-11-22 round 20) -- lihat gabungkanKodeWarna().
+  document.getElementById('btnGabungkanKodeWarna').addEventListener('click', async () => {
+    const kodeSumber = document.getElementById('cw_gabung_sumber').value;
+    const kodeTujuan = document.getElementById('cw_gabung_tujuan').value;
+    const msg = document.getElementById('colorGabungMsg');
+    const hasil = gabungkanKodeWarna(kodeSumber, kodeTujuan);
+    if (!hasil.ok) { showMsg(msg, 'err', hasil.pesan); return; }
+    await withSaving(msg, hasil.pesan, async () => { await saveState(); });
+    setTimeout(() => renderColorCodeList(document.getElementById('colorCodeList')), 700);
   });
   document.getElementById('colorCodeList').addEventListener('click', async (e) => {
     const delBtn = e.target.closest('.del-color-alias');
