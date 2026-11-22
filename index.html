@@ -678,11 +678,11 @@ function ratakanStokProduksi(groups, mapping) {
       if (!p) { warningsSet.add(`Baris warna "${item.rowLabel}" (grup "${g.groupLabel}") dipetakan ke produk "${produkNamaResolved}" yg sudah tidak terdaftar.`); return; }
       const warnaUntukKode = (override && override.warna) ? override.warna : item.rowLabel;
       const kodeWarna = cariKodeWarnaByNama(warnaUntukKode);
-      if (!kodeWarna) warningsSet.add(`Warna "${warnaUntukKode}" (produk ${p.nama}) belum ada di Kode Warna (Data Master).`);
+      if (!kodeWarna) warningsSet.add(`Warna "${warnaUntukKode}" (produk ${p.nama}) belum ada di Kode Warna (Data Master) -> buka tab Produk &amp; Kontrak > Kode Warna, tambahkan kode baru utk warna ini, ATAU kalau sebenarnya sama persis dgn warna yg sudah ada (cuma beda penyebutan), tambahkan "${warnaUntukKode}" sbg alias ke kode itu lewat "+ Tambah Alias Warna".`);
       g.variantLabels.forEach((vl, idx) => {
         const qty = item.qty[idx] || 0;
         const vm = variantMap[vl];
-        if (!vm) { warningsSet.add(`Grup "${g.groupLabel}" varian "${vl}" belum dipetakan ke ukuran/kode SKU.`); return; }
+        if (!vm) { warningsSet.add(`Grup "${g.groupLabel}" varian "${vl}" belum dipetakan ke ukuran/kode SKU -> buka Rencana Produksi > Stok &amp; Pemetaan, cari grup ini, isi "Pemetaan Varian/Ukuran" lalu klik Simpan.`); return; }
         const kodeUkuran = vm.ukuran ? cariKodeUkuranBySize(vm.ukuran) : (vm.kodeCustom || null);
         const sku = bangunSkuProduksi(p.prefix, kodeWarna, kodeUkuran);
         rows.push({ produkNama: p.nama, warna: warnaUntukKode, ukuranLabel: vm.ukuran || vl, sku, qtyStok: qty });
@@ -690,6 +690,48 @@ function ratakanStokProduksi(groups, mapping) {
     });
   });
   return { rows, warnings: Array.from(warningsSet) };
+}
+
+// Hitung total qty & "Nilai Stok" (qty x harga konveksi/modal) utk 1 grup sheet SAJA (2026-11-22, permintaan
+// Setiawan: "aku juga bisa lihat kondisi stok saat ini, plus nilai stoknya" di panel Pemetaan Grup -- "nilai
+// stok" = "stok dikali modal konveksi"). Logika resolusi produk/warna/ukuran per baris SENGAJA disamakan dgn
+// ratakanStokProduksi (row override, variant map, kode warna) tapi dihitung terpisah per grup (bukan gabungan
+// semua grup sheet) spy bisa ditampilkan inline di tiap kartu grup. Qty tetap dihitung walau grup belum
+// dipetakan (murni dari data mentah sheet); Nilai cuma bisa dihitung kalau grup sudah dipetakan ke produk DAN
+// harga konveksinya sudah pernah diisi -- kalau tidak, nilaiTotal null & adaHargaKurang true (ditandai di UI).
+// READ-ONLY, tidak menyentuh/menghitung ulang data kontrak/payout sama sekali.
+function hitungStokDanNilaiGrup(g, mapping) {
+  const gm = (mapping.groups || {})[g.groupLabel];
+  let qtyTotal = 0;
+  if (!gm || gm.skip || !gm.produkNama) {
+    g.items.forEach(item => { (item.qty || []).forEach(q => { qtyTotal += Number(q) || 0; }); });
+    return { qtyTotal, nilaiTotal: null, adaHargaKurang: true };
+  }
+  const variantMap = ((mapping.variants || {})[g.groupLabel]) || {};
+  const rowOverrideMap = ((mapping.rowProduk || {})[g.groupLabel]) || {};
+  let nilaiTotal = 0;
+  let adaHargaKurang = false;
+  g.items.forEach(item => {
+    const override = rowOverrideMap[item.rowLabel];
+    const produkNamaResolved = (override && override.produkNama) || gm.produkNama;
+    const p = STATE.products.find(pr => pr.nama === produkNamaResolved);
+    const warnaUntukKode = (override && override.warna) ? override.warna : item.rowLabel;
+    const kodeWarna = p ? cariKodeWarnaByNama(warnaUntukKode) : null;
+    g.variantLabels.forEach((vl, idx) => {
+      const qty = Number(item.qty[idx]) || 0;
+      qtyTotal += qty;
+      if (!qty) return;
+      if (!p) { adaHargaKurang = true; return; }
+      const vm = variantMap[vl];
+      if (!vm) { adaHargaKurang = true; return; }
+      const kodeUkuran = vm.ukuran ? cariKodeUkuranBySize(vm.ukuran) : (vm.kodeCustom || null);
+      const sku = kodeWarna ? bangunSkuProduksi(p.prefix, kodeWarna, kodeUkuran) : null;
+      const harga = sku ? lookupHargaKonveksiBySku(sku) : null;
+      if (harga == null) { adaHargaKurang = true; return; }
+      nilaiTotal += qty * harga;
+    });
+  });
+  return { qtyTotal, nilaiTotal, adaHargaKurang };
 }
 
 /* =========================================================================
@@ -10057,6 +10099,9 @@ let produksiSubTab = 'stok'; // 'stok' | 'wip' | 'po' | 'rekomendasi'
 let produksiPasteText = '';
 let editingWipId = null;
 let editingPOId = null;
+// Grup sheet yg panel detail pemetaannya sedang dibuka manual (2026-11-22, permintaan Setiawan: grup yg
+// sudah dipetakan di-collapse otomatis biar tidak perlu scroll jauh -- UI saja, TIDAK disimpan/persisten).
+let produksiStokGroupExpanded = {};
 // Baseline qty saran minimal saat "Stok Kritis" (stok+WIP sudah habis) TAPI kecepatan jual historis blm bisa
 // dipercaya (2026-11-22, Setiawan: "bukan berarti jika tidak ada historis tidak di produksi, tapi bisa juga
 // krn stok habis dan kemampuan produksi tidak terkejar" ... "kalau tidak ada historis tidak apa apa jika
@@ -10191,40 +10236,48 @@ function hitungRekomendasiProduksi() {
   return { poItems, restockItems, allRows: hasil, warnings };
 }
 
-// Kunci "kartu produksi" (produk+ukuran, DIGABUNG lintas warna -- kartu ini cuma utk kebutuhan potong/jahit
-// per ukuran, bukan per warna, lihat hitungKartuProduksi).
-function kunciKartuProduksi(produkNama, ukuran) {
-  return String(produkNama || '').trim().toUpperCase() + '||' + String(ukuran || '').trim().toUpperCase();
+// Kunci "kartu produksi" (produk+warna+ukuran -- SAMA PERSIS bentuknya dgn kunciEntriProduksi, cuma nama
+// fungsi dibuat khusus biar jelas konteksnya dipakai di kartu Order Produksi, lihat hitungKartuProduksi).
+// (2026-11-22 round 10, Setiawan: "seharusnya di pisah juga berdasarkan warna" -- SEBELUMNYA kunci ini cuma
+// produk+ukuran [digabung lintas warna], sekarang per warna spy bisa ditimpa manual per warna jg.
+function kunciKartuProduksi(produkNama, warna, ukuran) {
+  return kunciEntriProduksi(produkNama, warna, ukuran);
 }
 // Kartu "Order Produksi" per produk (2026-11-22, Setiawan kirim contoh sheet referensi: 1 kartu per produk,
-// tabel SIZE+QTY+baris TOTAL, spt yg biasa dia pakai) -- menggantikan tabel "Rekomendasi Restock" di sub-tab
-// Rekomendasi Produksi dgn 1 angka qty per produk+ukuran (digabung lintas warna): qty PO yg SUDAH ADA (kalau
-// ada) ATAU rekomendasi restock (kalau belum ada PO). Angka SISTEM ini bisa ditimpa manual per sel
-// (STATE.produksiOverrideQty, kunci via kunciKartuProduksi) yg SELALU menang kalau ada & tersimpan PERMANEN
-// (bukan sekadar tampilan sementara) -- Setiawan eksplisit: "aku bisa rubah dan sesuaikan stoknya tidak hanya
-// berdasarkan hasil rekomendasi sistem saja". CATATAN KONTRAK: fungsi ini cuma MEMBACA hasil
-// hitungRekomendasiProduksi() (yg sendirinya sudah terbukti tidak pernah menyentuh kontrak/payout) + STATE.
-// produksiOverrideQty (field baru, tidak dibaca fungsi kontrak manapun) -- tidak ada jalur ke computePembagiPct.
+// tabel WARNA+SIZE+QTY+baris TOTAL, spt yg biasa dia pakai, lalu diringkas lagi round 10: "dipisah jg
+// berdasarkan warna" + "yg tidak di produksi tidak perlu muncul jadi 0, biar ringkas, bisa langsung dikasih
+// ke konveksi") -- menggantikan tabel "Rekomendasi Restock" di sub-tab Rekomendasi Produksi, 1 baris per
+// produk+warna+ukuran yg BENAR-BENAR perlu diproduksi (qty PO yg SUDAH ADA kalau ada, ATAU rekomendasi
+// restock kalau belum ada PO). Baris yg qty-nya 0 DAN belum pernah disentuh manual disembunyikan (noise) --
+// TAPI baris yg sudah PERNAH ditimpa manual (STATE.produksiOverrideQty) tetap ditampilkan WALAU nilainya 0,
+// supaya tidak terjebak permanen hilang tanpa cara mengembalikannya (retik ulang angka sistem = otomatis
+// hapus override lagi, lihat attachListenersProduksiRekomendasi). Angka SISTEM bisa ditimpa manual per sel
+// yg SELALU menang kalau ada & tersimpan PERMANEN (bukan sekadar tampilan sementara) -- Setiawan eksplisit:
+// "aku bisa rubah dan sesuaikan stoknya tidak hanya berdasarkan hasil rekomendasi sistem saja". CATATAN
+// KONTRAK: fungsi ini cuma MEMBACA hasil hitungRekomendasiProduksi() (yg sendirinya sudah terbukti tidak
+// pernah menyentuh kontrak/payout) + STATE.produksiOverrideQty (field baru, tidak dibaca fungsi kontrak
+// manapun) -- tidak ada jalur ke computePembagiPct.
 function hitungKartuProduksi() {
   const { allRows } = hitungRekomendasiProduksi();
   const overrides = STATE.produksiOverrideQty || {};
+  const idxUkuran = (u) => { const i = SIZES.indexOf(u); return i === -1 ? SIZES.length : i; };
   const perProduk = {};
   const urutanProduk = [];
   allRows.forEach(h => {
     if (h.statusProduksi === 'stop') return;
-    if (!perProduk[h.produkNama]) { perProduk[h.produkNama] = {}; urutanProduk.push(h.produkNama); }
-    if (!perProduk[h.produkNama][h.ukuran]) perProduk[h.produkNama][h.ukuran] = { sistem: 0, stokKritis: false };
-    perProduk[h.produkNama][h.ukuran].sistem += (h.poQty > 0 ? h.poQty : h.qtyNeeded);
-    if (h.stokKritis) perProduk[h.produkNama][h.ukuran].stokKritis = true;
+    const kunci = kunciKartuProduksi(h.produkNama, h.warna, h.ukuran);
+    const sistem = h.poQty > 0 ? h.poQty : h.qtyNeeded;
+    const adaOverride = Object.prototype.hasOwnProperty.call(overrides, kunci);
+    const final = adaOverride ? (Number(overrides[kunci]) || 0) : sistem;
+    if (!final && !adaOverride) return; // ringkas: blm pernah disentuh & memang 0 -> sembunyikan, bukan noise
+    if (!perProduk[h.produkNama]) { perProduk[h.produkNama] = []; urutanProduk.push(h.produkNama); }
+    perProduk[h.produkNama].push({ warna: h.warna, ukuran: h.ukuran, sistem, final, adaOverride, kunci, stokKritis: h.stokKritis });
   });
   return urutanProduk.map(produkNama => {
-    const ukuranMap = perProduk[produkNama];
-    const baris = urutkanUkuranStandarDulu(Object.keys(ukuranMap)).map(ukuran => {
-      const kunci = kunciKartuProduksi(produkNama, ukuran);
-      const { sistem, stokKritis } = ukuranMap[ukuran];
-      const adaOverride = Object.prototype.hasOwnProperty.call(overrides, kunci);
-      const final = adaOverride ? overrides[kunci] : sistem;
-      return { ukuran, sistem, final, adaOverride, kunci, stokKritis };
+    const baris = perProduk[produkNama].slice().sort((a, b) => {
+      if (a.warna !== b.warna) return a.warna < b.warna ? -1 : 1;
+      const ia = idxUkuran(a.ukuran), ib = idxUkuran(b.ukuran);
+      return ia !== ib ? ia - ib : (a.ukuran < b.ukuran ? -1 : (a.ukuran > b.ukuran ? 1 : 0));
     });
     const total = baris.reduce((s, b) => s + (Number(b.final) || 0), 0);
     return { produkNama, baris, total };
@@ -10234,7 +10287,18 @@ function hitungKartuProduksi() {
 function htmlProduksiStok(groups, stockRows, warnings) {
   const mapping = STATE.produksiStockMapping || { groups: {}, variants: {} };
   const totalByProduk = {};
-  stockRows.forEach(r => { totalByProduk[r.produkNama] = (totalByProduk[r.produkNama] || 0) + r.qtyStok; });
+  // Nilai Stok per produk (2026-11-22, permintaan Setiawan: "stok dikali modal konveksi") -- dihitung per
+  // baris stok (produk+warna+ukuran) pakai harga konveksi SAAT INI by SKU, lalu dijumlah per produk. Kalau
+  // sebagian baris blm ada harganya, nilaiKurang[nama] ditandai true spy UI bisa kasih catatan "blm lengkap".
+  const nilaiByProduk = {};
+  const nilaiKurang = {};
+  stockRows.forEach(r => {
+    totalByProduk[r.produkNama] = (totalByProduk[r.produkNama] || 0) + r.qtyStok;
+    if (!r.qtyStok) return;
+    const harga = lookupHargaKonveksiBySku(r.sku);
+    if (harga == null) { nilaiKurang[r.produkNama] = true; return; }
+    nilaiByProduk[r.produkNama] = (nilaiByProduk[r.produkNama] || 0) + r.qtyStok * harga;
+  });
 
   return `
     <div class="panel">
@@ -10260,17 +10324,30 @@ function htmlProduksiStok(groups, stockRows, warnings) {
 
     <div class="panel">
       <h2>Pemetaan Grup Produk &rarr; Produk Outmark OS</h2>
-      <div class="desc">${groups.length} grup ditemukan di sheet. Petakan tiap grup ke produk UOUT yg sesuai (atau lewati kalau bukan UOUT/tidak perlu dilacak). Cukup sekali -- tersimpan permanen sampai diubah lagi.</div>
+      <div class="desc">${groups.length} grup ditemukan di sheet. Petakan tiap grup ke produk UOUT yg sesuai (atau lewati kalau bukan UOUT/tidak perlu dilacak). Cukup sekali -- tersimpan permanen sampai diubah lagi. Grup yg sudah dipetakan otomatis diringkas (tidak perlu scroll jauh) -- klik "Lihat/Edit Detail" kapan saja utk ubah.</div>
       ${!groups.length ? '<div class="empty-note">Belum ada data stok. Hubungkan Google Sheet atau tempel teks dulu di atas.</div>' : `
       <div style="margin-top:10px;">
         ${groups.map((g, idx) => {
           const gm = (mapping.groups || {})[g.groupLabel];
+          // "Sudah dipetakan" (boleh di-collapse default) HARUS benar2 tuntas -- bukan cuma produknya
+          // sudah dipilih, tapi varian/ukurannya juga SEMUA sudah dipetakan (atau grup ini sengaja
+          // dilewati) -- kalau masih ada varian yg blm dipetakan, tetap dibuka otomatis spy user sadar
+          // masih ada kerjaan di grup ini (2026-11-22, hasil koreksi dari test auto pre-isi varian).
+          const variantMapGrup = (mapping.variants || {})[g.groupLabel] || {};
+          const variantsLengkap = !!(gm && gm.produkNama) && g.variantLabels.every(vl => { const vm = variantMapGrup[vl]; return !!(vm && (vm.ukuran || vm.kodeCustom)); });
+          const sudahDipetakan = !!(gm && (gm.skip || variantsLengkap));
+          const expanded = !sudahDipetakan || !!produksiStokGroupExpanded[g.groupLabel];
+          const { qtyTotal, nilaiTotal, adaHargaKurang } = hitungStokDanNilaiGrup(g, mapping);
+          const ringkasStok = `Stok saat ini: <b>${qtyTotal}</b> pcs${nilaiTotal != null ? ` -- Nilai Stok: <b>${fmtRp(nilaiTotal)}</b>${adaHargaKurang ? ' (sebagian blm ada harga)' : ''}` : ''}`;
           return `
           <div style="margin-bottom:10px; padding:10px; border:1px solid var(--line); border-radius:8px;">
             <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap;">
               <div><strong>${g.groupLabel}</strong> <span style="color:var(--ink-soft); font-size:11px;">(${g.items.length} baris warna, ${g.variantLabels.length} varian/ukuran)</span></div>
-              <div>${gm && gm.skip ? '<span class="pill off">Dilewati</span>' : (gm && gm.produkNama ? `<span class="pill ok">&rarr; ${gm.produkNama}</span>` : '<span class="pill pending">Belum dipetakan</span>')}</div>
+              <div style="display:flex; align-items:center; gap:8px;">${gm && gm.skip ? '<span class="pill off">Dilewati</span>' : (gm && gm.produkNama ? `<span class="pill ok">&rarr; ${gm.produkNama}</span>` : '<span class="pill pending">Belum dipetakan</span>')}
+              ${sudahDipetakan ? `<button type="button" class="btn btn-ghost btn-toggle-group-produksi" data-group-label="${g.groupLabel.replace(/"/g, '&quot;')}" style="padding:3px 8px; font-size:11px;">${expanded ? 'Sembunyikan Detail' : 'Lihat/Edit Detail'}</button>` : ''}</div>
             </div>
+            <div style="margin-top:6px; font-size:12px; color:var(--ink-soft);">${ringkasStok}</div>
+            ${!expanded ? '' : `
             <div class="grid2" style="align-items:end; margin-top:8px;">
               <div class="field"><label>Petakan ke Produk</label>
                 <select data-group-idx="${idx}" class="sel-map-produk">
@@ -10321,6 +10398,7 @@ function htmlProduksiStok(groups, stockRows, warnings) {
               }).join('')}
               <button class="btn btn-ghost btn-simpan-row-override" data-group-idx="${idx}" style="margin-top:4px;">Simpan Override Produk per Baris</button>
             </div>` : ''}
+            `}
           </div>`;
         }).join('')}
       </div>`}
@@ -10330,12 +10408,14 @@ function htmlProduksiStok(groups, stockRows, warnings) {
       <h2>Ringkasan Stok per Produk (hasil pemetaan)</h2>
       ${!Object.keys(totalByProduk).length ? '<div class="empty-note">Belum ada stok yg berhasil dipetakan.</div>' : `
       <table class="data compact">
-        <thead><tr><th>Produk</th><th class="num">Total Stok (semua warna/ukuran)</th><th>Status Produksi</th></tr></thead>
+        <thead><tr><th>Produk</th><th class="num">Total Stok (semua warna/ukuran)</th><th class="num">Nilai Stok (stok &times; modal konveksi)</th><th>Status Produksi</th></tr></thead>
         <tbody>
           ${Object.entries(totalByProduk).map(([nama, total]) => {
             const p = findProduct(nama);
             const stop = p && p.statusProduksi === 'stop';
-            return `<tr><td>${nama}</td><td class="num">${total}</td><td>${stop ? '<span class="pill off">Stop Produksi</span>' : '<span class="pill ok">Aktif</span>'}</td></tr>`;
+            const nilai = nilaiByProduk[nama] || 0;
+            const nilaiTxt = fmtRp(nilai) + (nilaiKurang[nama] ? ' <span title="Sebagian baris blm ada harga konveksinya -- nilai ini blm lengkap" style="color:#b45309;">&#9888;</span>' : '');
+            return `<tr><td>${nama}</td><td class="num">${total}</td><td class="num">${nilaiTxt}</td><td>${stop ? '<span class="pill off">Stop Produksi</span>' : '<span class="pill ok">Aktif</span>'}</td></tr>`;
           }).join('')}
         </tbody>
       </table>`}
@@ -10345,6 +10425,13 @@ function htmlProduksiStok(groups, stockRows, warnings) {
 }
 
 function attachListenersProduksiStok(container) {
+  container.querySelectorAll('.btn-toggle-group-produksi').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const label = btn.dataset.groupLabel;
+      produksiStokGroupExpanded[label] = !produksiStokGroupExpanded[label];
+      renderProduksi(container);
+    });
+  });
   const btnPilih = document.getElementById('btnPilihSheetProduksi');
   if (btnPilih) btnPilih.addEventListener('click', bukaPickerPilihSheetProduksi);
   const btnAmbil = document.getElementById('btnAmbilUlangSheetProduksi');
@@ -10734,17 +10821,18 @@ function htmlProduksiRekomendasi() {
           <button class="btn btn-ghost" id="btnResetKartuProduksi">Reset ke Saran Sistem</button>
         </div>
       </div>
-      <div class="desc">1 kartu per produk, qty digabung lintas warna (per ukuran) -- qty awal dari saran sistem (PO yg sudah ada ATAU rekomendasi restock, mana yg berlaku), tapi SEMUA angka bisa kamu ubah manual &amp; tersimpan sbg angka final (klik "Simpan Qty") -- tidak cuma ikut hasil rekomendasi sistem begitu saja. Sel yg sudah ditimpa manual ditandai warna oranye.</div>
+      <div class="desc">1 kartu per produk, dipisah per warna+ukuran -- qty awal dari saran sistem (PO yg sudah ada ATAU rekomendasi restock, mana yg berlaku), tapi SEMUA angka bisa kamu ubah manual &amp; tersimpan sbg angka final (klik "Simpan Qty") -- tidak cuma ikut hasil rekomendasi sistem begitu saja. Baris yg memang tidak perlu diproduksi (qty 0) disembunyikan biar ringkas &amp; langsung bisa dikasih ke konveksi -- kecuali baris yg sudah pernah kamu timpa manual, tetap tampil (walau 0) spy tidak hilang tanpa bisa dikembalikan. Sel yg sudah ditimpa manual ditandai warna oranye.</div>
       <div class="status-box" id="kartuProduksiMsg"></div>
-      ${!kartuProduksi.length ? '<div class="empty-note" style="margin-top:8px;">Belum ada data stok yg terpetakan utk dihitung.</div>' : `
+      ${!kartuProduksi.length ? '<div class="empty-note" style="margin-top:8px;">Tidak ada produk yg perlu diproduksi saat ini (semua qty 0).</div>' : `
       <div style="display:flex; flex-wrap:wrap; gap:14px; margin-top:12px;">
         ${kartuProduksi.map(k => `
-        <div style="width:220px; border:1px solid var(--line); border-radius:8px; padding:10px;">
+        <div style="width:240px; border:1px solid var(--line); border-radius:8px; padding:10px;">
           <div style="font-weight:700; margin-bottom:6px;">${k.produkNama}</div>
           <table class="data compact" style="width:100%;">
-            <thead><tr><th>SIZE</th><th class="num">QTY</th></tr></thead>
+            <thead><tr><th>WARNA</th><th>SIZE</th><th class="num">QTY</th></tr></thead>
             <tbody>
               ${k.baris.map(b => `<tr>
+                <td>${b.warna}</td>
                 <td>${b.ukuran}${b.stokKritis ? ' <span title="Stok Kritis (stok+WIP sudah habis)" style="color:#b45309;">&#9888;</span>' : ''}</td>
                 <td class="num">
                   <input type="number" min="0" class="inp-kartu-qty" data-kunci="${b.kunci}" data-produk="${k.produkNama.replace(/"/g, '&quot;')}" data-sistem="${b.sistem}" value="${b.final}"
@@ -10753,7 +10841,7 @@ function htmlProduksiRekomendasi() {
                 </td>
               </tr>`).join('')}
               <tr style="font-weight:700; border-top:2px solid var(--line);">
-                <td>TOTAL</td><td class="num" data-total-produk="${k.produkNama.replace(/"/g, '&quot;')}">${k.total}</td>
+                <td colspan="2">TOTAL</td><td class="num" data-total-produk="${k.produkNama.replace(/"/g, '&quot;')}">${k.total}</td>
               </tr>
             </tbody>
           </table>
