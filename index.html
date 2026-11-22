@@ -9903,11 +9903,20 @@ function htmlProduksiStok(groups, stockRows, warnings) {
               <div class="desc" style="margin-bottom:6px;">Petakan tiap varian/ukuran ke ukuran standar ATAU kode custom 2 huruf (utk varian bukan-ukuran spt scent/model):</div>
               ${g.variantLabels.map((vl, vidx) => {
                 const vm = ((mapping.variants || {})[g.groupLabel] || {})[vl] || {};
+                // Auto pre-isi (2026-11-22, permintaan user): kalau varian ini BELUM PERNAH dipetakan sama
+                // sekali & labelnya PERSIS sama dgn salah satu ukuran standar (mis. label "L" utk produk
+                // ukuran biasa), dropdown langsung terpilih ukuran itu duluan -- TAPI baru benar2 tersimpan
+                // setelah user klik "Simpan Pemetaan Varian/Ukuran" (jadi tetap sempat dikoreksi, bukan
+                // auto-save diam2). Pemetaan yg SUDAH pernah disimpan manual (vm.ukuran/vm.kodeCustom ada)
+                // TIDAK PERNAH ditimpa default ini -- pilihan tersimpan user selalu menang. Varian yg bukan
+                // ukuran sungguhan (mis. "REACTIVE"/"Trucker"/"S/M") tetap kosong krn tidak match SIZES sama
+                // sekali, HARUS tetap dipetakan manual spt sebelumnya.
+                const ukuranTerpilih = vm.ukuran || (!vm.ukuran && !vm.kodeCustom && SIZES.includes(vl) ? vl : '');
                 return `<div style="display:flex; gap:8px; align-items:center; margin-bottom:4px; flex-wrap:wrap;">
                   <span style="min-width:120px; font-size:12.5px;">${vl}</span>
                   <select data-group-idx="${idx}" data-variant-idx="${vidx}" class="sel-map-ukuran-std" style="max-width:140px;">
                     <option value="">-- ukuran standar --</option>
-                    ${SIZES.map(s => `<option value="${s}" ${vm.ukuran === s ? 'selected' : ''}>${s}</option>`).join('')}
+                    ${SIZES.map(s => `<option value="${s}" ${s === ukuranTerpilih ? 'selected' : ''}>${s}</option>`).join('')}
                   </select>
                   <span style="font-size:11px; color:var(--ink-soft);">atau</span>
                   <input type="text" maxlength="2" placeholder="kode custom" data-group-idx="${idx}" data-variant-idx="${vidx}" class="inp-map-ukuran-custom" value="${vm.kodeCustom && !vm.ukuran ? vm.kodeCustom : ''}" style="max-width:120px; text-transform:uppercase;">
