@@ -687,6 +687,20 @@ function warnaKanonis(warnaMentah) {
   const kode = cariKodeWarnaByNama(warnaMentah);
   return (kode && STATE.colorCodeMap[kode]) || warnaMentah;
 }
+// Ukuran KANONIS (2026-11-22 round 20, Setiawan: "untuk rovee itu S artinya S/M sama saja, dan L artinya
+// L/XL sama saja") -- KHUSUS lini ROVEE (termasuk ROVEE TANPA HIJAB, nama produk diawali "ROVEE"), yg skema
+// ukurannya custom (S/M, L/XL, XXL -- bukan S/M/L/XL/XXL/3XL dst standar spt produk lain). Sebagian sumber
+// data kebetulan menyebut ukurannya "S"/"L" polos (lewat jalur ukuran STANDAR SIZES, vm.ukuran) sementara
+// sumber lain menyebut "S/M"/"L/XL" (lewat jalur kodeCustom grup sheet) -- padahal produk ROVEE maksudnya
+// SAMA PERSIS. TIDAK diterapkan ke produk lain (S/M/L/XL/XXL dst produk non-ROVEE beneran ukuran berbeda,
+// JANGAN disatukan).
+function ukuranKanonis(produkNama, ukuranMentah) {
+  if (!String(produkNama || '').trim().toUpperCase().startsWith('ROVEE')) return ukuranMentah;
+  const u = String(ukuranMentah || '').trim().toUpperCase();
+  if (u === 'S') return 'S/M';
+  if (u === 'L') return 'L/XL';
+  return ukuranMentah;
+}
 // Ganti nama utama 1 kode warna (2026-11-22 round 19) -- dipisah dari handler klik supaya bisa diuji langsung
 // tanpa simulasi DOM. Nama LAMA otomatis jadi alias (tidak hilang, data lain yg masih pakai teks lama tetap
 // kecocok lewat cariKodeWarnaByNama); ditolak kalau nama baru bentrok dgn nama/alias kode LAIN (nama yg sama
@@ -709,6 +723,26 @@ function gantiNamaUtamaKodeWarna(kode, namaBaruMentah) {
   }
   STATE.colorCodeMap[kode] = namaBaru;
   return { ok: true, pesan: `Nama utama kode ${kode}: "${namaLama}" -> "${namaBaru}" (nama lama otomatis jadi alias).`, namaLama };
+}
+// "Kualifier" nama produk (2026-11-22 round 20, Setiawan: "disini ga perlu ada tulisan tanpa hijab lagi di
+// warna, kan di judul sudah jelas rovee tanpa hijab") -- kata ke-2 dst nama produk (mis. "ROVEE TANPA HIJAB"
+// -> "TANPA HIJAB") dianggap kualifier pembeda dari produk "induk"-nya (kata pertama). Kalau teks warna
+// KEBETULAN mengulang kualifier ini (krn warna itu didaftarkan dari rowLabel/override sheet lama yg memang
+// py akhiran spt "BLACK - TANPA HIJAB"), itu jadi mubazir ditampilkan lagi di tabel yg judul kartunya SUDAH
+// nama produk lengkap -- murni soal TAMPILAN, bukan identitas: TIDAK dipakai utk kunci/SKU/pengelompokan data
+// manapun (lihat pemanggil: selalu dipakai PALING AKHIR, setelah kunci/kunciKartuProduksi sudah dihitung).
+function kualifierProdukUntukTampilan(produkNama) {
+  const kata = String(produkNama || '').trim().split(/\s+/);
+  return kata.length > 1 ? kata.slice(1).join(' ') : '';
+}
+function warnaTampilKartu(warnaAsli, produkNama) {
+  const kualifier = kualifierProdukUntukTampilan(produkNama);
+  const teks = String(warnaAsli || '');
+  if (!kualifier || !teks) return warnaAsli;
+  const esc = kualifier.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s+');
+  const pola = new RegExp('\\s*[-\u2013\u2014]?\\s*' + esc + '\\s*$', 'i');
+  const hasil = teks.replace(pola, '').trim();
+  return hasil || warnaAsli; // kalau warna SAMA PERSIS dgn kualifier (jd kosong stlh dibuang), jangan sampai label kosong
 }
 // Kebalikan dari SIZE_CODE_MAP (ukuran -> kode 2 digit), dipakai bangun SKU dari hasil mapping ukuran standar.
 function cariKodeUkuranBySize(ukuran) {
@@ -888,9 +922,41 @@ function ledakkanBarisPreOrder(row) {
   const qtyRaw = row.qtyRaw || '';
   if (qtyRaw.includes(':')) {
     const items = [];
+    // (2026-11-22 round 20) baris kombo >1 PRODUK dlm 1 order (row.artikel py koma, mis. "RVT, ROV" --
+    // Setiawan konfirmasi: "dalam 1 orderan ada lebih dari satu SKU pesannya") py format QTY BEDA dari kombo
+    // SAMA-produk biasa ("WARNA, SIZE : qty", 1 koma pemisah warna/size): tiap baris QTY-nya "ARTIKEL, WARNA
+    // SIZE: qty" (koma pemisah ARTIKEL drpd "WARNA SIZE" yg digabung SPASI tanpa koma) -- contoh nyata (order
+    // 261119NBB74SFP, baris sheet asli): "RVT, Pink XXL: 1". Dibedakan dari kombo biasa dgn cek token SEBELUM
+    // koma pertama cocok salah satu prefix ARTIKEL yg terdaftar di row.artikel sendiri (bukan nebak pola
+    // spasi) -- WARNA dipisah dari SIZE pakai row.sizeRaw (SIZE level-baris) sbg akhiran yg SUDAH diketahui.
+    // Hasil item dapat field tambahan `artikelOverride` -- dipakai resolvePreOrderListItem utk cari produk YG
+    // BENAR per-item (bukan selalu row.artikel, yg utk baris kombo begini isinya "RVT, ROV" & tidak cocok
+    // prefix produk manapun kalau dipakai apa adanya).
+    const artikelKomboSet = (row.artikel || '').includes(',') ? row.artikel.split(',').map(s => s.trim().toUpperCase()) : null;
+    const sizeBarisNorm = (row.sizeRaw || '').trim();
     qtyRaw.split('\n').forEach(line => {
-      const m = line.trim().match(/^(.+?)\s*,\s*(.+?)\s*:\s*(\d+)\s*$/);
-      if (m) items.push({ warnaRaw: m[1].trim(), sizeRaw: m[2].trim(), qty: Number(m[3]) });
+      const trimmed = line.trim();
+      if (!trimmed) return;
+      const mQty = trimmed.match(/^(.+?)\s*:\s*(\d+)\s*$/);
+      if (!mQty) return;
+      const [, sebelumTitikDua, qtyStr] = mQty;
+      const qty = Number(qtyStr);
+      const idxKoma = sebelumTitikDua.indexOf(',');
+      if (artikelKomboSet && idxKoma !== -1) {
+        const kandidatArtikel = sebelumTitikDua.slice(0, idxKoma).trim().toUpperCase();
+        if (artikelKomboSet.includes(kandidatArtikel)) {
+          const sisanya = sebelumTitikDua.slice(idxKoma + 1).trim();
+          let warnaRaw = sisanya;
+          if (sizeBarisNorm && sisanya.toUpperCase().endsWith(sizeBarisNorm.toUpperCase())) {
+            warnaRaw = sisanya.slice(0, sisanya.length - sizeBarisNorm.length).trim();
+          }
+          items.push({ warnaRaw, sizeRaw: sizeBarisNorm || sisanya, qty, artikelOverride: kandidatArtikel });
+          return;
+        }
+      }
+      // format kombo biasa (1 produk, "WARNA, SIZE : qty")
+      const m2 = sebelumTitikDua.match(/^(.+?)\s*,\s*(.+)$/);
+      if (m2) items.push({ warnaRaw: m2[1].trim(), sizeRaw: m2[2].trim(), qty });
     });
     if (items.length) return items;
   }
@@ -919,8 +985,13 @@ function cariSkuAsliDariPesananRovee(noPesanan, prefix) {
 // Resolve 1 item (hasil ledakkanBarisPreOrder) jadi {produkNama, warna, ukuranLabel, sku, qty, tanggalPesan,
 // sumber}. null kalau tidak bisa diresolve sama sekali (masuk warnings, item dilewati -- bukan dianggap qty 0).
 function resolvePreOrderListItem(row, item, warningsSet) {
-  const produk = STATE.products.find(pr => pr.prefix === row.artikel);
-  if (!produk) { warningsSet.add(`Kode ARTIKEL "${row.artikel}" (order ${row.noPesanan || row.no}) tidak cocok dgn prefix produk manapun yg terdaftar.`); return null; }
+  // (2026-11-22 round 20) baris kombo >1 produk (lihat ledakkanBarisPreOrder) -- tiap item bisa py ARTIKEL
+  // SENDIRI (item.artikelOverride, mis. "RVT" utk item ke-1, "ROV" utk item ke-2 dlm 1 row.artikel="RVT, ROV")
+  // -- WAJIB dipakai drpd row.artikel (yg utk baris begini isinya gabungan koma, tidak cocok prefix produk
+  // manapun kalau dipakai apa adanya, itu penyebab warning "Kode ARTIKEL tidak cocok" sebelum fix ini).
+  const artikelEfektif = item.artikelOverride || row.artikel;
+  const produk = STATE.products.find(pr => pr.prefix === artikelEfektif);
+  if (!produk) { warningsSet.add(`Kode ARTIKEL "${artikelEfektif}" (order ${row.noPesanan || row.no}) tidak cocok dgn prefix produk manapun yg terdaftar.`); return null; }
 
   // (2026-11-22 round 18, Setiawan: "padahal ada tanggal dan nomor pesanannya jelas kenapa bisa tidak ketemu")
   // kolom "TGL ORDER" sudah ada persis di baris sheet PO ini sendiri (row.tglOrder) -- dipakai sbg fallback
@@ -985,8 +1056,15 @@ function hitungRekapPreOrderList(rawRows) {
   const rekapMap = {};
   detail.forEach(d => {
     if (!d.belumSelesai) return;
-    const key = kunciEntriProduksi(d.produkNama, d.warna, d.ukuranLabel);
-    if (!rekapMap[key]) rekapMap[key] = { produkNama: d.produkNama, warna: d.warna, ukuran: d.ukuranLabel, qtyBelumSelesai: 0, tanggalPesanTerlama: null };
+    // (2026-11-22 round 20, Setiawan: lihat Ringkasan "ROVEE - Pure Grey"/"Olive Green"/"Mesh Green"/"OG"/"MG"
+    // masih kepecah jd baris terpisah di sini) -- warna disatukan via warnaKanonis SAMA spt fix round 19 di
+    // hitungRekomendasiProduksi (fungsi ini jalur TERPISAH, tidak otomatis ikut kebenerin waktu itu).
+    const warnaK = warnaKanonis(d.warna);
+    // (round 20) ukuran jg disamakan via ukuranKanonis -- utk ROVEE, "S"="S/M" dan "L"="L/XL", biar baris
+    // rekap ROVEE "S" dan "S/M" (atau "L"/"L/XL") yg sebenarnya 1 ukuran yg sama tidak kepecah jd 2 baris.
+    const ukuranK = ukuranKanonis(d.produkNama, d.ukuranLabel);
+    const key = kunciEntriProduksi(d.produkNama, warnaK, ukuranK);
+    if (!rekapMap[key]) rekapMap[key] = { produkNama: d.produkNama, warna: warnaK, ukuran: ukuranK, qtyBelumSelesai: 0, tanggalPesanTerlama: null };
     rekapMap[key].qtyBelumSelesai += d.qty;
     // (2026-11-22 round 18) ambil tanggal pesan PALING LAMA di antara semua baris yg nyumbang ke grup
     // produk+warna+ukuran ini, spy Prioritas PO bisa urut dari yg paling lama menunggu -- bukan dibuang.
@@ -10434,11 +10512,13 @@ function hitungRekomendasiProduksi() {
     // (round 19) kunci/meta pakai warna KANONIS (lihat warnaKanonis) spy WIP yg warnanya ditulis beda literal
     // drpd baris stok tapi kode warnanya sama tetap nyatu jadi 1 baris, bukan 2.
     const warnaK = warnaKanonis(w.warna);
+    // (round 20) ukuran juga disamakan via ukuranKanonis -- utk ROVEE, "S"="S/M" dan "L"="L/XL".
+    const ukuranK = ukuranKanonis(w.produkNama, w.ukuran);
     const sku = skuDariEntriManual(w);
-    const kunci = kunciEntriProduksi(w.produkNama, warnaK, w.ukuran);
+    const kunci = kunciEntriProduksi(w.produkNama, warnaK, ukuranK);
     if (sku) wipBySku[sku] = (wipBySku[sku] || 0) + (w.qty || 0);
     wipByKunci[kunci] = (wipByKunci[kunci] || 0) + (w.qty || 0);
-    if (!wipMeta[kunci]) wipMeta[kunci] = { produkNama: w.produkNama, warna: warnaK, ukuran: w.ukuran };
+    if (!wipMeta[kunci]) wipMeta[kunci] = { produkNama: w.produkNama, warna: warnaK, ukuran: ukuranK };
   });
   const poBySku = {}, poByKunci = {}, poMeta = {};
   // (2026-11-22 round 18, Setiawan: "padahal ada tanggal dan nomor pesanannya jelas kenapa bisa tidak ketemu")
@@ -10451,11 +10531,12 @@ function hitungRekomendasiProduksi() {
   (STATE.produksiPO || []).forEach(po => {
     // (round 19) sama spt WIP di atas -- kunci/meta pakai warna KANONIS, bukan teks mentah per-entri PO.
     const warnaK = warnaKanonis(po.warna);
+    const ukuranK = ukuranKanonis(po.produkNama, po.ukuran);
     const sku = skuDariEntriManual(po);
-    const kunci = kunciEntriProduksi(po.produkNama, warnaK, po.ukuran);
+    const kunci = kunciEntriProduksi(po.produkNama, warnaK, ukuranK);
     if (sku) poBySku[sku] = (poBySku[sku] || 0) + (po.qtyPO || 0);
     poByKunci[kunci] = (poByKunci[kunci] || 0) + (po.qtyPO || 0);
-    if (!poMeta[kunci]) poMeta[kunci] = { produkNama: po.produkNama, warna: warnaK, ukuran: po.ukuran };
+    if (!poMeta[kunci]) poMeta[kunci] = { produkNama: po.produkNama, warna: warnaK, ukuran: ukuranK };
     if (po.tanggalPesanTerlama) {
       if (sku && (!poTanggalBySku[sku] || new Date(po.tanggalPesanTerlama) < new Date(poTanggalBySku[sku]))) poTanggalBySku[sku] = po.tanggalPesanTerlama;
       if (!poTanggalByKunci[kunci] || new Date(po.tanggalPesanTerlama) < new Date(poTanggalByKunci[kunci])) poTanggalByKunci[kunci] = po.tanggalPesanTerlama;
@@ -10495,7 +10576,36 @@ function hitungRekomendasiProduksi() {
   // (round 19) warna baris stok fisik jg disamakan via warnaKanonis sebelum masuk hitungBarisRekomendasi --
   // kunciDariStockRows di bawah (dipakai cegah baris sintetis dobel) baru efektif kalau SEMUA sisi (stok,
   // WIP, PO) pakai bentuk kunci yg konsisten (kanonis), bukan teks mentah masing2 sumber.
-  const hasil = stockRows.map(row => hitungBarisRekomendasi(row.produkNama, warnaKanonis(row.warna), row.ukuranLabel, row.sku, row.qtyStok));
+  //
+  // BUG NYATA (2026-11-22 round 20, Setiawan: "aku jumlah manual totalnya 80. kenapa disitu totalnya 90?") --
+  // kalau DUA baris stok FISIK yg berbeda (mis. 1 baris ditulis "HITAM", 1 baris lain ditulis "DUSTY PINK" tapi
+  // "DUSTY PINK" KEBETULAN/SALAH terdaftar sbg alias kode warna yg sama dgn "HITAM") sama2 canonicalize ke
+  // warna+ukuran yg SAMA PERSIS, SEBELUM perbaikan ini keduanya dihitung TERPISAH lewat hitungBarisRekomendasi
+  // (krn qtyNeeded = Math.max(0, Math.ceil(target - (stok+wip))) itu TIDAK LINIER thd stok, jadi 2 baris kecil
+  // bisa menghasilkan qtyNeeded gabungan yg BEDA dari qtyNeeded 1 baris gabungan) -- lalu kartu produksi
+  // (hitungKartuProduksi -> pivotKartuProduksi) membangun grid dgn cellMap[warna+'||'+ukuran] yg DIAM2 overwrite
+  // kalau kuncinya sama, jadi grid yg TAMPAK cuma pakai salah satu baris sedangkan k.total (dihitung dari baris
+  // MENTAH sblm di-pivot) tetap menjumlahkan KEDUANYA -- hasilnya total yg ditampilkan > jumlah sel yg terlihat.
+  // Perbaikan: GABUNGKAN qtyStok dari semua baris stok yg kuncinya sama (produk+warnaKanonis+ukuranKanonis)
+  // DULU, baru panggil hitungBarisRekomendasi SEKALI per kunci dgn qtyStok yg SUDAH digabung -- supaya qtyNeeded
+  // yg nonlinier itu dihitung dari stok gabungan yg benar, bukan dari 2 potongan kecil yg terpisah.
+  const stockRowsGabungan = {};
+  const urutanStockRows = [];
+  stockRows.forEach(row => {
+    const warnaK = warnaKanonis(row.warna);
+    const ukuranK = ukuranKanonis(row.produkNama, row.ukuranLabel);
+    const kunci = kunciEntriProduksi(row.produkNama, warnaK, ukuranK);
+    if (!stockRowsGabungan[kunci]) {
+      stockRowsGabungan[kunci] = { produkNama: row.produkNama, warna: warnaK, ukuranLabel: ukuranK, sku: row.sku, qtyStok: 0 };
+      urutanStockRows.push(kunci);
+    }
+    stockRowsGabungan[kunci].qtyStok += (row.qtyStok || 0);
+    if (!stockRowsGabungan[kunci].sku && row.sku) stockRowsGabungan[kunci].sku = row.sku;
+  });
+  const hasil = urutanStockRows.map(kunci => {
+    const r = stockRowsGabungan[kunci];
+    return hitungBarisRekomendasi(r.produkNama, r.warna, r.ukuranLabel, r.sku, r.qtyStok);
+  });
 
   // BUG NYATA (2026-11-22 round 14, Setiawan: "untuk yang rovee saja di produksi hanya warna pure grey
   // padahal kalau berdasarkan list PO masih banyak yang belum tercapai") -- SEBELUM baris di bawah ini ada,
@@ -10570,7 +10680,12 @@ function hitungKartuProduksi() {
     const final = adaOverride ? (Number(overrides[kunci]) || 0) : sistem;
     if (!final && !adaOverride) return; // ringkas: blm pernah disentuh & memang 0 -> sembunyikan, bukan noise
     if (!perProduk[h.produkNama]) { perProduk[h.produkNama] = []; urutanProduk.push(h.produkNama); }
-    perProduk[h.produkNama].push({ warna: h.warna, ukuran: h.ukuran, sistem, final, adaOverride, kunci, stokKritis: h.stokKritis });
+    // (round 20, Setiawan: "disini ga perlu ada tulisan tanpa hijab lagi di warna, kan di judul sudah jelas
+    // rovee tanpa hijab") -- utk TAMPILAN SAJA warna dibersihkan dari kualifier nama produk (mis. "- Tanpa
+    // Hijab") via warnaTampilKartu; `kunci` (dipakai sbg key STATE.produksiOverrideQty) TETAP pakai h.warna
+    // ASLI (BUKAN hasil warnaTampilKartu) supaya override yg sudah pernah disimpan user TIDAK rusak/hilang.
+    const warnaTampil = warnaTampilKartu(h.warna, h.produkNama);
+    perProduk[h.produkNama].push({ warna: warnaTampil, ukuran: h.ukuran, sistem, final, adaOverride, kunci, stokKritis: h.stokKritis });
   });
   return urutanProduk.map(produkNama => {
     const baris = perProduk[produkNama].slice().sort((a, b) => {
@@ -11023,13 +11138,13 @@ function htmlPreOrderListImport() {
         ${rekapHasil.warnings.length ? `<div class="status-box show err" style="margin-top:6px;"><b>Peringatan (${rekapHasil.warnings.length}):</b><br>${rekapHasil.warnings.map(w => w.replace(/</g, '&lt;')).join('<br>')}</div>` : ''}
         ${rekapHasil.ringkasanGrup.length ? `
         <div class="desc" style="margin-top:10px;"><b>Ringkasan yg di-PO (blm selesai) -- cocokkan ke kartu Order Produksi di tab Rekomendasi Produksi:</b><br>
-          ${rekapHasil.ringkasanGrup.map(g => `${g.produkNama} - ${g.warna}: ${g.ukurans.map(u => `${u.ukuran} ${u.qty}`).join(', ')} (Total ${g.total} pcs)`).join('<br>')}
+          ${rekapHasil.ringkasanGrup.map(g => `${g.produkNama} - ${warnaTampilKartu(g.warna, g.produkNama)}: ${g.ukurans.map(u => `${u.ukuran} ${u.qty}`).join(', ')} (Total ${g.total} pcs)`).join('<br>')}
         </div>` : ''}
         ${rekapHasil.rekap.length ? `
         <table class="data compact" style="margin-top:10px;">
           <thead><tr><th>Produk</th><th>Warna</th><th>Ukuran</th><th class="num">Qty Blm Selesai</th></tr></thead>
           <tbody>
-            ${rekapHasil.rekap.map(r => `<tr><td>${r.produkNama}</td><td>${r.warna}</td><td>${r.ukuran}</td><td class="num">${r.qtyBelumSelesai}</td></tr>`).join('')}
+            ${rekapHasil.rekap.map(r => `<tr><td>${r.produkNama}</td><td>${warnaTampilKartu(r.warna, r.produkNama)}</td><td>${r.ukuran}</td><td class="num">${r.qtyBelumSelesai}</td></tr>`).join('')}
           </tbody>
         </table>
         <button class="btn btn-primary" id="btnSinkronPreOrderList" style="margin-top:8px;">Sinkronkan ${rekapHasil.rekap.length} Baris ke Daftar PO</button>
@@ -11056,7 +11171,7 @@ function htmlPrioritasPO(poItemsOverride) {
         <thead><tr><th>Produk</th><th>Warna</th><th>Ukuran</th><th class="num">Qty PO</th><th>Tgl Pesanan Terlama</th></tr></thead>
         <tbody>
           ${poItems.map(h => `<tr>
-            <td>${h.produkNama}</td><td>${h.warna}</td><td>${h.ukuran}</td><td class="num">${h.poQty}</td>
+            <td>${h.produkNama}</td><td>${warnaTampilKartu(h.warna, h.produkNama)}</td><td>${h.ukuran}</td><td class="num">${h.poQty}</td>
             <td>${h.tanggalPesanTerlama ? fmtTanggal(h.tanggalPesanTerlama, { short: true }) : '<span style="color:var(--ink-soft);">belum ketemu pesanan cocok</span>'}</td>
           </tr>`).join('')}
         </tbody>
