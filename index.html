@@ -426,6 +426,14 @@ let STATE = {
   preOrderListSheetFileId: null,    // fileId spreadsheet "Pre-Order List" yg dipilih user via Picker (2026-11-22 round 16, scope spreadsheets.readonly sama spt sheet stok)
   preOrderListSyncedAt: null,       // ISO string kapan terakhir klik "Sinkronkan ke Daftar PO" (2026-11-22, status sinkron) -- null/lebih
                                      // lama drpd preOrderListFetchedAt artinya ada data baru yg BLM disinkron ke Daftar PO & Rencana Produksi
+  preOrderListWarnaBaris: {},       // (2026-11-22 round 20 lanjutan) peta "NO" (kolom A sheet, per baris LOGIS) -> klasifikasi warna
+                                     // background sel ('merah'/'kuning'/'ungu'/'abu'/'hijau'/'biru'/null), hasil fetch TERPISAH dari
+                                     // values (lihat fetchDanProsesPreOrderListDariSheet) krn Sheets API butuh endpoint beda utk baca
+                                     // FORMAT sel (bukan cuma isi teks) -- Setiawan: "jika dia warna merah maka tidak perlu di hitung PO
+                                     // lagi karena pesanan di batalkan", row 296 confirm: STATUS teks bisa msh "Diproses" tapi kalau
+                                     // baris sudah ditandai MERAH itu override berarti BATAL. Cuma terisi dari jalur live Google Sheets
+                                     // (tempel teks manual TIDAK bawa info warna sel sama sekali, hitungRekapPreOrderList aman kalau
+                                     // peta ini kosong -- dianggap tidak ada baris batal, perilaku lama tidak berubah).
   produksiOverrideQty: {},          // override manual qty per produk+ukuran di kartu "Order Produksi" (kunci "PRODUK||UKURAN", lihat
                                      // hitungKartuProduksi) -- kalau ada, SELALU menang drpd angka rekomendasi sistem & tersimpan
                                      // permanen (2026-11-22, Setiawan: "aku bisa rubah dan sesuaikan...tidak hanya berdasarkan
@@ -914,6 +922,45 @@ function hitungStokDanNilaiGrup(g, mapping) {
    PO manual: entri PO yg ditambah manual (tanpa tag sumberImport) tidak pernah disentuh oleh fitur ini.
    ========================================================================= */
 
+// (2026-11-22 round 20 lanjutan) Klasifikasi warna BACKGROUND sel sheet (bukan isi teks) -- Setiawan punya
+// legenda warna di sheet "Pre-Order List" > ROVEE: KUNING=INSTAN/SAMEDAY, MERAH=BATAL, UNGU=Print/cetak
+// manual di WA, ABU ABU=Status sdh dikirim tapi di aplikasi belum terkirim, HIJAU=Dikirim, BIRU=Bulk order.
+// Dipakai jalur LIVE Google Sheets saja (lihat fetchDanProsesPreOrderListDariSheet) -- Sheets API butuh
+// endpoint TERPISAH (spreadsheets.get, bukan .values.get) utk baca format sel, tempel-teks manual tidak bawa
+// info ini sama sekali. Threshold RGB di bawah best-effort (belum bisa diverifikasi persis terhadap warna
+// FILL asli Setiawan dari sandbox ini, krn butuh akses live sheet sungguhan) -- kalau ternyata meleset
+// (baris MERAH tidak kedeteksi, atau warna lain KETEBAK jadi 'merah'), kasih tau nilai RGB asli yg kedeteksi
+// spy threshold ini gampang dikalibrasi ulang.
+function klasifikasiWarnaSel(rgb) {
+  if (!rgb) return null;
+  const r = Math.round((rgb.red || 0) * 255), g = Math.round((rgb.green || 0) * 255), b = Math.round((rgb.blue || 0) * 255);
+  if (r > 235 && g > 235 && b > 235) return null; // putih/polos, dianggap tidak ditandai apa-apa
+  if (r > 170 && g < 110 && b < 110) return 'merah';
+  if (r > 170 && g > 170 && b < 120) return 'kuning';
+  if (g > 140 && r < 130 && b < 160 && g > r && g > b) return 'hijau';
+  if (b > 170 && g > 130 && r < 110) return 'biru';
+  if (r > 100 && r < 190 && b > 100 && b < 190 && g < Math.min(r, b) - 20) return 'ungu';
+  if (Math.abs(r - g) < 22 && Math.abs(g - b) < 22 && Math.abs(r - b) < 22 && r > 110 && r < 210) return 'abu';
+  return null;
+}
+// Dari grid data Sheets API (spreadsheets.get, fields=sheets.data.rowData.values.effectiveFormat.backgroundColor
+// DAN kolom "NO" spy bisa di-key-kan ke baris LOGIS hasil parsePreOrderListRovee) -> peta {no: klasifikasiWarna}.
+// `rowData` = array per-baris FISIK sheet (header ikut, dibuang via cek kolom NO bukan angka); `noColIdx` =
+// indeks kolom "NO" (0-based) spy fungsi ini tidak hardcode kolom A (jaga2 kalau sheet berubah urutan kolom).
+function bangunPetaWarnaBarisDariGridData(rowData, noColIdx) {
+  const peta = {};
+  (rowData || []).forEach(row => {
+    const cells = (row && row.values) || [];
+    const cellNo = cells[noColIdx];
+    const noValue = cellNo && (cellNo.formattedValue != null ? String(cellNo.formattedValue).trim() : '');
+    if (!noValue || !/^\d+$/.test(noValue)) return; // bukan baris data order (header/kosong/bukan angka)
+    const fmt = (cellNo && (cellNo.effectiveFormat || cellNo.userEnteredFormat)) || null;
+    const kelas = klasifikasiWarnaSel(fmt && fmt.backgroundColor);
+    if (kelas) peta[noValue] = kelas;
+  });
+  return peta;
+}
+
 // Parse teks yg ditempel dari Google Sheets (tab-separated). Baris header dicari via kolom "NO. PESANAN"
 // (bukan asumsi posisi baris tetap, supaya tahan kalau ada baris judul "Pre-Order List" di atas header asli).
 // Kolom QTY/WARNA kadang py newline tertanam (order 1 baris berisi >1 item warna beda, mis. "MB, XXL: 1\nBM,
@@ -1066,7 +1113,23 @@ function resolvePreOrderListItem(row, item, warningsSet) {
 
   const sumberAsli = cariSkuAsliDariPesananRovee(row.noPesanan, produk.prefix);
   if (sumberAsli) {
-    return { produkNama: produk.nama, warna: sumberAsli.warna || item.warnaRaw, ukuranLabel: item.sizeRaw.replace(/\s+/g, ''), sku: sumberAsli.sku, qty: item.qty, tanggalPesan: sumberAsli.tanggalPesan || tglOrderBarisIni, sumber: 'data pesanan' };
+    // (2026-11-22 round 20 lanjutan) FIX NYATA -- Setiawan: "kenapa ada black dan hitam" (screenshot Prioritas
+    // PO/Ringkasan yg di-PO, ROVEE TANPA HIJAB: "HITAM" DAN "Black" sama2 muncul, tidak tergabung, padahal
+    // warna fisiknya identik & "BLACK" SUDAH terdaftar alias kode HTM -- dibuktikan lewat perhitungan langsung
+    // cariKodeWarnaByNama("Black") BENAR balikin HTM kalau dikasih teks ini). AKAR MASALAH: cabang INI (match
+    // via NO. PESANAN ke data pesanan RESMI, STATE.pendingOrderSku/orderDb dari upload "Update Daftar
+    // Pesanan" -- sumber TERPISAH dari dropdown WARNA di sheet Pre-Order List ini sendiri) SEBELUMNYA LANGSUNG
+    // pakai sumberAsli.warna APA ADANYA, TANPA pernah dicoba diresolve ke Kode Warna sama sekali -- beda dgn
+    // cabang fallback di bawah yg SELALU coba resolve + kasih warning kalau gagal. Kalau teks warna di data
+    // pesanan resmi itu (ditulis manual/sistem lain, blm tentu konsisten ejaannya dgn Kode Warna/alias) BEDA
+    // dari dropdown WARNA sheet PO ini (sumber TERKONTROL, SAMA utk semua order, SELALU dicek thd Kode Warna) --
+    // 2 order dgn warna FISIK SAMA PERSIS bisa berakhir beda teks tampilan, persis gejala yg dilaporkan. FIX:
+    // warna SELALU dicoba diresolve dulu dari item.warnaRaw (dropdown SHEET INI, sumber terkontrol) -- cuma
+    // kalau item.warnaRaw itu sendiri BENAR2 tidak ketemu kodenya (blm terdaftar), baru fallback ke
+    // sumberAsli.warna apa adanya (drpd warna kosong sama sekali). sumberAsli.sku (SKU presisi hasil
+    // cross-match) TETAP dipakai spt sebelumnya -- cuma sumber teks WARNA-nya yg diperbaiki prioritasnya.
+    const warnaDariDropdownSheet = cariKodeWarnaByNama(item.warnaRaw) ? warnaKanonis(item.warnaRaw) : null;
+    return { produkNama: produk.nama, warna: warnaDariDropdownSheet || sumberAsli.warna || item.warnaRaw, ukuranLabel: item.sizeRaw.replace(/\s+/g, ''), sku: sumberAsli.sku, qty: item.qty, tanggalPesan: sumberAsli.tanggalPesan || tglOrderBarisIni, sumber: 'data pesanan' };
   }
 
   // Fallback: bangun SKU dari singkatan WARNA + SIZE sheet PO ini sendiri (dicocokkan ke Kode Warna + alias,
@@ -1103,16 +1166,27 @@ function resolvePreOrderListItem(row, item, warningsSet) {
 // Rekap inti: dari STATE.preOrderListRaw -> detail per item + rekap qty "masih perlu diproduksi" per
 // produk+warna+ukuran. Aturan "masih perlu" (2026-11-22, pilihan Setiawan -- gabungan kedua kolom, lebih
 // ketat): WAREHOUSE kosong (belum dikemas dari stok) DAN STATUS persis "Diproses" (belum dikirim/selesai).
-function hitungRekapPreOrderList(rawRows) {
+function hitungRekapPreOrderList(rawRows, warnaBarisMap) {
   const warningsSet = new Set();
   const detail = [];
   let totalItemsAll = 0;
+  // (2026-11-22 round 20 lanjutan) peta "NO" -> klasifikasi warna background sel (lihat
+  // bangunPetaWarnaBarisDariGridData) -- Setiawan: "jika dia warna merah maka tidak perlu di hitung PO lagi
+  // karena pesanan di batalkan", dibuktikan konkret order no.296 (STATUS teksnya msh "Diproses", WAREHOUSE
+  // kosong -- SECARA TEKS harusnya "masih perlu produksi" -- tapi baris itu ditandai MERAH = overridenya BATAL,
+  // jangan ikut dihitung). Parameter opsional (default STATE.preOrderListWarnaBaris) supaya fungsi ini tetap
+  // pure/testable (bisa dikasih peta manual di test) & tempel-teks manual (tidak py info warna sel) otomatis
+  // aman -- peta kosong = tidak ada baris yg dianggap batal, perilaku lama utk jalur itu tidak berubah.
+  const petaWarna = warnaBarisMap || (typeof STATE !== 'undefined' ? (STATE.preOrderListWarnaBaris || {}) : {});
+  let totalDibatalkan = 0;
   (rawRows || []).forEach(row => {
     const items = ledakkanBarisPreOrder(row);
     totalItemsAll += items.length;
+    const dibatalkan = petaWarna[row.no] === 'merah';
     items.forEach(it => {
       const resolved = resolvePreOrderListItem(row, it, warningsSet);
       if (!resolved) return;
+      if (dibatalkan) { totalDibatalkan += resolved.qty; return; } // batal (warna merah) -- tidak masuk detail/rekap sama sekali
       const belumSelesai = !(row.warehouse || '').trim() && String(row.status || '').trim().toUpperCase() === 'DIPROSES';
       detail.push(Object.assign({ no: row.no, noPesanan: row.noPesanan, username: row.username, status: row.status, warehouse: row.warehouse, belumSelesai }, resolved));
     });
@@ -1150,7 +1224,7 @@ function hitungRekapPreOrderList(rawRows) {
   });
   const ringkasanGrup = Object.values(ringkasanGrupMap).sort((a, b) => b.total - a.total);
   const totalItemsResolved = detail.length;
-  return { detail, rekap, ringkasanGrup, warnings: Array.from(warningsSet), totalBaris: (rawRows || []).length, totalBelumSelesai, totalItemsAll, totalItemsResolved };
+  return { detail, rekap, ringkasanGrup, warnings: Array.from(warningsSet), totalBaris: (rawRows || []).length, totalBelumSelesai, totalItemsAll, totalItemsResolved, totalDibatalkan };
 }
 
 // Sinkronkan hasil rekap ke STATE.produksiPO -- entri lama hasil import ini (ditandai sumberImport=
@@ -2305,7 +2379,7 @@ async function loadState(fileIdOverride) {
   const DEFAULT_STATE = { capitalPartners: [], stores: [], products: [], contracts: [], colorCodeMap: {}, colorCodeAlias: {}, pembagiPctManual: {}, orderDb: [], pendingOrderSku: {}, payouts: [], vendorPayouts: [], adsMingguan: [], biayaOperasional: [], opexKategori: OPEX_KATEGORI.slice(), alokasiProfit: [], alokasiKategori: ALOKASI_KATEGORI.slice(), saldoDiluarKontrak: {}, rolloverLog: [], customers: [], biayaRetur: [], karyawan: [], slipGaji: [], slipGajiSettings: { namaPerusahaan: 'UJUSO', alamatBaris: ['Jl. Permana Timur Blok D7 No. 28', 'Kel. Citeureup, Kec. Cimahi Utara', 'Kota Cimahi'], logoDataUri: DEFAULT_LOGO_UJUSO_DATA_URI, emailKontak: 'setiawandewanto@gmail.com' }, invoiceProducts: [], invoices: [], diskon: [], kwitansi: [],
     produksiWip: [], produksiPO: [], produksiStockMapping: { groups: {}, variants: {}, rowProduk: {} }, produksiStockRaw: [],
     produksiStockFetchedAt: null, produksiSheetFileId: null, produksiSettings: { targetMinggu: 4, windowMinggu: 8 },
-    preOrderListRaw: [], preOrderListFetchedAt: null, preOrderListSyncedAt: null, preOrderListSheetFileId: null, produksiOverrideQty: {} };
+    preOrderListRaw: [], preOrderListFetchedAt: null, preOrderListSyncedAt: null, preOrderListSheetFileId: null, preOrderListWarnaBaris: {}, produksiOverrideQty: {} };
   STATE = Object.assign({}, DEFAULT_STATE, loaded);
 }
 
@@ -2641,6 +2715,27 @@ function serializeRows2DKeTeksTab(rows2D) {
 // tidak bisa diuji end-to-end lewat test otomatis (butuh browser+akun Google sungguhan) -- parsePreOrderListRovee
 // & hitungRekapPreOrderList sendiri (logic intinya) SUDAH teruji penuh di test_produksi_jsdom.js; yg BARU &
 // BELUM bisa diuji otomatis di sini cuma 3 baris pemanggilan fetch+serialize di bawah ini.
+// (2026-11-22 round 20 lanjutan) Ambil juga WARNA BACKGROUND sel kolom "NO" (bukan cuma isi teks) -- butuh
+// endpoint Sheets API TERPISAH (spreadsheets.get, bukan .values.get yg cuma baca isi). Dibungkus try/catch
+// SENDIRI (dipanggil dari fetchDanProsesPreOrderListDariSheet) supaya kalau gagal (mis. field format ini
+// butuh izin/field yg beda), fitur UTAMA (ambil isi order) tetap jalan normal -- cuma deteksi "batal via
+// warna merah" yg tidak aktif (STATE.preOrderListWarnaBaris lama/kosong, aman, lihat hitungRekapPreOrderList).
+async function fetchDanProsesWarnaBarisPreOrderList() {
+  const res = await fetch(
+    `https://sheets.googleapis.com/v4/spreadsheets/${STATE.preOrderListSheetFileId}?ranges=ROVEE&fields=` +
+    encodeURIComponent('sheets.data.rowData.values(formattedValue,effectiveFormat.backgroundColor,userEnteredFormat.backgroundColor)'),
+    { headers: { Authorization: 'Bearer ' + accessToken } }
+  );
+  if (!res.ok) { const body = await res.text(); throw new Error(`HTTP ${res.status} -- ${body.slice(0,300)}`); }
+  const data = await res.json();
+  const rowData = (((((data.sheets || [])[0] || {}).data || [])[0] || {}).rowData) || [];
+  // Kolom "NO" dicari dari baris HEADER (bukan hardcode kolom A) -- jaga2 kalau urutan kolom sheet berubah.
+  const headerCells = (rowData[0] && rowData[0].values) || [];
+  const noColIdx = headerCells.findIndex(c => String((c && c.formattedValue) || '').trim().toUpperCase() === 'NO');
+  if (noColIdx === -1) throw new Error('Kolom "NO" tidak ketemu di baris header utk baca warna sel.');
+  return bangunPetaWarnaBarisDariGridData(rowData, noColIdx);
+}
+
 async function fetchDanProsesPreOrderListDariSheet() {
   const msg = document.getElementById('preOrderListMsg');
   if (!STATE.preOrderListSheetFileId) { if (msg) showMsg(msg, 'err', 'Belum ada Google Sheet yg terhubung.'); return; }
@@ -2662,8 +2757,14 @@ async function fetchDanProsesPreOrderListDariSheet() {
     }
     STATE.preOrderListRaw = rows;
     STATE.preOrderListFetchedAt = new Date().toISOString();
+    let catatanWarna = '';
+    try {
+      STATE.preOrderListWarnaBaris = await fetchDanProsesWarnaBarisPreOrderList();
+    } catch (eWarna) {
+      catatanWarna = ` (catatan: deteksi baris "batal" via warna sel gagal -- ${eWarna.message})`;
+    }
     await saveState();
-    if (msg) showMsg(msg, 'ok', `Berhasil ambil ${rows.length} baris order dari sheet "ROVEE".`);
+    if (msg) showMsg(msg, 'ok', `Berhasil ambil ${rows.length} baris order dari sheet "ROVEE".${catatanWarna}`);
     renderProduksi(document.getElementById('app'));
   } catch (e) {
     if (msg) showMsg(msg, 'err', `Gagal mengambil data sheet: ${e.message}. Kalau ini pertama kali dipakai setelah update, coba logout lalu login lagi dulu (izin akses Sheets baru perlu di-approve ulang).`);
@@ -11229,6 +11330,7 @@ function htmlPreOrderListImport() {
       ${hasData ? `
         <div class="desc" style="margin-top:10px;">${rawRows.length} baris order terbaca (${rekapHasil.totalItemsAll} item setelah dipecah per warna/ukuran)${STATE.preOrderListFetchedAt ? ` -- diproses ${new Date(STATE.preOrderListFetchedAt).toLocaleString('id-ID')}` : ''}.</div>
         <div class="desc" style="margin-top:2px;"><b>${rekapHasil.totalItemsResolved} dari ${rekapHasil.totalItemsAll}</b> item berhasil dicocokkan ke produk/warna/ukuran -- total qty MASIH PERLU DIPRODUKSI (WAREHOUSE kosong &amp; STATUS "Diproses"): <b>${rekapHasil.totalBelumSelesai}</b> pcs.</div>
+        ${rekapHasil.totalDibatalkan ? `<div class="desc" style="margin-top:2px; color:var(--ink-soft);">${rekapHasil.totalDibatalkan} pcs dari baris bertanda warna <b>MERAH</b> di sheet (dianggap BATAL) -- tidak ikut dihitung di atas.</div>` : ''}
         ${htmlStatusSinkronPreOrderList()}
         ${rekapHasil.warnings.length ? `<div class="status-box show err" style="margin-top:6px;"><b>Peringatan (${rekapHasil.warnings.length}):</b><br>${rekapHasil.warnings.map(w => w.replace(/</g, '&lt;')).join('<br>')}</div>` : ''}
         ${rekapHasil.ringkasanGrup.length ? `
