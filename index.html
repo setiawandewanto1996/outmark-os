@@ -673,6 +673,43 @@ function cariKodeWarnaByNama(namaWarna) {
     (aliases || []).some(a => normalisasiNamaUtkBanding(a) === target));
   return aliasEntry ? aliasEntry[0] : null;
 }
+// Nama UTAMA kode warna (2026-11-22 round 19, Setiawan: "green, olive green, mesh green itu sama" + "kenapa
+// puregrey ada 2") -- dipakai utk MENYATUKAN warna yg SAMA kode tapi beda literal teks per sumber data (mis.
+// rowLabel sheet stok fisik "MESH GREEN" vs warna hasil cocok data pesanan/PO "OLIVE GREEN"/"GREEN" -- SEMUA
+// alias kode OGR yg sama persis) -- lihat hitungRekomendasiProduksi. SEBELUM fix ini, hitungRekomendasiProduksi
+// & hitungKartuProduksi mengelompokkan baris pakai TEKS warna mentah apa adanya (kunciEntriProduksi), jadi 2
+// sumber data yg sebenarnya warna SAMA (sudah terbukti sama krn resolve ke kode warna yg sama) malah dianggap
+// 2 "warna" BEDA -- bukan cuma kartu jadi pecah jadi kolom/baris terpisah (kosmetik), tapi PO/stok fisik yg
+// SAMA PERSIS ikut dihitung sbg 2 ENTITAS TERPISAH (satu dianggap py stok asli, satu lagi dianggap baris
+// sintetis stok=0) -- qty rekomendasi produksi bisa DOBEL DIHITUNG padahal SKU-nya identik. Kalau kode tidak
+// ketemu, balikin teks mentah apa adanya (warning "belum terdaftar" yg sudah ada tetap jalan spt biasa).
+function warnaKanonis(warnaMentah) {
+  const kode = cariKodeWarnaByNama(warnaMentah);
+  return (kode && STATE.colorCodeMap[kode]) || warnaMentah;
+}
+// Ganti nama utama 1 kode warna (2026-11-22 round 19) -- dipisah dari handler klik supaya bisa diuji langsung
+// tanpa simulasi DOM. Nama LAMA otomatis jadi alias (tidak hilang, data lain yg masih pakai teks lama tetap
+// kecocok lewat cariKodeWarnaByNama); ditolak kalau nama baru bentrok dgn nama/alias kode LAIN (nama yg sama
+// dipakai >1 kode bikin cariKodeWarnaByNama ambigu scr diam2, cuma pilih salah satu). Return {ok, pesan,
+// namaLama?} -- pemanggil (handler UI) yg urus pesan sukses/gagal + withSaving/render ulang.
+function gantiNamaUtamaKodeWarna(kode, namaBaruMentah) {
+  const namaBaru = String(namaBaruMentah || '').trim().toUpperCase();
+  if (!kode || !STATE.colorCodeMap[kode]) return { ok: false, pesan: 'Kode warna tidak ditemukan.' };
+  if (!namaBaru) return { ok: false, pesan: 'Nama utama tidak boleh kosong.' };
+  const namaLama = STATE.colorCodeMap[kode];
+  if (normalisasiNamaUtkBanding(namaBaru) === normalisasiNamaUtkBanding(namaLama)) return { ok: false, pesan: 'Nama baru sama dgn nama saat ini.' };
+  const konflikUtama = Object.entries(STATE.colorCodeMap).find(([k, n]) => k !== kode && normalisasiNamaUtkBanding(n) === normalisasiNamaUtkBanding(namaBaru));
+  const konflikAlias = Object.entries(STATE.colorCodeAlias || {}).find(([k, arr]) => k !== kode && (arr || []).some(a => normalisasiNamaUtkBanding(a) === normalisasiNamaUtkBanding(namaBaru)));
+  const bentrok = konflikUtama || konflikAlias;
+  if (bentrok) return { ok: false, pesan: `Nama "${namaBaru}" sudah dipakai sbg nama/alias kode warna lain (${bentrok[0]}) -- tidak bisa dipakai dobel, pilih kode itu yg sama kalau memang warnanya sama persis.` };
+  STATE.colorCodeAlias = STATE.colorCodeAlias || {};
+  STATE.colorCodeAlias[kode] = STATE.colorCodeAlias[kode] || [];
+  if (!STATE.colorCodeAlias[kode].some(a => normalisasiNamaUtkBanding(a) === normalisasiNamaUtkBanding(namaLama))) {
+    STATE.colorCodeAlias[kode].push(namaLama);
+  }
+  STATE.colorCodeMap[kode] = namaBaru;
+  return { ok: true, pesan: `Nama utama kode ${kode}: "${namaLama}" -> "${namaBaru}" (nama lama otomatis jadi alias).`, namaLama };
+}
 // Kebalikan dari SIZE_CODE_MAP (ukuran -> kode 2 digit), dipakai bangun SKU dari hasil mapping ukuran standar.
 function cariKodeUkuranBySize(ukuran) {
   const entry = Object.entries(SIZE_CODE_MAP).find(([kode, s]) => s === ukuran);
@@ -5068,10 +5105,22 @@ function renderColorCodeList(el) {
   const entries = Object.entries(STATE.colorCodeMap).sort((a,b) => a[0].localeCompare(b[0]));
   if (!entries.length) { el.innerHTML = '<div class="empty-note" style="grid-column:1/-1;">Belum ada kode warna.</div>'; return; }
   // Alias (2026-11-22): tampilkan nama alias per kode sbg chip yg bisa dihapus, di bawah pill kode->nama utama.
+  // Nama utama kini EDITABLE langsung di sini (2026-11-22 round 19) -- sejak fix round 19, Kartu Produksi &
+  // Prioritas PO menyatukan tampilan warna per KODE pakai nama utama ini (lihat warnaKanonis), jadi kalau nama
+  // utama kebetulan cuma placeholder asal (mis. kode "ABU" bernama utama "ABU" sendiri, padahal nama yg betulan
+  // dipakai "PURE GREY" cuma terdaftar sbg alias), Setiawan perlu cara gampang membetulkannya di sini -- bukan
+  // hapus-buat-ulang kode (yg bakal lepas semua alias & butuh registrasi ulang).
   el.innerHTML = entries.map(([kode,nama]) => {
     const aliases = (STATE.colorCodeAlias || {})[kode] || [];
     const aliasHtml = aliases.length ? `<div style="margin-top:4px; display:flex; flex-wrap:wrap; gap:4px;">${aliases.map(a => `<span class="pill" style="font-size:11px; padding:2px 6px; display:inline-flex; align-items:center; gap:4px;">alias: ${a}<span class="del-color-alias" data-kode="${kode}" data-alias="${a.replace(/"/g,'&quot;')}" style="cursor:pointer; color:var(--danger,#c33); font-weight:bold;" title="Hapus alias">&times;</span></span>`).join('')}</div>` : '';
-    return `<div class="pill" style="text-align:left; padding:6px 10px;">${kode} &rarr; ${nama}${aliasHtml}</div>`;
+    return `<div class="pill" style="text-align:left; padding:6px 10px;">
+      <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
+        <b>${kode}</b> &rarr;
+        <input type="text" class="input-nama-utama-warna" data-kode="${kode}" value="${String(nama).replace(/"/g,'&quot;')}" style="width:150px; padding:3px 6px; font-size:12px; border:1px solid var(--line); border-radius:4px;">
+        <button class="btn btn-ghost btn-simpan-nama-utama-warna" data-kode="${kode}" style="padding:2px 8px; font-size:11px;">Simpan</button>
+      </div>
+      ${aliasHtml}
+    </div>`;
   }).join('');
 }
 
@@ -7168,13 +7217,29 @@ function renderKontrak(container) {
   });
   document.getElementById('colorCodeList').addEventListener('click', async (e) => {
     const delBtn = e.target.closest('.del-color-alias');
-    if (!delBtn) return;
-    const kode = delBtn.dataset.kode;
-    const alias = delBtn.dataset.alias;
-    if (!STATE.colorCodeAlias || !STATE.colorCodeAlias[kode]) return;
-    STATE.colorCodeAlias[kode] = STATE.colorCodeAlias[kode].filter(a => a !== alias);
-    await saveState();
-    renderColorCodeList(document.getElementById('colorCodeList'));
+    if (delBtn) {
+      const kode = delBtn.dataset.kode;
+      const alias = delBtn.dataset.alias;
+      if (!STATE.colorCodeAlias || !STATE.colorCodeAlias[kode]) return;
+      STATE.colorCodeAlias[kode] = STATE.colorCodeAlias[kode].filter(a => a !== alias);
+      await saveState();
+      renderColorCodeList(document.getElementById('colorCodeList'));
+      return;
+    }
+    // Ganti nama utama kode warna (2026-11-22 round 19) -- lihat catatan di renderColorCodeList. Nama LAMA
+    // otomatis disimpan sbg alias (bukan hilang) supaya data lain yg kebetulan masih pakai teks nama lama
+    // tetap kecocok lewat cariKodeWarnaByNama; dicegah kalau nama baru bentrok dgn nama/alias kode LAIN
+    // (nama yg sama dipakai 2 kode bikin cariKodeWarnaByNama ambigu & cuma pilih salah satu scr diam2).
+    const simpanBtn = e.target.closest('.btn-simpan-nama-utama-warna');
+    if (simpanBtn) {
+      const kode = simpanBtn.dataset.kode;
+      const msg = document.getElementById('colorCodeMsg');
+      const inputEl = document.querySelector(`.input-nama-utama-warna[data-kode="${kode}"]`);
+      const hasil = gantiNamaUtamaKodeWarna(kode, inputEl ? inputEl.value : '');
+      if (!hasil.ok) { showMsg(msg, 'err', hasil.pesan); return; }
+      await withSaving(msg, hasil.pesan, async () => { await saveState(); });
+      setTimeout(() => renderColorCodeList(document.getElementById('colorCodeList')), 700);
+    }
   });
 
   // ---- Total per Capital Partner (dana aktif dikelola, lintas produk) -- SELALU pakai daftar lengkap
@@ -10366,11 +10431,14 @@ function hitungRekomendasiProduksi() {
 
   const wipBySku = {}, wipByKunci = {}, wipMeta = {};
   (STATE.produksiWip || []).forEach(w => {
+    // (round 19) kunci/meta pakai warna KANONIS (lihat warnaKanonis) spy WIP yg warnanya ditulis beda literal
+    // drpd baris stok tapi kode warnanya sama tetap nyatu jadi 1 baris, bukan 2.
+    const warnaK = warnaKanonis(w.warna);
     const sku = skuDariEntriManual(w);
-    const kunci = kunciEntriProduksi(w.produkNama, w.warna, w.ukuran);
+    const kunci = kunciEntriProduksi(w.produkNama, warnaK, w.ukuran);
     if (sku) wipBySku[sku] = (wipBySku[sku] || 0) + (w.qty || 0);
     wipByKunci[kunci] = (wipByKunci[kunci] || 0) + (w.qty || 0);
-    if (!wipMeta[kunci]) wipMeta[kunci] = { produkNama: w.produkNama, warna: w.warna, ukuran: w.ukuran };
+    if (!wipMeta[kunci]) wipMeta[kunci] = { produkNama: w.produkNama, warna: warnaK, ukuran: w.ukuran };
   });
   const poBySku = {}, poByKunci = {}, poMeta = {};
   // (2026-11-22 round 18, Setiawan: "padahal ada tanggal dan nomor pesanannya jelas kenapa bisa tidak ketemu")
@@ -10381,11 +10449,13 @@ function hitungRekomendasiProduksi() {
   // LAMA (paling mendesak).
   const poTanggalBySku = {}, poTanggalByKunci = {};
   (STATE.produksiPO || []).forEach(po => {
+    // (round 19) sama spt WIP di atas -- kunci/meta pakai warna KANONIS, bukan teks mentah per-entri PO.
+    const warnaK = warnaKanonis(po.warna);
     const sku = skuDariEntriManual(po);
-    const kunci = kunciEntriProduksi(po.produkNama, po.warna, po.ukuran);
+    const kunci = kunciEntriProduksi(po.produkNama, warnaK, po.ukuran);
     if (sku) poBySku[sku] = (poBySku[sku] || 0) + (po.qtyPO || 0);
     poByKunci[kunci] = (poByKunci[kunci] || 0) + (po.qtyPO || 0);
-    if (!poMeta[kunci]) poMeta[kunci] = { produkNama: po.produkNama, warna: po.warna, ukuran: po.ukuran };
+    if (!poMeta[kunci]) poMeta[kunci] = { produkNama: po.produkNama, warna: warnaK, ukuran: po.ukuran };
     if (po.tanggalPesanTerlama) {
       if (sku && (!poTanggalBySku[sku] || new Date(po.tanggalPesanTerlama) < new Date(poTanggalBySku[sku]))) poTanggalBySku[sku] = po.tanggalPesanTerlama;
       if (!poTanggalByKunci[kunci] || new Date(po.tanggalPesanTerlama) < new Date(poTanggalByKunci[kunci])) poTanggalByKunci[kunci] = po.tanggalPesanTerlama;
@@ -10422,7 +10492,10 @@ function hitungRekomendasiProduksi() {
     return { produkNama, warna, ukuran, sku, stok, wip, poQty, velocityPerMinggu: velocity, target, qtyNeeded, stokKritis, statusProduksi, tanggalPesanTerlama };
   };
 
-  const hasil = stockRows.map(row => hitungBarisRekomendasi(row.produkNama, row.warna, row.ukuranLabel, row.sku, row.qtyStok));
+  // (round 19) warna baris stok fisik jg disamakan via warnaKanonis sebelum masuk hitungBarisRekomendasi --
+  // kunciDariStockRows di bawah (dipakai cegah baris sintetis dobel) baru efektif kalau SEMUA sisi (stok,
+  // WIP, PO) pakai bentuk kunci yg konsisten (kanonis), bukan teks mentah masing2 sumber.
+  const hasil = stockRows.map(row => hitungBarisRekomendasi(row.produkNama, warnaKanonis(row.warna), row.ukuranLabel, row.sku, row.qtyStok));
 
   // BUG NYATA (2026-11-22 round 14, Setiawan: "untuk yang rovee saja di produksi hanya warna pure grey
   // padahal kalau berdasarkan list PO masih banyak yang belum tercapai") -- SEBELUM baris di bawah ini ada,
