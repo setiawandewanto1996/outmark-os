@@ -885,9 +885,16 @@ function resolvePreOrderListItem(row, item, warningsSet) {
   const produk = STATE.products.find(pr => pr.prefix === row.artikel);
   if (!produk) { warningsSet.add(`Kode ARTIKEL "${row.artikel}" (order ${row.noPesanan || row.no}) tidak cocok dgn prefix produk manapun yg terdaftar.`); return null; }
 
+  // (2026-11-22 round 18, Setiawan: "padahal ada tanggal dan nomor pesanannya jelas kenapa bisa tidak ketemu")
+  // kolom "TGL ORDER" sudah ada persis di baris sheet PO ini sendiri (row.tglOrder) -- dipakai sbg fallback
+  // tanggalPesan kalau tidak ketemu match yg lebih presisi lewat data pesanan resmi (sumberAsli), BUKAN dibuang
+  // jadi null spt sebelumnya (itu yg bikin tabel Prioritas PO selalu "belum ketemu pesanan cocok" & jadi tidak
+  // pernah bisa diurutkan tanggal sama sekali utk baris2 hasil impor Pre-Order List).
+  const tglOrderBarisIni = excelSerialToISO(row.tglOrder);
+
   const sumberAsli = cariSkuAsliDariPesananRovee(row.noPesanan, produk.prefix);
   if (sumberAsli) {
-    return { produkNama: produk.nama, warna: sumberAsli.warna || item.warnaRaw, ukuranLabel: item.sizeRaw.replace(/\s+/g, ''), sku: sumberAsli.sku, qty: item.qty, tanggalPesan: sumberAsli.tanggalPesan || null, sumber: 'data pesanan' };
+    return { produkNama: produk.nama, warna: sumberAsli.warna || item.warnaRaw, ukuranLabel: item.sizeRaw.replace(/\s+/g, ''), sku: sumberAsli.sku, qty: item.qty, tanggalPesan: sumberAsli.tanggalPesan || tglOrderBarisIni, sumber: 'data pesanan' };
   }
 
   // Fallback: bangun SKU dari singkatan WARNA + SIZE sheet PO ini sendiri (dicocokkan ke Kode Warna + alias,
@@ -895,15 +902,30 @@ function resolvePreOrderListItem(row, item, warningsSet) {
   const kodeWarna = cariKodeWarnaByNama(item.warnaRaw);
   if (!kodeWarna) { warningsSet.add(`Warna "${item.warnaRaw}" (order ${row.noPesanan || row.no}) tidak ketemu di data pesanan yg diimpor, dan belum ada di Kode Warna/alias (Data Master).`); return null; }
 
-  const groupEntry = Object.entries((STATE.produksiStockMapping || {}).groups || {}).find(([, g]) => g.produkNama === produk.nama);
-  const variantMap = groupEntry ? (((STATE.produksiStockMapping || {}).variants || {})[groupEntry[0]] || {}) : {};
+  // Cari grup sheet yg "memiliki" variant/ukuran kolom utk produk ini -- (2026-11-22 round 17) produk yg HANYA
+  // dijangkau lewat "Override Produk per Baris" (mis. ROVEE TANPA HIJAB, tdk py grup sheet sendiri krn stoknya
+  // numpang di baris2 tertentu grup ROVEE) SEBELUMNYA tidak pernah ketemu di sini (cuma dicari via
+  // groups[...].produkNama yg memang kosong utk produk spt ini), bikin fallback-ukuran SELALU gagal "belum
+  // dipetakan" utk produk begitu walau Pemetaan Varian/Ukuran grup induknya sudah lengkap. Dicari 2 tahap:
+  // (1) grup yg LANGSUNG dipetakan ke produk ini, (2) kalau tidak ada, grup manapun yg py row-override ke
+  // produk ini (variant/ukuran kolomnya tetap ikut grup INDUK -- sama struktur sheet-nya, cuma produk per-baris
+  // yg beda via override, jadi aman dipakai gabungan).
+  let groupLabelUntukVarian = null;
+  const grupLangsung = Object.entries((STATE.produksiStockMapping || {}).groups || {}).find(([, g]) => g.produkNama === produk.nama);
+  if (grupLangsung) {
+    groupLabelUntukVarian = grupLangsung[0];
+  } else {
+    const grupViaOverride = Object.entries((STATE.produksiStockMapping || {}).rowProduk || {}).find(([, rows]) => Object.values(rows || {}).some(ov => ov.produkNama === produk.nama));
+    if (grupViaOverride) groupLabelUntukVarian = grupViaOverride[0];
+  }
+  const variantMap = groupLabelUntukVarian ? (((STATE.produksiStockMapping || {}).variants || {})[groupLabelUntukVarian] || {}) : {};
   const ukuranNorm = item.sizeRaw.replace(/\s+/g, '');
   const vm = variantMap[ukuranNorm];
   if (!vm) { warningsSet.add(`Ukuran "${item.sizeRaw}" (order ${row.noPesanan || row.no}, produk ${produk.nama}) belum dipetakan di Pemetaan Varian/Ukuran (tab Stok & Pemetaan).`); return null; }
   const kodeUkuran = vm.ukuran ? cariKodeUkuranBySize(vm.ukuran) : (vm.kodeCustom || null);
   const sku = bangunSkuProduksi(produk.prefix, kodeWarna, kodeUkuran);
   if (!sku) { warningsSet.add(`SKU utk warna "${item.warnaRaw}"/ukuran "${item.sizeRaw}" (order ${row.noPesanan || row.no}) tidak bisa dibangun lengkap.`); return null; }
-  return { produkNama: produk.nama, warna: item.warnaRaw, ukuranLabel: vm.ukuran || ukuranNorm, sku, qty: item.qty, tanggalPesan: null, sumber: 'singkatan sheet PO' };
+  return { produkNama: produk.nama, warna: item.warnaRaw, ukuranLabel: vm.ukuran || ukuranNorm, sku, qty: item.qty, tanggalPesan: tglOrderBarisIni, sumber: 'singkatan sheet PO' };
 }
 
 // Rekap inti: dari STATE.preOrderListRaw -> detail per item + rekap qty "masih perlu diproduksi" per
@@ -927,8 +949,13 @@ function hitungRekapPreOrderList(rawRows) {
   detail.forEach(d => {
     if (!d.belumSelesai) return;
     const key = kunciEntriProduksi(d.produkNama, d.warna, d.ukuranLabel);
-    if (!rekapMap[key]) rekapMap[key] = { produkNama: d.produkNama, warna: d.warna, ukuran: d.ukuranLabel, qtyBelumSelesai: 0 };
+    if (!rekapMap[key]) rekapMap[key] = { produkNama: d.produkNama, warna: d.warna, ukuran: d.ukuranLabel, qtyBelumSelesai: 0, tanggalPesanTerlama: null };
     rekapMap[key].qtyBelumSelesai += d.qty;
+    // (2026-11-22 round 18) ambil tanggal pesan PALING LAMA di antara semua baris yg nyumbang ke grup
+    // produk+warna+ukuran ini, spy Prioritas PO bisa urut dari yg paling lama menunggu -- bukan dibuang.
+    if (d.tanggalPesan && (!rekapMap[key].tanggalPesanTerlama || new Date(d.tanggalPesan) < new Date(rekapMap[key].tanggalPesanTerlama))) {
+      rekapMap[key].tanggalPesanTerlama = d.tanggalPesan;
+    }
   });
   const rekap = Object.values(rekapMap).sort((a, b) => b.qtyBelumSelesai - a.qtyBelumSelesai);
   const totalBelumSelesai = detail.filter(d => d.belumSelesai).reduce((s, d) => s + d.qty, 0);
@@ -955,7 +982,7 @@ function sinkronkanPreOrderListKeProduksiPO(rekap) {
   const now = new Date().toISOString();
   (rekap || []).forEach(r => {
     if (r.qtyBelumSelesai <= 0) return;
-    STATE.produksiPO.push({ id: uid('po'), produkNama: r.produkNama, qtyPO: r.qtyBelumSelesai, warna: r.warna, ukuran: r.ukuran, catatan: 'Impor Pre-Order List (otomatis)', updatedAt: now, sumberImport: 'preOrderList' });
+    STATE.produksiPO.push({ id: uid('po'), produkNama: r.produkNama, qtyPO: r.qtyBelumSelesai, warna: r.warna, ukuran: r.ukuran, catatan: 'Impor Pre-Order List (otomatis)', updatedAt: now, sumberImport: 'preOrderList', tanggalPesanTerlama: r.tanggalPesanTerlama || null });
   });
 }
 
@@ -10346,12 +10373,23 @@ function hitungRekomendasiProduksi() {
     if (!wipMeta[kunci]) wipMeta[kunci] = { produkNama: w.produkNama, warna: w.warna, ukuran: w.ukuran };
   });
   const poBySku = {}, poByKunci = {}, poMeta = {};
+  // (2026-11-22 round 18, Setiawan: "padahal ada tanggal dan nomor pesanannya jelas kenapa bisa tidak ketemu")
+  // tanggalPesanTerlama yg ikut disinkron dari sheet Pre-Order List (lihat sinkronkanPreOrderListKeProduksiPO)
+  // ditampung per sku/kunci di sini juga -- supaya Prioritas PO tetap bisa urut tanggal walau kombinasi
+  // produk+warna+ukuran ybs TIDAK ketemu match di STATE.pendingOrderSku (data "Update Daftar Pesanan" terpisah
+  // yg belum tentu py order yg sama persis). Kalau >1 entri PO nyumbang ke sku/kunci yg sama, ambil yg PALING
+  // LAMA (paling mendesak).
+  const poTanggalBySku = {}, poTanggalByKunci = {};
   (STATE.produksiPO || []).forEach(po => {
     const sku = skuDariEntriManual(po);
     const kunci = kunciEntriProduksi(po.produkNama, po.warna, po.ukuran);
     if (sku) poBySku[sku] = (poBySku[sku] || 0) + (po.qtyPO || 0);
     poByKunci[kunci] = (poByKunci[kunci] || 0) + (po.qtyPO || 0);
     if (!poMeta[kunci]) poMeta[kunci] = { produkNama: po.produkNama, warna: po.warna, ukuran: po.ukuran };
+    if (po.tanggalPesanTerlama) {
+      if (sku && (!poTanggalBySku[sku] || new Date(po.tanggalPesanTerlama) < new Date(poTanggalBySku[sku]))) poTanggalBySku[sku] = po.tanggalPesanTerlama;
+      if (!poTanggalByKunci[kunci] || new Date(po.tanggalPesanTerlama) < new Date(poTanggalByKunci[kunci])) poTanggalByKunci[kunci] = po.tanggalPesanTerlama;
+    }
   });
 
   // Hitung 1 baris rekomendasi -- diekstrak jadi fungsi (2026-11-22 round 14) supaya bisa dipakai utk baris
@@ -10374,7 +10412,13 @@ function hitungRekomendasiProduksi() {
     const stokKritis = (stok + wip) <= 0;
     const qtyNeeded = stokKritis ? Math.max(qtyNeededMentah, BASELINE_QTY_STOK_KRITIS) : qtyNeededMentah;
     const statusProduksi = (p && p.statusProduksi === 'stop') ? 'stop' : 'aktif';
-    const tanggalPesanTerlama = poQty > 0 ? cariTanggalPesanTerlamaUntukSku(sku) : null;
+    let tanggalPesanTerlama = null;
+    if (poQty > 0) {
+      const dariPendingOrder = cariTanggalPesanTerlamaUntukSku(sku);
+      const dariPO = (sku && poTanggalBySku[sku]) || poTanggalByKunci[kunci] || null;
+      const kandidatTanggal = [dariPendingOrder, dariPO].filter(Boolean);
+      if (kandidatTanggal.length) tanggalPesanTerlama = kandidatTanggal.reduce((a, b) => new Date(a) < new Date(b) ? a : b);
+    }
     return { produkNama, warna, ukuran, sku, stok, wip, poQty, velocityPerMinggu: velocity, target, qtyNeeded, stokKritis, statusProduksi, tanggalPesanTerlama };
   };
 
