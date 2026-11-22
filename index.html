@@ -421,8 +421,9 @@ let STATE = {
   produksiStockFetchedAt: null,     // ISO string kapan STATE.produksiStockRaw terakhir diambil/diproses
   produksiSheetFileId: null,        // fileId Google Sheet "LIVE UJUSO" yg dipilih user via Picker (scope spreadsheets.readonly)
   produksiSettings: { targetMinggu: 4, windowMinggu: 8 }, // target cadangan stok (minggu) & jendela histori kecepatan jual (minggu)
-  preOrderListRaw: [],              // hasil parse mentah sheet "Pre-Order List" > tab ROVEE (tempel teks): [{no,tglOrder,username,artikel,warnaRaw,sizeRaw,qtyRaw,noPesanan,status,warehouse}]
-  preOrderListFetchedAt: null,      // ISO string kapan STATE.preOrderListRaw terakhir diproses (2026-11-22, fitur "Impor Pre-Order List")
+  preOrderListRaw: [],              // hasil parse mentah sheet "Pre-Order List" > tab ROVEE (live Google Sheets ATAU tempel teks fallback): [{no,tglOrder,username,artikel,warnaRaw,sizeRaw,qtyRaw,noPesanan,status,warehouse}]
+  preOrderListFetchedAt: null,      // ISO string kapan STATE.preOrderListRaw terakhir diambil/diproses (2026-11-22, fitur "Impor Pre-Order List")
+  preOrderListSheetFileId: null,    // fileId spreadsheet "Pre-Order List" yg dipilih user via Picker (2026-11-22 round 16, scope spreadsheets.readonly sama spt sheet stok)
   preOrderListSyncedAt: null,       // ISO string kapan terakhir klik "Sinkronkan ke Daftar PO" (2026-11-22, status sinkron) -- null/lebih
                                      // lama drpd preOrderListFetchedAt artinya ada data baru yg BLM disinkron ke Daftar PO & Rencana Produksi
   produksiOverrideQty: {},          // override manual qty per produk+ukuran di kartu "Order Produksi" (kunci "PRODUK||UKURAN", lihat
@@ -2098,7 +2099,7 @@ async function loadState(fileIdOverride) {
   const DEFAULT_STATE = { capitalPartners: [], stores: [], products: [], contracts: [], colorCodeMap: {}, colorCodeAlias: {}, pembagiPctManual: {}, orderDb: [], pendingOrderSku: {}, payouts: [], vendorPayouts: [], adsMingguan: [], biayaOperasional: [], opexKategori: OPEX_KATEGORI.slice(), alokasiProfit: [], alokasiKategori: ALOKASI_KATEGORI.slice(), saldoDiluarKontrak: {}, rolloverLog: [], customers: [], biayaRetur: [], karyawan: [], slipGaji: [], slipGajiSettings: { namaPerusahaan: 'UJUSO', alamatBaris: ['Jl. Permana Timur Blok D7 No. 28', 'Kel. Citeureup, Kec. Cimahi Utara', 'Kota Cimahi'], logoDataUri: DEFAULT_LOGO_UJUSO_DATA_URI, emailKontak: 'setiawandewanto@gmail.com' }, invoiceProducts: [], invoices: [], diskon: [], kwitansi: [],
     produksiWip: [], produksiPO: [], produksiStockMapping: { groups: {}, variants: {}, rowProduk: {} }, produksiStockRaw: [],
     produksiStockFetchedAt: null, produksiSheetFileId: null, produksiSettings: { targetMinggu: 4, windowMinggu: 8 },
-    preOrderListRaw: [], preOrderListFetchedAt: null, preOrderListSyncedAt: null, produksiOverrideQty: {} };
+    preOrderListRaw: [], preOrderListFetchedAt: null, preOrderListSyncedAt: null, preOrderListSheetFileId: null, produksiOverrideQty: {} };
   STATE = Object.assign({}, DEFAULT_STATE, loaded);
 }
 
@@ -2372,6 +2373,91 @@ async function fetchDanProsesStokDariSheet() {
     STATE.produksiStockFetchedAt = new Date().toISOString();
     await saveState();
     if (msg) showMsg(msg, 'ok', `Berhasil ambil ${groups.length} grup produk dari sheet "DATA" (blok stok gudang total).`);
+    renderProduksi(document.getElementById('app'));
+  } catch (e) {
+    if (msg) showMsg(msg, 'err', `Gagal mengambil data sheet: ${e.message}. Kalau ini pertama kali dipakai setelah update, coba logout lalu login lagi dulu (izin akses Sheets baru perlu di-approve ulang).`);
+  }
+}
+
+// Koneksi live ke spreadsheet "Pre-Order List" > tab ROVEE (2026-11-22 round 16, Setiawan: "hubungan dengan
+// sheet ini nya mana? ... aku butuh bukti ini terhubung dan rekapannya" -- sebelumnya fitur "Impor Pre-Order
+// List" cuma tempel-teks manual, keputusan Setiawan sendiri di Round 5; sekarang diubah jadi live spt sheet
+// stok, pola PERSIS SAMA dgn bukaPickerPilihSheetProduksi/fetchDanProsesStokDariSheet di atas (scope Sheets API
+// yg dipakai SAMA, 'spreadsheets.readonly', sudah pernah di-consent user sejak fitur stok live -- tidak perlu
+// scope baru). Tempel-teks manual TETAP ada sbg fallback (tidak dihapus), sama spt sheet stok.
+async function bukaPickerPilihSheetPreOrder() {
+  const msg = document.getElementById('preOrderListMsg');
+  if (!msg) return;
+  if (!GOOGLE_PICKER_API_KEY || GOOGLE_PICKER_API_KEY === 'GANTI_DENGAN_API_KEY_ANDA') {
+    showMsg(msg, 'err', 'Fitur ini belum di-setup: GOOGLE_PICKER_API_KEY belum diisi di kode index.html.');
+    return;
+  }
+  showMsg(msg, 'info', 'Membuka Google Drive Picker...');
+  try {
+    await pastikanPickerApiSiap();
+  } catch (e) {
+    showMsg(msg, 'err', e.message);
+    return;
+  }
+  const view = new google.picker.DocsView(google.picker.ViewId.SPREADSHEETS).setIncludeFolders(false);
+  const picker = new google.picker.PickerBuilder()
+    .addView(view)
+    .setOAuthToken(accessToken)
+    .setDeveloperKey(GOOGLE_PICKER_API_KEY)
+    .setAppId(GOOGLE_PROJECT_NUMBER)
+    .setOrigin(window.location.protocol + '//' + window.location.host)
+    .setCallback((data) => onPickerResultPreOrder(data, msg))
+    .build();
+  picker.setVisible(true);
+  showMsg(msg, 'info', 'Pilih spreadsheet "Pre-Order List" pada jendela Google Drive yang terbuka.');
+}
+
+async function onPickerResultPreOrder(data, msg) {
+  if (data.action !== google.picker.Action.PICKED) return;
+  const file = data.docs && data.docs[0];
+  if (!file) return;
+  STATE.preOrderListSheetFileId = file.id;
+  await saveState();
+  showMsg(msg, 'info', `Spreadsheet "${file.name}" terhubung. Mengambil data sheet "ROVEE"...`);
+  await fetchDanProsesPreOrderListDariSheet();
+}
+
+// Rows 2D (array of array) dari Sheets API values.get diubah balik jd teks ber-tab, PERSIS bentuk yg dihasilkan
+// copy-paste manual dari browser (sel digabung '\t', baris digabung '\n') -- supaya bisa dipakai LANGSUNG oleh
+// parsePreOrderListRovee(text) yg SUDAH ADA & SUDAH teruji (termasuk logic rekonstruksi baris yg "patah" oleh
+// newline tertanam dlm 1 sel) TANPA perlu nulis ulang/duplikasi logic parsing-nya -- 0 resiko baru di parser.
+function serializeRows2DKeTeksTab(rows2D) {
+  return (rows2D || []).map(row => (row || []).map(c => (c == null ? '' : String(c))).join('\t')).join('\n');
+}
+
+// Ambil isi sheet "ROVEE" dari spreadsheet "Pre-Order List" yg sudah dihubungkan, lewat Sheets API (sama spt
+// fetchDanProsesStokDariSheet, cuma beda nama tab & tujuan STATE-nya). CATATAN: bagian fetch jaringan+OAuth ini
+// tidak bisa diuji end-to-end lewat test otomatis (butuh browser+akun Google sungguhan) -- parsePreOrderListRovee
+// & hitungRekapPreOrderList sendiri (logic intinya) SUDAH teruji penuh di test_produksi_jsdom.js; yg BARU &
+// BELUM bisa diuji otomatis di sini cuma 3 baris pemanggilan fetch+serialize di bawah ini.
+async function fetchDanProsesPreOrderListDariSheet() {
+  const msg = document.getElementById('preOrderListMsg');
+  if (!STATE.preOrderListSheetFileId) { if (msg) showMsg(msg, 'err', 'Belum ada Google Sheet yg terhubung.'); return; }
+  try {
+    const res = await fetch(
+      `https://sheets.googleapis.com/v4/spreadsheets/${STATE.preOrderListSheetFileId}/values/ROVEE?valueRenderOption=UNFORMATTED_VALUE`,
+      { headers: { Authorization: 'Bearer ' + accessToken } }
+    );
+    if (!res.ok) {
+      const body = await res.text();
+      throw new Error(`HTTP ${res.status} -- ${body.slice(0,300)}`);
+    }
+    const data = await res.json();
+    const teks = serializeRows2DKeTeksTab(data.values || []);
+    const { rows, warnings } = parsePreOrderListRovee(teks);
+    if (!rows.length) {
+      if (msg) showMsg(msg, 'err', warnings.length ? warnings.join(' ') : 'Tidak ada baris order yg terbaca dari sheet "ROVEE".');
+      return;
+    }
+    STATE.preOrderListRaw = rows;
+    STATE.preOrderListFetchedAt = new Date().toISOString();
+    await saveState();
+    if (msg) showMsg(msg, 'ok', `Berhasil ambil ${rows.length} baris order dari sheet "ROVEE".`);
     renderProduksi(document.getElementById('app'));
   } catch (e) {
     if (msg) showMsg(msg, 'err', `Gagal mengambil data sheet: ${e.message}. Kalau ini pertama kali dipakai setelah update, coba logout lalu login lagi dulu (izin akses Sheets baru perlu di-approve ulang).`);
@@ -10796,10 +10882,23 @@ function htmlPreOrderListImport() {
   return `
     <div class="panel">
       <h2>Impor Pre-Order List (Rovee)</h2>
-      <div class="desc">Tempel teks dari sheet Google "Pre-Order List" &gt; tab ROVEE (termasuk baris header, kolom NO. PESANAN wajib ada). SKU diambil dari data pesanan yg sudah diimpor kalau NO. PESANAN cocok (lebih presisi); kalau tidak ketemu, dibangun dari singkatan warna + ukuran di sheet PO ini (dicocokkan ke Kode Warna/alias &amp; Pemetaan Varian/Ukuran).</div>
-      <textarea id="preOrderListPasteText" rows="6" placeholder="Tempel di sini, termasuk baris header NO | TGL ORDER | USSERNAME | ARTIKEL | WARNA | SIZE | QTY | TOTAL | NO. PESANAN | ... "></textarea>
-      <button class="btn btn-ghost" id="btnProsesPastePreOrderList" style="margin-top:6px;">Proses Teks</button>
+      <div class="desc">Sumber data: spreadsheet "Pre-Order List", sheet "ROVEE". Setelah terhubung, klik "Ambil Ulang Data" kapan saja utk sinkron ulang data terbaru -- tidak perlu copy-paste manual lagi.</div>
+      <div style="margin-top:8px; display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+        <button class="btn btn-primary" id="btnPilihSheetPreOrder">${STATE.preOrderListSheetFileId ? 'Ganti Google Sheet' : 'Hubungkan Google Sheet'}</button>
+        ${STATE.preOrderListSheetFileId ? `<button class="btn btn-ghost" id="btnAmbilUlangSheetPreOrder">Ambil Ulang Data</button>` : ''}
+      </div>
+      <div style="margin-top:6px; font-size:12px; color:var(--ink-soft);">
+        ${STATE.preOrderListSheetFileId
+          ? `Terhubung. Terakhir diambil: ${STATE.preOrderListFetchedAt ? fmtTanggalPanjang(STATE.preOrderListFetchedAt) : 'belum pernah'}.`
+          : 'Belum terhubung ke Google Sheet manapun.'}
+      </div>
       <div class="status-box" id="preOrderListMsg"></div>
+
+      <div style="margin-top:16px; padding-top:14px; border-top:1px solid var(--line);">
+        <div class="desc">Alternatif kalau koneksi live belum bisa dipakai: tempel teks dari sheet Google "Pre-Order List" &gt; tab ROVEE di sini (termasuk baris header, kolom NO. PESANAN wajib ada). SKU diambil dari data pesanan yg sudah diimpor kalau NO. PESANAN cocok (lebih presisi); kalau tidak ketemu, dibangun dari singkatan warna + ukuran di sheet PO ini (dicocokkan ke Kode Warna/alias &amp; Pemetaan Varian/Ukuran).</div>
+        <textarea id="preOrderListPasteText" rows="6" style="margin-top:6px;" placeholder="Tempel di sini, termasuk baris header NO | TGL ORDER | USSERNAME | ARTIKEL | WARNA | SIZE | QTY | TOTAL | NO. PESANAN | ... "></textarea>
+        <button class="btn btn-ghost" id="btnProsesPastePreOrderList" style="margin-top:6px;">Proses Teks</button>
+      </div>
       ${hasData ? `
         <div class="desc" style="margin-top:10px;">${rawRows.length} baris order terbaca (${rekapHasil.totalItemsAll} item setelah dipecah per warna/ukuran)${STATE.preOrderListFetchedAt ? ` -- diproses ${new Date(STATE.preOrderListFetchedAt).toLocaleString('id-ID')}` : ''}.</div>
         <div class="desc" style="margin-top:2px;"><b>${rekapHasil.totalItemsResolved} dari ${rekapHasil.totalItemsAll}</b> item berhasil dicocokkan ke produk/warna/ukuran -- total qty MASIH PERLU DIPRODUKSI (WAREHOUSE kosong &amp; STATUS "Diproses"): <b>${rekapHasil.totalBelumSelesai}</b> pcs.</div>
@@ -10910,6 +11009,11 @@ function htmlProduksiPO() {
 }
 
 function attachListenersProduksiPO(container) {
+  const btnPilihSheetPreOrder = document.getElementById('btnPilihSheetPreOrder');
+  if (btnPilihSheetPreOrder) btnPilihSheetPreOrder.addEventListener('click', bukaPickerPilihSheetPreOrder);
+  const btnAmbilUlangPreOrder = document.getElementById('btnAmbilUlangSheetPreOrder');
+  if (btnAmbilUlangPreOrder) btnAmbilUlangPreOrder.addEventListener('click', fetchDanProsesPreOrderListDariSheet);
+
   const btnProsesPreOrder = document.getElementById('btnProsesPastePreOrderList');
   if (btnProsesPreOrder) btnProsesPreOrder.addEventListener('click', async () => {
     const msg = document.getElementById('preOrderListMsg');
