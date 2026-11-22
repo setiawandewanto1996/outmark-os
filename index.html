@@ -10824,12 +10824,38 @@ function htmlPreOrderListImport() {
   `;
 }
 
+// Rekap+prioritas PO berdasarkan tanggal (2026-11-22 round 15, Setiawan: "harusnya ada rekapan juga disini
+// terkait apa saja yang di PO dan berdasarkan tanggal PO aku jadi tahu apa saja yang prioritas untuk di
+// produksi sebelum waktu pesanan yang harus di kirim selesai") -- diekstrak dari htmlProduksiRekomendasi
+// (yg sudah ADA sebelumnya, cuma lokasinya di sub-tab lain) spy bisa dipakai jg LANGSUNG di tab PO (Pre-Order)
+// ini sendiri, tanpa user perlu pindah2 sub-tab utk lihat apa yg sudah di-PO & urutan prioritasnya.
+function htmlPrioritasPO(poItemsOverride) {
+  const poItems = poItemsOverride || hitungRekomendasiProduksi().poItems;
+  return `
+    <div class="panel">
+      <h2>Prioritas #1 -- Sudah Ada PO (Pre-Order)</h2>
+      <div class="desc">Diurutkan dari tanggal pesanan pelanggan TERLAMA (paling mendesak dikerjakan) -- dicocokkan dgn data "Update Daftar Pesanan" yg sudah diupload.</div>
+      ${!poItems.length ? '<div class="empty-note">Tidak ada PO yg cocok dgn pesanan pelanggan saat ini.</div>' : `
+      <table class="data compact">
+        <thead><tr><th>Produk</th><th>Warna</th><th>Ukuran</th><th class="num">Qty PO</th><th>Tgl Pesanan Terlama</th></tr></thead>
+        <tbody>
+          ${poItems.map(h => `<tr>
+            <td>${h.produkNama}</td><td>${h.warna}</td><td>${h.ukuran}</td><td class="num">${h.poQty}</td>
+            <td>${h.tanggalPesanTerlama ? fmtTanggal(h.tanggalPesanTerlama, { short: true }) : '<span style="color:var(--ink-soft);">belum ketemu pesanan cocok</span>'}</td>
+          </tr>`).join('')}
+        </tbody>
+      </table>`}
+    </div>
+  `;
+}
+
 function htmlProduksiPO() {
   const editing = editingPOId ? STATE.produksiPO.find(w => w.id === editingPOId) : null;
   const rows = STATE.produksiPO.slice().sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''));
   const { warnaHtml, ukuranHtml } = htmlOptsWarnaUkuran(editing ? editing.produkNama : '', editing ? editing.warna : '', editing ? editing.ukuran : '');
   return `
     ${htmlPreOrderListImport()}
+    ${htmlPrioritasPO()}
     <div class="panel">
       <h2>${editing ? 'Edit' : 'Tambah'} Data PO (Pre-Order)</h2>
       <div class="desc">Input manual apa saja yg sudah di-PO ke konveksi, per produk + warna + ukuran. Akan dicocokkan otomatis ke data pesanan pelanggan yg sudah diupload (tab Rekomendasi Produksi) utk tentukan urutan prioritas (tanggal pesanan TERLAMA dikerjakan lebih dulu). ${editing ? 'Pilihan Warna/Ukuran otomatis menyesuaikan Produk yg dipilih (dari data Stok &amp; Pemetaan).' : 'Pilih produk &amp; warna dulu, lalu isi qty di ukuran mana saja yg di-PO -- bisa langsung beberapa ukuran sekaligus, tidak perlu tambah satu-satu.'}</div>
@@ -10978,20 +11004,7 @@ function htmlProduksiRekomendasi() {
       <div class="status-box" id="produksiSettingMsg"></div>
     </div>
 
-    <div class="panel">
-      <h2>Prioritas #1 -- Sudah Ada PO (Pre-Order)</h2>
-      <div class="desc">Diurutkan dari tanggal pesanan pelanggan TERLAMA (paling mendesak dikerjakan) -- dicocokkan dgn data "Update Daftar Pesanan" yg sudah diupload.</div>
-      ${!poItems.length ? '<div class="empty-note">Tidak ada PO yg cocok dgn pesanan pelanggan saat ini.</div>' : `
-      <table class="data compact">
-        <thead><tr><th>Produk</th><th>Warna</th><th>Ukuran</th><th class="num">Qty PO</th><th>Tgl Pesanan Terlama</th></tr></thead>
-        <tbody>
-          ${poItems.map(h => `<tr>
-            <td>${h.produkNama}</td><td>${h.warna}</td><td>${h.ukuran}</td><td class="num">${h.poQty}</td>
-            <td>${h.tanggalPesanTerlama ? fmtTanggal(h.tanggalPesanTerlama, { short: true }) : '<span style="color:var(--ink-soft);">belum ketemu pesanan cocok</span>'}</td>
-          </tr>`).join('')}
-        </tbody>
-      </table>`}
-    </div>
+    ${htmlPrioritasPO(poItems)}
 
     <div class="panel">
       <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
