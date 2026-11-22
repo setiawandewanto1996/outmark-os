@@ -873,12 +873,21 @@ function sinkronkanPreOrderListKeProduksiPO(rekap) {
 // WIP & PO otomatis menyesuaikan produk yg dipilih & labelnya DIJAMIN cocok dgn label di Stok & Pemetaan
 // (tidak perlu ketik manual persis sama lagi). Produk yg blm py baris stok terpetakan -> dropdown kosong
 // (pemanggil tetap sedia opsi "+ Lainnya (ketik manual)" spy tidak buntu).
+// Urutkan daftar label ukuran: ukuran standar (S/M/L/XL/.../7XL) dulu sesuai urutan baku SIZES, baru label
+// bukan-ukuran-standar (mis. "L/XL" varian Rovee) diurutkan alfabet di belakangnya -- TANPA ini, Array.sort()
+// polos mengurutkan alfabet apa adanya ("3XL,4XL,...,L,M,S,XL,XXL" -- salah urut spt dilaporkan Setiawan dari
+// screenshot produk OSWALD, 2026-11-22), krn "3" < "L" secara karakter walau S/M/L seharusnya duluan.
+function urutkanUkuranStandarDulu(daftarUkuran) {
+  const ukuranStandar = SIZES.filter(s => daftarUkuran.includes(s));
+  const ukuranLain = daftarUkuran.filter(u => !SIZES.includes(u)).sort();
+  return [...ukuranStandar, ...ukuranLain];
+}
 function daftarWarnaUkuranProduk(produkNama) {
   if (!produkNama) return { warnas: [], ukurans: [] };
   const { rows } = ratakanStokProduksi(STATE.produksiStockRaw || [], STATE.produksiStockMapping || { groups: {}, variants: {} });
   const warnaSet = new Set(), ukuranSet = new Set();
   rows.forEach(r => { if (r.produkNama === produkNama) { if (r.warna) warnaSet.add(r.warna); if (r.ukuranLabel) ukuranSet.add(r.ukuranLabel); } });
-  return { warnas: Array.from(warnaSet).sort(), ukurans: Array.from(ukuranSet).sort() };
+  return { warnas: Array.from(warnaSet).sort(), ukurans: urutkanUkuranStandarDulu(Array.from(ukuranSet)) };
 }
 // Bangun HTML <option> utk dropdown Warna/Ukuran form WIP/PO -- nilai yg sedang aktif (mis. saat Edit)
 // selalu diselipkan ke daftar meski bukan hasil stok (mis. data lama/custom), supaya tidak hilang diam2
@@ -10210,10 +10219,7 @@ function hitungKartuProduksi() {
   });
   return urutanProduk.map(produkNama => {
     const ukuranMap = perProduk[produkNama];
-    const semuaUkuran = Object.keys(ukuranMap);
-    const ukuranStandar = SIZES.filter(s => semuaUkuran.includes(s));
-    const ukuranLain = semuaUkuran.filter(u => !SIZES.includes(u)).sort();
-    const baris = [...ukuranStandar, ...ukuranLain].map(ukuran => {
+    const baris = urutkanUkuranStandarDulu(Object.keys(ukuranMap)).map(ukuran => {
       const kunci = kunciKartuProduksi(produkNama, ukuran);
       const { sistem, stokKritis } = ukuranMap[ukuran];
       const adaOverride = Object.prototype.hasOwnProperty.call(overrides, kunci);
