@@ -10357,6 +10357,7 @@ function htmlProduksiStok(groups, stockRows, warnings) {
               </div>
               <button class="btn btn-ghost btn-simpan-map-produk" data-group-idx="${idx}">Simpan Pemetaan Grup</button>
             </div>
+            <div class="status-box" id="mapGrupMsg_${idx}"></div>
             ${gm && gm.produkNama ? `
             <div style="margin-top:8px; padding-top:8px; border-top:1px dashed var(--line);">
               <div class="desc" style="margin-bottom:6px;">Petakan tiap varian/ukuran ke ukuran standar ATAU kode custom 2 huruf (utk varian bukan-ukuran spt scent/model):</div>
@@ -10382,6 +10383,7 @@ function htmlProduksiStok(groups, stockRows, warnings) {
                 </div>`;
               }).join('')}
               <button class="btn btn-ghost btn-simpan-map-variants" data-group-idx="${idx}" style="margin-top:4px;">Simpan Pemetaan Varian/Ukuran</button>
+              <div class="status-box" id="mapVariantMsg_${idx}"></div>
             </div>
             <div style="margin-top:8px; padding-top:8px; border-top:1px dashed var(--line);">
               <div class="desc" style="margin-bottom:6px;">Kalau grup ini sebenarnya berisi LEBIH DARI 1 produk tercampur (mis. baris varian "Tanpa Hijab" yg kolom ukurannya sama persis dgn produk reguler), baris warna tertentu bisa diarahkan ke produk LAIN di sini. Biarkan "-- pakai produk grup --" kalau baris itu memang produk yg sama spt grup (berlaku utk hampir semua grup, ini opsional).</div>
@@ -10397,6 +10399,7 @@ function htmlProduksiStok(groups, stockRows, warnings) {
                 </div>`;
               }).join('')}
               <button class="btn btn-ghost btn-simpan-row-override" data-group-idx="${idx}" style="margin-top:4px;">Simpan Override Produk per Baris</button>
+              <div class="status-box" id="mapRowMsg_${idx}"></div>
             </div>` : ''}
             `}
           </div>`;
@@ -10456,17 +10459,30 @@ function attachListenersProduksiStok(container) {
     renderProduksi(container);
   });
 
+  // (2026-11-22 round 11, Setiawan: "sudah aku klik tapi tidak ada respon" -- 3 tombol simpan di panel
+  // Pemetaan Grup ini SEBELUMNYA tidak pakai withSaving() sama sekali (beda dari hampir semua tombol simpan
+  // lain di app ini), jadi saveState() ke Google Drive yg lumayan lambat (STATE besar) jalan TANPA ada
+  // indikasi visual apapun -- user wajar mengira tombolnya tidak merespon / gagal diam-diam (termasuk kalau
+  // saveState() betulan error, sebelumnya error itu tidak pernah ketahuan user sama sekali). Sekarang pakai
+  // withSaving() spt tombol lain (tampilkan "Menyimpan..." lalu "Tersimpan."/error), & grup yg baru disimpan
+  // TETAP dibuka (produksiStokGroupExpanded dipaksa true) walau sudah lengkap, spy user benar2 lihat pesan
+  // suksesnya dulu -- tidak langsung collapse di depan mata di saat yg sama (baru collapse di render berikutnya
+  // kalau dia pindah sub-tab/buka grup lain).
   container.querySelectorAll('.btn-simpan-map-produk').forEach(btn => {
     btn.addEventListener('click', async () => {
       const idx = Number(btn.dataset.groupIdx);
       const g = (STATE.produksiStockRaw || [])[idx];
       if (!g) return;
+      const msg = document.getElementById(`mapGrupMsg_${idx}`);
       const sel = container.querySelector(`.sel-map-produk[data-group-idx="${idx}"]`);
       const produkNama = sel ? sel.value : '';
-      STATE.produksiStockMapping.groups = STATE.produksiStockMapping.groups || {};
-      STATE.produksiStockMapping.groups[g.groupLabel] = produkNama ? { produkNama, skip: false } : { skip: true };
-      await saveState();
-      renderProduksi(container);
+      await withSaving(msg, 'Pemetaan grup tersimpan.', async () => {
+        STATE.produksiStockMapping.groups = STATE.produksiStockMapping.groups || {};
+        STATE.produksiStockMapping.groups[g.groupLabel] = produkNama ? { produkNama, skip: false } : { skip: true };
+        await saveState();
+      });
+      produksiStokGroupExpanded[g.groupLabel] = true;
+      setTimeout(() => renderProduksi(container), 700);
     });
   });
 
@@ -10475,17 +10491,21 @@ function attachListenersProduksiStok(container) {
       const idx = Number(btn.dataset.groupIdx);
       const g = (STATE.produksiStockRaw || [])[idx];
       if (!g) return;
-      STATE.produksiStockMapping.variants = STATE.produksiStockMapping.variants || {};
-      STATE.produksiStockMapping.variants[g.groupLabel] = STATE.produksiStockMapping.variants[g.groupLabel] || {};
-      g.variantLabels.forEach((vl, vidx) => {
-        const selStd = container.querySelector(`.sel-map-ukuran-std[data-group-idx="${idx}"][data-variant-idx="${vidx}"]`);
-        const inpCustom = container.querySelector(`.inp-map-ukuran-custom[data-group-idx="${idx}"][data-variant-idx="${vidx}"]`);
-        const std = selStd ? selStd.value : '';
-        const custom = inpCustom ? inpCustom.value.trim().toUpperCase() : '';
-        STATE.produksiStockMapping.variants[g.groupLabel][vl] = std ? { ukuran: std } : (custom ? { kodeCustom: custom } : {});
+      const msg = document.getElementById(`mapVariantMsg_${idx}`);
+      await withSaving(msg, 'Pemetaan varian/ukuran tersimpan.', async () => {
+        STATE.produksiStockMapping.variants = STATE.produksiStockMapping.variants || {};
+        STATE.produksiStockMapping.variants[g.groupLabel] = STATE.produksiStockMapping.variants[g.groupLabel] || {};
+        g.variantLabels.forEach((vl, vidx) => {
+          const selStd = container.querySelector(`.sel-map-ukuran-std[data-group-idx="${idx}"][data-variant-idx="${vidx}"]`);
+          const inpCustom = container.querySelector(`.inp-map-ukuran-custom[data-group-idx="${idx}"][data-variant-idx="${vidx}"]`);
+          const std = selStd ? selStd.value : '';
+          const custom = inpCustom ? inpCustom.value.trim().toUpperCase() : '';
+          STATE.produksiStockMapping.variants[g.groupLabel][vl] = std ? { ukuran: std } : (custom ? { kodeCustom: custom } : {});
+        });
+        await saveState();
       });
-      await saveState();
-      renderProduksi(container);
+      produksiStokGroupExpanded[g.groupLabel] = true;
+      setTimeout(() => renderProduksi(container), 700);
     });
   });
 
@@ -10494,18 +10514,22 @@ function attachListenersProduksiStok(container) {
       const idx = Number(btn.dataset.groupIdx);
       const g = (STATE.produksiStockRaw || [])[idx];
       if (!g) return;
-      STATE.produksiStockMapping.rowProduk = STATE.produksiStockMapping.rowProduk || {};
-      STATE.produksiStockMapping.rowProduk[g.groupLabel] = STATE.produksiStockMapping.rowProduk[g.groupLabel] || {};
-      g.items.forEach((item, ridx) => {
-        const sel = container.querySelector(`.sel-row-override-produk[data-group-idx="${idx}"][data-row-idx="${ridx}"]`);
-        const inp = container.querySelector(`.inp-row-override-warna[data-group-idx="${idx}"][data-row-idx="${ridx}"]`);
-        const produkOverride = sel ? sel.value : '';
-        const warnaOverride = inp ? inp.value.trim() : '';
-        if (!produkOverride) { delete STATE.produksiStockMapping.rowProduk[g.groupLabel][item.rowLabel]; return; }
-        STATE.produksiStockMapping.rowProduk[g.groupLabel][item.rowLabel] = warnaOverride ? { produkNama: produkOverride, warna: warnaOverride } : { produkNama: produkOverride };
+      const msg = document.getElementById(`mapRowMsg_${idx}`);
+      await withSaving(msg, 'Override produk per baris tersimpan.', async () => {
+        STATE.produksiStockMapping.rowProduk = STATE.produksiStockMapping.rowProduk || {};
+        STATE.produksiStockMapping.rowProduk[g.groupLabel] = STATE.produksiStockMapping.rowProduk[g.groupLabel] || {};
+        g.items.forEach((item, ridx) => {
+          const sel = container.querySelector(`.sel-row-override-produk[data-group-idx="${idx}"][data-row-idx="${ridx}"]`);
+          const inp = container.querySelector(`.inp-row-override-warna[data-group-idx="${idx}"][data-row-idx="${ridx}"]`);
+          const produkOverride = sel ? sel.value : '';
+          const warnaOverride = inp ? inp.value.trim() : '';
+          if (!produkOverride) { delete STATE.produksiStockMapping.rowProduk[g.groupLabel][item.rowLabel]; return; }
+          STATE.produksiStockMapping.rowProduk[g.groupLabel][item.rowLabel] = warnaOverride ? { produkNama: produkOverride, warna: warnaOverride } : { produkNama: produkOverride };
+        });
+        await saveState();
       });
-      await saveState();
-      renderProduksi(container);
+      produksiStokGroupExpanded[g.groupLabel] = true;
+      setTimeout(() => renderProduksi(container), 700);
     });
   });
 }
