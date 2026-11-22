@@ -10650,8 +10650,20 @@ function hitungRekomendasiProduksi() {
     if (poQty > 0) {
       const dariPendingOrder = cariTanggalPesanTerlamaUntukSku(sku);
       const dariPO = (sku && poTanggalBySku[sku]) || poTanggalByKunci[kunci] || null;
-      const kandidatTanggal = [dariPendingOrder, dariPO].filter(Boolean);
-      if (kandidatTanggal.length) tanggalPesanTerlama = kandidatTanggal.reduce((a, b) => new Date(a) < new Date(b) ? a : b);
+      // BUG NYATA (2026-11-22 round 20, Setiawan: "burgundy maroon pesanan terlama tanggal 1/11/2026, sedangkan
+      // di PO tidak ada ini sudah selesai pesanannya sudah dikirim") -- dariPendingOrder (STATE.pendingOrderSku,
+      // panel "Pesanan Menunggu Cair") itu soal PEMBAYARAN blm settle/cair ke rekening, BUKAN soal produksi/
+      // pengiriman barangnya sudah selesai atau belum -- 1 order yg SUDAH dikirim (STATUS "Dikirim"/"Selesai" &
+      // WAREHOUSE "DONE PACKING" di sheet Pre-Order List) bisa SAJA msh "menunggu cair" pembayarannya scr
+      // terpisah, SKU-nya msh nyangkut di pendingOrderSku dgn tanggal LAMA -- padahal dariPO (tanggalPesanTerlama
+      // hasil sinkron Pre-Order List, SUDAH difilter blm-selesai=blm dikirim+blm dikemas, lihat
+      // hitungRekapPreOrderList) adalah sinyal yg BENAR2 mencerminkan "msh perlu diproduksi". SEBELUM fix ini,
+      // kode ambil yg PALING LAMA di antara keduanya tanpa pandang asalnya -- tanggal pembayaran lama dari order
+      // yg SUDAH dikirim bisa menang & salah ditampilkan sbg "pesanan terlama msh nunggu produksi" di Prioritas
+      // PO. FIX: dariPO (kalau ada) SELALU diutamakan -- dariPendingOrder cuma dipakai sbg fallback kalau dariPO
+      // benar2 tidak ada (mis. entri PO MANUAL, bukan hasil sinkron Pre-Order List, yg blm py tanggalPesanTerlama
+      // sendiri sama sekali & tidak py sumber lain utk estimasi urgensi).
+      tanggalPesanTerlama = dariPO || dariPendingOrder || null;
     }
     return { produkNama, warna, ukuran, sku, stok, wip, poQty, velocityPerMinggu: velocity, target, qtyNeeded, stokKritis, statusProduksi, tanggalPesanTerlama };
   };
