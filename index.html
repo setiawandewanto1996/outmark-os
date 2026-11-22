@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Outmark OS</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
 <script src="https://accounts.google.com/gsi/client" async defer></script>
 <script src="https://apis.google.com/js/api.js" async defer></script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -397,6 +398,8 @@ let STATE = {
   produksiSettings: { targetMinggu: 4, windowMinggu: 8 }, // target cadangan stok (minggu) & jendela histori kecepatan jual (minggu)
   preOrderListRaw: [],              // hasil parse mentah sheet "Pre-Order List" > tab ROVEE (tempel teks): [{no,tglOrder,username,artikel,warnaRaw,sizeRaw,qtyRaw,noPesanan,status,warehouse}]
   preOrderListFetchedAt: null,      // ISO string kapan STATE.preOrderListRaw terakhir diproses (2026-11-22, fitur "Impor Pre-Order List")
+  preOrderListSyncedAt: null,       // ISO string kapan terakhir klik "Sinkronkan ke Daftar PO" (2026-11-22, status sinkron) -- null/lebih
+                                     // lama drpd preOrderListFetchedAt artinya ada data baru yg BLM disinkron ke Daftar PO & Rencana Produksi
   produksiOverrideQty: {},          // override manual qty per produk+ukuran di kartu "Order Produksi" (kunci "PRODUK||UKURAN", lihat
                                      // hitungKartuProduksi) -- kalau ada, SELALU menang drpd angka rekomendasi sistem & tersimpan
                                      // permanen (2026-11-22, Setiawan: "aku bisa rubah dan sesuaikan...tidak hanya berdasarkan
@@ -624,17 +627,24 @@ function parseStokGroupsFromCells(rowsOfCells) {
 
 // Cari kode warna (3 huruf, posisi ke-4-6 SKU) dari nama warna -- pakai STATE.colorCodeMap yg SUDAH ADA
 // (dikelola di tab Produk & Kontrak > Kode Warna), supaya tidak perlu mapping baru terpisah khusus fitur ini.
+// Normalisasi nama warna utk dibandingkan (2026-11-22 round 11, kasus nyata: baris sheet "DEO  By UOUT"
+// ternyata ada 2 spasi di antara "DEO" dan "By" -- tidak kelihatan bedanya di layar/screenshot sama sekali,
+// shg alias yg diketik user manual (otomatis cuma 1 spasi, krn itu yg terlihat) GAGAL cocok dgn teks asli
+// sheet walau scr kasat mata identik. Spasi berturutan (termasuk tab) diringkas jadi 1 spasi SEBELUM
+// dibandingkan -- ini TIDAK mengubah apa yg disimpan/ditampilkan, cuma bikin pencocokan nama lebih toleran
+// thdp noise spasi yg tidak disengaja dari sheet sumbernya.
+function normalisasiNamaUtkBanding(s) { return String(s).trim().toUpperCase().replace(/\s+/g, ' '); }
 function cariKodeWarnaByNama(namaWarna) {
   if (!namaWarna) return null;
-  const target = String(namaWarna).trim().toUpperCase();
-  const entry = Object.entries(STATE.colorCodeMap).find(([kode, nama]) => String(nama).trim().toUpperCase() === target);
+  const target = normalisasiNamaUtkBanding(namaWarna);
+  const entry = Object.entries(STATE.colorCodeMap).find(([kode, nama]) => normalisasiNamaUtkBanding(nama) === target);
   if (entry) return entry[0];
   // Alias nama warna (2026-11-22, kasus nyata Setiawan: sheet stok sebut warna "YELLOW" padahal di Kode Warna
   // kode MTD terdaftar dgn nama utama "MUSTARD") -- 1 kode bisa dikenali lewat lebih dari 1 nama, nama utama di
   // colorCodeMap TIDAK berubah/tertimpa, ini murni tambahan nama lain yg dianggap sama. Dikelola di Data Master
   // > Kode Warna (lihat renderColorCodeList + handler "+ Tambah Alias Warna").
   const aliasEntry = Object.entries(STATE.colorCodeAlias || {}).find(([kode, aliases]) =>
-    (aliases || []).some(a => String(a).trim().toUpperCase() === target));
+    (aliases || []).some(a => normalisasiNamaUtkBanding(a) === target));
   return aliasEntry ? aliasEntry[0] : null;
 }
 // Kebalikan dari SIZE_CODE_MAP (ukuran -> kode 2 digit), dipakai bangun SKU dari hasil mapping ukuran standar.
@@ -876,8 +886,10 @@ function resolvePreOrderListItem(row, item, warningsSet) {
 function hitungRekapPreOrderList(rawRows) {
   const warningsSet = new Set();
   const detail = [];
+  let totalItemsAll = 0;
   (rawRows || []).forEach(row => {
     const items = ledakkanBarisPreOrder(row);
+    totalItemsAll += items.length;
     items.forEach(it => {
       const resolved = resolvePreOrderListItem(row, it, warningsSet);
       if (!resolved) return;
@@ -894,7 +906,19 @@ function hitungRekapPreOrderList(rawRows) {
   });
   const rekap = Object.values(rekapMap).sort((a, b) => b.qtyBelumSelesai - a.qtyBelumSelesai);
   const totalBelumSelesai = detail.filter(d => d.belumSelesai).reduce((s, d) => s + d.qty, 0);
-  return { detail, rekap, warnings: Array.from(warningsSet), totalBaris: (rawRows || []).length, totalBelumSelesai };
+  // Ringkasan per produk+warna (2026-11-22, permintaan Setiawan: "rangkuman apa saja yg di PO misal Rovee
+  // black manta S/M 10 Pcs") -- gabungkan baris2 rekap (yg masih per produk+warna+UKURAN) jadi 1 baris per
+  // produk+warna dgn daftar ukuran+qty inline, biar gampang dicocokkan ke kartu Order Produksi (pivot per warna).
+  const ringkasanGrupMap = {};
+  rekap.forEach(r => {
+    const key = r.produkNama + '||' + r.warna;
+    if (!ringkasanGrupMap[key]) ringkasanGrupMap[key] = { produkNama: r.produkNama, warna: r.warna, ukurans: [], total: 0 };
+    ringkasanGrupMap[key].ukurans.push({ ukuran: r.ukuran, qty: r.qtyBelumSelesai });
+    ringkasanGrupMap[key].total += r.qtyBelumSelesai;
+  });
+  const ringkasanGrup = Object.values(ringkasanGrupMap).sort((a, b) => b.total - a.total);
+  const totalItemsResolved = detail.length;
+  return { detail, rekap, ringkasanGrup, warnings: Array.from(warningsSet), totalBaris: (rawRows || []).length, totalBelumSelesai, totalItemsAll, totalItemsResolved };
 }
 
 // Sinkronkan hasil rekap ke STATE.produksiPO -- entri lama hasil import ini (ditandai sumberImport=
@@ -2049,7 +2073,7 @@ async function loadState(fileIdOverride) {
   const DEFAULT_STATE = { capitalPartners: [], stores: [], products: [], contracts: [], colorCodeMap: {}, colorCodeAlias: {}, pembagiPctManual: {}, orderDb: [], pendingOrderSku: {}, payouts: [], vendorPayouts: [], adsMingguan: [], biayaOperasional: [], opexKategori: OPEX_KATEGORI.slice(), alokasiProfit: [], alokasiKategori: ALOKASI_KATEGORI.slice(), saldoDiluarKontrak: {}, rolloverLog: [], customers: [], biayaRetur: [], karyawan: [], slipGaji: [], slipGajiSettings: { namaPerusahaan: 'UJUSO', alamatBaris: ['Jl. Permana Timur Blok D7 No. 28', 'Kel. Citeureup, Kec. Cimahi Utara', 'Kota Cimahi'], logoDataUri: DEFAULT_LOGO_UJUSO_DATA_URI, emailKontak: 'setiawandewanto@gmail.com' }, invoiceProducts: [], invoices: [], diskon: [], kwitansi: [],
     produksiWip: [], produksiPO: [], produksiStockMapping: { groups: {}, variants: {}, rowProduk: {} }, produksiStockRaw: [],
     produksiStockFetchedAt: null, produksiSheetFileId: null, produksiSettings: { targetMinggu: 4, windowMinggu: 8 },
-    preOrderListRaw: [], preOrderListFetchedAt: null, produksiOverrideQty: {} };
+    preOrderListRaw: [], preOrderListFetchedAt: null, preOrderListSyncedAt: null, produksiOverrideQty: {} };
   STATE = Object.assign({}, DEFAULT_STATE, loaded);
 }
 
@@ -6973,10 +6997,10 @@ function renderKontrak(container) {
     const msg = document.getElementById('colorAliasMsg');
     if (!kode || !STATE.colorCodeMap[kode]) { showMsg(msg, 'err', 'Pilih kode warna yg valid dulu.'); return; }
     if (!alias) { showMsg(msg, 'err', 'Nama alias wajib diisi.'); return; }
-    if (alias === String(STATE.colorCodeMap[kode]).trim().toUpperCase()) { showMsg(msg, 'err', 'Nama alias sama dgn nama utama, tidak perlu ditambahkan.'); return; }
+    if (normalisasiNamaUtkBanding(alias) === normalisasiNamaUtkBanding(STATE.colorCodeMap[kode])) { showMsg(msg, 'err', 'Nama alias sama dgn nama utama, tidak perlu ditambahkan.'); return; }
     STATE.colorCodeAlias = STATE.colorCodeAlias || {};
     STATE.colorCodeAlias[kode] = STATE.colorCodeAlias[kode] || [];
-    if (STATE.colorCodeAlias[kode].some(a => String(a).trim().toUpperCase() === alias)) { showMsg(msg, 'err', 'Alias ini sudah ada utk kode tsb.'); return; }
+    if (STATE.colorCodeAlias[kode].some(a => normalisasiNamaUtkBanding(a) === normalisasiNamaUtkBanding(alias))) { showMsg(msg, 'err', 'Alias ini sudah ada utk kode tsb.'); return; }
     STATE.colorCodeAlias[kode].push(alias);
     await withSaving(msg, `Alias "${alias}" utk kode ${kode} tersimpan.`, async () => { await saveState(); });
     document.getElementById('cw_alias_nama').value = '';
@@ -10284,6 +10308,29 @@ function hitungKartuProduksi() {
   });
 }
 
+// Ubah 1 hasil hitungKartuProduksi() (per produk) jadi bentuk pivot/matrix SIZE (baris) x WARNA (kolom),
+// sesuai pola spreadsheet yg biasa dipakai Setiawan sendiri (2026-11-22: "mungkin bisa seperti ini" + contoh
+// screenshot pivot). CATATAN KONTRAK: fungsi ini HANYA membaca ulang k.baris (hasil hitungKartuProduksi, yg
+// sudah terbukti read-only thdp kontrak/payout) -- tidak menghitung apa pun baru & tidak menyentuh STATE.
+// hitungKartuProduksi() & kunciKartuProduksi() sendiri TIDAK diubah sama sekali oleh fungsi ini.
+function pivotKartuProduksi(k) {
+  const idxUkuran = (u) => { const i = SIZES.indexOf(u); return i === -1 ? SIZES.length : i; };
+  const warnaSet = new Set();
+  const ukuranSet = new Set();
+  const cellMap = {};
+  (k.baris || []).forEach(b => {
+    warnaSet.add(b.warna);
+    ukuranSet.add(b.ukuran);
+    cellMap[b.warna + '||' + b.ukuran] = b;
+  });
+  const warnaCols = Array.from(warnaSet).sort((a, b) => a < b ? -1 : (a > b ? 1 : 0));
+  const ukuranRows = Array.from(ukuranSet).sort((a, b) => {
+    const ia = idxUkuran(a), ib = idxUkuran(b);
+    return ia !== ib ? ia - ib : (a < b ? -1 : (a > b ? 1 : 0));
+  });
+  return { warnaCols, ukuranRows, cellMap };
+}
+
 function htmlProduksiStok(groups, stockRows, warnings) {
   const mapping = STATE.produksiStockMapping || { groups: {}, variants: {} };
   const totalByProduk = {};
@@ -10648,6 +10695,22 @@ function attachListenersProduksiWip(container) {
 // Panel "Impor Pre-Order List" (2026-11-22, khusus Rovee) -- tempel teks dari sheet Google terpisah
 // "Pre-Order List" > tab ROVEE, lihat rekap qty "masih perlu diproduksi" per warna/ukuran, lalu sinkronkan
 // ke Daftar PO di bawahnya (tanpa mengganggu entri PO yg ditambah manual).
+// Status sinkron sheet PO Rovee (2026-11-22, permintaan Setiawan: "seharusnya di sini ada tampilan sheet
+// sudah tersinkron atau belum dengan sheet po rovee") -- bandingkan preOrderListFetchedAt (kapan teks sheet
+// terakhir diproses) vs preOrderListSyncedAt (kapan terakhir klik "Sinkronkan ke Daftar PO"). Kalau sudah
+// impor ulang SETELAH sinkron terakhir, Daftar PO & Rencana Produksi masih pakai data LAMA -- user perlu tau.
+function htmlStatusSinkronPreOrderList() {
+  const fetchedAt = STATE.preOrderListFetchedAt;
+  const syncedAt = STATE.preOrderListSyncedAt;
+  if (!syncedAt) {
+    return `<div class="status-box show err" style="margin-top:8px;">&#9888; Data ini BELUM PERNAH disinkronkan ke Daftar PO -- klik tombol "Sinkronkan" di bawah dulu supaya ikut masuk ke Rencana Produksi.</div>`;
+  }
+  if (fetchedAt && syncedAt < fetchedAt) {
+    return `<div class="status-box show err" style="margin-top:8px;">&#9888; Sheet sudah diimpor ulang (${new Date(fetchedAt).toLocaleString('id-ID')}) SETELAH sinkron terakhir (${new Date(syncedAt).toLocaleString('id-ID')}) -- Daftar PO &amp; Rencana Produksi masih pakai data lama, klik "Sinkronkan" lagi.</div>`;
+  }
+  return `<div class="status-box show ok" style="margin-top:8px;">&#10003; Sudah tersinkron ke Daftar PO (pada ${new Date(syncedAt).toLocaleString('id-ID')}).</div>`;
+}
+
 function htmlPreOrderListImport() {
   const rawRows = STATE.preOrderListRaw || [];
   const hasData = rawRows.length > 0;
@@ -10660,8 +10723,14 @@ function htmlPreOrderListImport() {
       <button class="btn btn-ghost" id="btnProsesPastePreOrderList" style="margin-top:6px;">Proses Teks</button>
       <div class="status-box" id="preOrderListMsg"></div>
       ${hasData ? `
-        <div class="desc" style="margin-top:10px;">${rawRows.length} baris order terbaca${STATE.preOrderListFetchedAt ? ` (diproses ${new Date(STATE.preOrderListFetchedAt).toLocaleString('id-ID')})` : ''} -- total qty MASIH PERLU DIPRODUKSI (WAREHOUSE kosong &amp; STATUS "Diproses"): <b>${rekapHasil.totalBelumSelesai}</b> pcs.</div>
+        <div class="desc" style="margin-top:10px;">${rawRows.length} baris order terbaca (${rekapHasil.totalItemsAll} item setelah dipecah per warna/ukuran)${STATE.preOrderListFetchedAt ? ` -- diproses ${new Date(STATE.preOrderListFetchedAt).toLocaleString('id-ID')}` : ''}.</div>
+        <div class="desc" style="margin-top:2px;"><b>${rekapHasil.totalItemsResolved} dari ${rekapHasil.totalItemsAll}</b> item berhasil dicocokkan ke produk/warna/ukuran -- total qty MASIH PERLU DIPRODUKSI (WAREHOUSE kosong &amp; STATUS "Diproses"): <b>${rekapHasil.totalBelumSelesai}</b> pcs.</div>
+        ${htmlStatusSinkronPreOrderList()}
         ${rekapHasil.warnings.length ? `<div class="status-box show err" style="margin-top:6px;"><b>Peringatan (${rekapHasil.warnings.length}):</b><br>${rekapHasil.warnings.map(w => w.replace(/</g, '&lt;')).join('<br>')}</div>` : ''}
+        ${rekapHasil.ringkasanGrup.length ? `
+        <div class="desc" style="margin-top:10px;"><b>Ringkasan yg di-PO (blm selesai) -- cocokkan ke kartu Order Produksi di tab Rekomendasi Produksi:</b><br>
+          ${rekapHasil.ringkasanGrup.map(g => `${g.produkNama} - ${g.warna}: ${g.ukurans.map(u => `${u.ukuran} ${u.qty}`).join(', ')} (Total ${g.total} pcs)`).join('<br>')}
+        </div>` : ''}
         ${rekapHasil.rekap.length ? `
         <table class="data compact" style="margin-top:10px;">
           <thead><tr><th>Produk</th><th>Warna</th><th>Ukuran</th><th class="num">Qty Blm Selesai</th></tr></thead>
@@ -10751,10 +10820,14 @@ function attachListenersProduksiPO(container) {
   });
   const btnSinkron = document.getElementById('btnSinkronPreOrderList');
   if (btnSinkron) btnSinkron.addEventListener('click', async () => {
+    const msg = document.getElementById('preOrderListMsg');
     const { rekap } = hitungRekapPreOrderList(STATE.preOrderListRaw || []);
-    sinkronkanPreOrderListKeProduksiPO(rekap);
-    await saveState();
-    renderProduksi(container);
+    await withSaving(msg, 'Berhasil disinkronkan ke Daftar PO.', async () => {
+      sinkronkanPreOrderListKeProduksiPO(rekap);
+      STATE.preOrderListSyncedAt = new Date().toISOString();
+      await saveState();
+    });
+    setTimeout(() => renderProduksi(container), 700);
   });
 
   wireSelectOtherToggle('po_warna', 'po_warna_other');
@@ -10845,33 +10918,53 @@ function htmlProduksiRekomendasi() {
           <button class="btn btn-ghost" id="btnResetKartuProduksi">Reset ke Saran Sistem</button>
         </div>
       </div>
-      <div class="desc">1 kartu per produk, dipisah per warna+ukuran -- qty awal dari saran sistem (PO yg sudah ada ATAU rekomendasi restock, mana yg berlaku), tapi SEMUA angka bisa kamu ubah manual &amp; tersimpan sbg angka final (klik "Simpan Qty") -- tidak cuma ikut hasil rekomendasi sistem begitu saja. Baris yg memang tidak perlu diproduksi (qty 0) disembunyikan biar ringkas &amp; langsung bisa dikasih ke konveksi -- kecuali baris yg sudah pernah kamu timpa manual, tetap tampil (walau 0) spy tidak hilang tanpa bisa dikembalikan. Sel yg sudah ditimpa manual ditandai warna oranye.</div>
+      <div class="desc">1 kartu per produk, SIZE sbg baris &amp; WARNA sbg kolom (spt pola spreadsheet yg biasa dipakai) -- qty awal dari saran sistem (PO yg sudah ada ATAU rekomendasi restock, mana yg berlaku), tapi SEMUA angka bisa kamu ubah manual &amp; tersimpan sbg angka final (klik "Simpan Qty") -- tidak cuma ikut hasil rekomendasi sistem begitu saja. Sel kosong/strip (-) = memang tidak perlu diproduksi, tapi tetap bisa diisi manual kalau mau. Baris/kolom yg semuanya kosong disembunyikan biar ringkas. Sel yg sudah ditimpa manual ditandai warna oranye. Tombol "Unduh PNG" di tiap kartu utk kirim cepat ke konveksi lewat WA.</div>
       <div class="status-box" id="kartuProduksiMsg"></div>
       ${!kartuProduksi.length ? '<div class="empty-note" style="margin-top:8px;">Tidak ada produk yg perlu diproduksi saat ini (semua qty 0).</div>' : `
       <div style="display:flex; flex-wrap:wrap; gap:14px; margin-top:12px;">
-        ${kartuProduksi.map(k => `
-        <div style="width:240px; border:1px solid var(--line); border-radius:8px; padding:10px;">
-          <div style="font-weight:700; margin-bottom:6px;">${k.produkNama}</div>
-          <table class="data compact" style="width:100%;">
-            <thead><tr><th>WARNA</th><th>SIZE</th><th class="num">QTY</th></tr></thead>
+        ${kartuProduksi.map((k, kIdx) => {
+          const piv = pivotKartuProduksi(k);
+          return `
+        <div class="kartu-produksi-card" id="kartuProduksiCard_${kIdx}" style="min-width:260px; border:1px solid var(--line); border-radius:8px; padding:10px; background:#fff;">
+          <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:6px;">
+            <div style="font-weight:700;">${k.produkNama}</div>
+            <button type="button" class="btn btn-ghost btn-unduh-kartu" data-kartu-idx="${kIdx}" data-produk="${k.produkNama.replace(/"/g, '&quot;')}" style="padding:3px 8px; font-size:11px;">Unduh PNG</button>
+          </div>
+          <div style="overflow-x:auto;">
+          <table class="data compact" style="width:auto;">
+            <thead><tr><th>SIZE</th>${piv.warnaCols.map(w => `<th>${w}</th>`).join('')}<th>TOTAL</th></tr></thead>
             <tbody>
-              ${k.baris.map(b => `<tr>
-                <td>${b.warna}</td>
-                <td>${b.ukuran}${b.stokKritis ? ' <span title="Stok Kritis (stok+WIP sudah habis)" style="color:#b45309;">&#9888;</span>' : ''}</td>
-                <td class="num">
-                  <input type="number" min="0" class="inp-kartu-qty" data-kunci="${b.kunci}" data-produk="${k.produkNama.replace(/"/g, '&quot;')}" data-sistem="${b.sistem}" value="${b.final}"
-                    style="width:60px; text-align:right; ${b.adaOverride ? 'border-color:#f59e0b; background:#fff7ed;' : ''}"
-                    title="Saran sistem: ${b.sistem}${b.adaOverride ? ' (angka ini sudah ditimpa manual)' : ''}">
-                </td>
+              ${piv.ukuranRows.map((u, rIdx) => `<tr>
+                <td>${u}</td>
+                ${piv.warnaCols.map((w, cIdx) => {
+                  const b = piv.cellMap[w + '||' + u];
+                  if (b) {
+                    return `<td class="num">
+                      <input type="number" min="0" class="inp-kartu-qty" data-kunci="${b.kunci}" data-produk="${k.produkNama.replace(/"/g, '&quot;')}" data-sistem="${b.sistem}" data-row-idx="${rIdx}" data-col-idx="${cIdx}" value="${b.final}"
+                        style="width:52px; text-align:right; ${b.adaOverride ? 'border-color:#f59e0b; background:#fff7ed;' : ''}"
+                        title="${w} / ${u} -- Saran sistem: ${b.sistem}${b.adaOverride ? ' (angka ini sudah ditimpa manual)' : ''}${b.stokKritis ? ' -- Stok Kritis (stok+WIP sudah habis)' : ''}">
+                    </td>`;
+                  }
+                  const kunciKosong = kunciKartuProduksi(k.produkNama, w, u);
+                  return `<td class="num">
+                    <input type="number" min="0" class="inp-kartu-qty" data-kunci="${kunciKosong}" data-produk="${k.produkNama.replace(/"/g, '&quot;')}" data-sistem="0" data-row-idx="${rIdx}" data-col-idx="${cIdx}" value="" placeholder="-"
+                      style="width:52px; text-align:right;" title="${w} / ${u} -- blm ada saran sistem, bisa diisi manual">
+                  </td>`;
+                }).join('')}
+                <td class="num" data-row-total-idx="${rIdx}">${piv.warnaCols.reduce((s, w) => { const b = piv.cellMap[w + '||' + u]; return s + (b ? Number(b.final) || 0 : 0); }, 0)}</td>
               </tr>`).join('')}
               <tr style="font-weight:700; border-top:2px solid var(--line);">
-                <td colspan="2">TOTAL</td><td class="num" data-total-produk="${k.produkNama.replace(/"/g, '&quot;')}">${k.total}</td>
+                <td>TOTAL</td>
+                ${piv.warnaCols.map((w, cIdx) => `<td class="num" data-col-total-idx="${cIdx}">${piv.ukuranRows.reduce((s, u) => { const b = piv.cellMap[w + '||' + u]; return s + (b ? Number(b.final) || 0 : 0); }, 0)}</td>`).join('')}
+                <td class="num" data-total-produk="${k.produkNama.replace(/"/g, '&quot;')}">${k.total}</td>
               </tr>
             </tbody>
           </table>
-        </div>`).join('')}
+          </div>
+        </div>`;
+        }).join('')}
       </div>
-      <div class="desc" style="margin-top:10px;">&#9888; = "Stok Kritis" (stok+WIP produk+ukuran ini sudah HABIS) -- qty minimal disarankan ${BASELINE_QTY_STOK_KRITIS} pcs walau histori jual belum ada/sedikit, krn histori rendah/nol saat stok habis bisa krn stockout, bukan krn kurang diminati. Cek manual sebelum putuskan qty final.</div>
+      <div class="desc" style="margin-top:10px;">&#9888; (lihat tooltip sel) = "Stok Kritis" (stok+WIP produk+ukuran ini sudah HABIS) -- qty minimal disarankan ${BASELINE_QTY_STOK_KRITIS} pcs walau histori jual belum ada/sedikit, krn histori rendah/nol saat stok habis bisa krn stockout, bukan krn kurang diminati. Cek manual sebelum putuskan qty final.</div>
       `}
       ${warnings.length ? `<div class="desc" style="margin-top:10px; color:#b45309;">Peringatan (${warnings.length}): ${warnings.slice(0, 10).join(' | ')}${warnings.length > 10 ? ' ...' : ''}</div>` : ''}
     </div>
@@ -10899,8 +10992,51 @@ function attachListenersProduksiRekomendasi(container) {
     const totalEl = Array.from(container.querySelectorAll('[data-total-produk]')).find(el => el.dataset.totalProduk === produk);
     if (totalEl) totalEl.textContent = total;
   };
+  // Pivot grid (2026-11-22): update TOTAL per baris (SIZE) & per kolom (WARNA) live saat angka diketik,
+  // dicari via data-row-idx/data-col-idx (bukan nama warna/ukuran langsung, supaya aman dari karakter aneh
+  // spt tanda kutip di querySelector) -- diskop per kartu (card) spy nomor indeks antar kartu tidak bentrok.
+  const updateTotalBarisKolomKartu = (inp) => {
+    const card = inp.closest('.kartu-produksi-card');
+    if (!card) return;
+    const rIdx = inp.dataset.rowIdx, cIdx = inp.dataset.colIdx;
+    if (rIdx !== undefined && rIdx !== '') {
+      const rowTotalEl = card.querySelector(`[data-row-total-idx="${rIdx}"]`);
+      if (rowTotalEl) {
+        const total = Array.from(card.querySelectorAll('.inp-kartu-qty')).filter(el => el.dataset.rowIdx === rIdx).reduce((s, el) => s + (Number(el.value) || 0), 0);
+        rowTotalEl.textContent = total;
+      }
+    }
+    if (cIdx !== undefined && cIdx !== '') {
+      const colTotalEl = card.querySelector(`[data-col-total-idx="${cIdx}"]`);
+      if (colTotalEl) {
+        const total = Array.from(card.querySelectorAll('.inp-kartu-qty')).filter(el => el.dataset.colIdx === cIdx).reduce((s, el) => s + (Number(el.value) || 0), 0);
+        colTotalEl.textContent = total;
+      }
+    }
+  };
   container.querySelectorAll('.inp-kartu-qty').forEach(inp => {
-    inp.addEventListener('input', () => updateTotalKartu(inp.dataset.produk));
+    inp.addEventListener('input', () => { updateTotalKartu(inp.dataset.produk); updateTotalBarisKolomKartu(inp); });
+  });
+  // Unduh kartu produksi sbg PNG (2026-11-22, permintaan Setiawan: "agar bisa download image...agar mudah di
+  // share lewat WA") -- pakai html2canvas (dimuat di <head>), screenshot div kartu apa adanya (termasuk angka
+  // yg BARU diketik tapi belum "Simpan Qty" -- sengaja, supaya user bisa cek dulu sblm simpan kalau mau).
+  container.querySelectorAll('.btn-unduh-kartu').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const kartuIdx = btn.dataset.kartuIdx;
+      const produk = btn.dataset.produk || 'produk';
+      const card = document.getElementById(`kartuProduksiCard_${kartuIdx}`);
+      if (!card || typeof window.html2canvas !== 'function') { alert('Fitur unduh gambar belum siap (html2canvas belum termuat) -- cek koneksi internet lalu coba lagi.'); return; }
+      try {
+        const canvas = await window.html2canvas(card, { backgroundColor: '#ffffff', scale: 2 });
+        const link = document.createElement('a');
+        const tanggal = new Date().toISOString().slice(0, 10);
+        link.download = `order-produksi-${produk.toLowerCase().replace(/[^a-z0-9]+/g, '-')}-${tanggal}.png`;
+        link.href = canvas.toDataURL('image/png');
+        link.click();
+      } catch (e) {
+        alert('Gagal membuat gambar: ' + e.message);
+      }
+    });
   });
   const btnSimpanKartu = document.getElementById('btnSimpanKartuProduksi');
   if (btnSimpanKartu) btnSimpanKartu.addEventListener('click', async () => {
