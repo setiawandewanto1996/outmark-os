@@ -279,6 +279,7 @@
       <button data-tab="gaji"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.2"></circle><path d="M3.5 19a5.5 5.5 0 0 1 11 0"></path><circle cx="17" cy="9" r="2.6"></circle><path d="M15.5 13.2A4.6 4.6 0 0 1 20.5 19"></path></svg><span>Slip Gaji</span></button>
       <div class="sidebar-group-label">Pengaturan</div>
       <button data-tab="kontrak"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8l-9-5-9 5 9 5 9-5z"></path><path d="M3 8v8l9 5 9-5V8"></path><path d="M12 13v8"></path></svg><span>Produk &amp; Kontrak</span></button>
+      <button data-tab="produksi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h16v4H4z"></path><path d="M6 8v12h12V8"></path><path d="M9 12h6M9 16h6"></path></svg><span>Rencana Produksi</span></button>
       <button data-tab="master"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h10"></path><path d="M17 7h3"></path><circle cx="14" cy="7" r="2"></circle><path d="M4 17h3"></path><path d="M10 17h10"></path><circle cx="7" cy="17" r="2"></circle></svg><span>Data Master</span></button>
     </div>
     <div class="sidebar-footer" id="authStatus"></div>
@@ -294,7 +295,13 @@
 
 <script>
 const CLIENT_ID = '534061439425-cl0savvhsflp1ub4tgcnf8uih4b2iqso.apps.googleusercontent.com';
-const SCOPE = 'https://www.googleapis.com/auth/drive.file';
+// 2026-11-22: tambah scope spreadsheets.readonly (sebelumnya cuma drive.file) utk fitur "Rencana Produksi" --
+// baca sheet "DATA" di spreadsheet "LIVE UJUSO" (dipilih user sendiri via Picker, sama spt pola drive.file+Picker
+// yg sudah ada utk sambung outmark-os-state.json). Scope ini CUMA BISA BACA (readonly), tidak bisa ubah apapun
+// di spreadsheet manapun. User PERLU login ulang/approve izin tambahan 1x setelah update ini (Google akan minta
+// consent baru krn scope bertambah) -- kalau tombol "Hubungkan Google Sheet" gagal dgn error izin, coba logout
+// lalu login lagi dulu.
+const SCOPE = 'https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/spreadsheets.readonly';
 const STATE_FILENAME = 'outmark-os-state.json';
 // Dipakai HANYA utk fitur "Sambung ke Data yang Sudah Dibagikan" (multi-user, akun Google beda tapi 1 data
 // bersama) lewat Google Picker. Dibuat di project "Outmark OS" Google Cloud Console (Google Picker API).
@@ -376,6 +383,15 @@ let STATE = {
   kwitansi: [],                     // kwitansi pembayaran (2026-11-19 lanjutan, dokumen TERPISAH dari invoice -- Setiawan bisa tempel materai
                                      // digital sendiri nanti di hasil cetaknya): {id, nomor, tanggal, invoiceId (opsional, ref STATE.invoices),
                                      // customerId, jumlah, untukPembayaran, createdAt}
+  produksiWip: [],                  // input manual "sedang dijahit" (2026-11-22, fitur Rencana Produksi): {id, produkNama, warna, ukuran, qty,
+                                     // catatan, updatedAt}
+  produksiPO: [],                   // input manual PO (pre-order) ke konveksi: {id, produkNama, warna, ukuran, qtyPO, catatan, updatedAt}
+  produksiStockMapping: { groups: {}, variants: {} }, // pemetaan grup/varian sheet "DATA" -> produk Outmark OS, dikelola 1x via UI (lihat
+                                     // htmlProduksiStok): groups[groupLabel]={produkNama,skip}, variants[groupLabel][variantLabel]={ukuran|kodeCustom}
+  produksiStockRaw: [],             // hasil parse mentah sheet "DATA" (live Google Sheets ATAU tempel teks fallback): [{groupLabel,variantLabels,items}]
+  produksiStockFetchedAt: null,     // ISO string kapan STATE.produksiStockRaw terakhir diambil/diproses
+  produksiSheetFileId: null,        // fileId Google Sheet "LIVE UJUSO" yg dipilih user via Picker (scope spreadsheets.readonly)
+  produksiSettings: { targetMinggu: 4, windowMinggu: 8 }, // target cadangan stok (minggu) & jendela histori kecepatan jual (minggu)
 };
 let stateFileId = null;
 let accessToken = null;
@@ -471,6 +487,180 @@ const SIZE_TOKENS = new Set(['S','M','L','XL','XXL','2XL','3XL','4XL','5XL','6XL
 const UKURAN_TANPA_SIZE_KEY = 'UNISIZE';
 const CAPITAL_PARTNER_PRODUCT_ALIAS = { 'FORSAKERWB': 'FORSAKERVOL2' }; // FORSAKERWB berbagi pool modal dgn FORSAKERVOL2 (ditemukan dari data nyata)
 function capitalPartnerProduk(produk) { return CAPITAL_PARTNER_PRODUCT_ALIAS[produk] || produk; }
+
+/* =========================================================================
+   FITUR: RENCANA PRODUKSI (2026-11-22, permintaan user)
+   Tujuan: dari (a) stok gudang live Google Sheet "LIVE UJUSO" sheet "DATA", (b) input manual "sedang dijahit"
+   (WIP), (c) kecepatan jual historis dari STATE.orderDb, dan (d) input manual PO (pre-order) yg dicocokkan ke
+   STATE.pendingOrderSku -- hasilkan daftar qty produksi yg perlu dibuat, dgn PO sbg prioritas #1 (diurutkan
+   tanggal pesan TERLAMA dulu), lalu restock biasa (dari proyeksi kecepatan jual). Produk berstatus
+   p.statusProduksi==='stop' TETAP dilacak stoknya tapi TIDAK PERNAH masuk rekomendasi (lihat renderProdukDetailHtml).
+   ========================================================================= */
+
+// Parser CSV 1 baris yg benar (bukan split(',') naif) -- menangani sel berkutip yg isinya ada koma di dalam
+// (mis. "Sunday, November 22, 2026") dan tanda kutip ganda escape ("") standar CSV.
+function parseCsvLine(line) {
+  const cells = [];
+  let cur = '';
+  let inQuotes = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (inQuotes) {
+      if (ch === '"') {
+        if (line[i+1] === '"') { cur += '"'; i++; }
+        else { inQuotes = false; }
+      } else { cur += ch; }
+    } else {
+      if (ch === '"') { inQuotes = true; }
+      else if (ch === ',') { cells.push(cur); cur = ''; }
+      else { cur += ch; }
+    }
+  }
+  cells.push(cur);
+  return cells.map(c => c.trim());
+}
+
+// Ambil isi 1 sheet dari teks gabungan "## Sheet name: X" (format yg sama persis dgn pasted_content Google
+// Sheets yg dikirim user via chat) -- dipakai jg utk teks hasil paste manual (fallback kalau live-connect
+// Google Sheets lg tidak bisa dipakai).
+function extractSheetSection(fullText, sheetName) {
+  const lines = String(fullText || '').split(/\r?\n/);
+  const marker = '## Sheet name: ' + sheetName;
+  let startIdx = -1;
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].trim() === marker) { startIdx = i + 1; break; }
+  }
+  if (startIdx === -1) return null;
+  let endIdx = lines.length;
+  for (let i = startIdx; i < lines.length; i++) {
+    if (/^##\s*Sheet name:/.test(lines[i].trim())) { endIdx = i; break; }
+  }
+  return lines.slice(startIdx, endIdx).join('\n');
+}
+
+function labelsRunFrom(cells, startIdx) {
+  const run = [];
+  for (let i = startIdx; i < cells.length; i++) {
+    if (cells[i] === '') break;
+    run.push(cells[i]);
+  }
+  return run;
+}
+function isPureIntegerCell(s) { return /^\d+$/.test(s); }
+function parseNumCell(raw) {
+  if (raw == null) return { value: 0, warn: null };
+  const s = String(raw).trim();
+  if (s === '' || s === '-') return { value: 0, warn: null };
+  const n = Number(s.replace(/,/g, ''));
+  if (Number.isFinite(n)) return { value: n, warn: null };
+  return { value: 0, warn: `nilai tidak dikenali: "${s}"` };
+}
+
+// Parser generik blok PERTAMA sheet "DATA" (stok gudang total -- user eksplisit pilih blok ini, BUKAN blok
+// kedua yg dilabeli "Shopee" di sheet-nya, krn rencana produksi butuh stok fisik total bukan stok tersinkron
+// 1 channel saja). Struktur sheet aslinya tidak rata -- 1 produk bisa berupa baris "grup standar" (angka+1 nama
+// produk, size S/M/L/dst di baris berikutnya, lalu baris warna) ATAU "grup varian" (angka+LEBIH DARI 1 label
+// langsung di baris yg sama, mis. "12,REACTIVE,NO SMELL" utk DEO yg variannya scent bukan ukuran, atau
+// "11,Trucker,Dad Cap,Snapback" utk Topi) -- parser ini menangani KEDUANYA tanpa perlu tau arti labelnya,
+// semantik/pemetaan ke produk Outmark OS dilakukan belakangan scr manual lewat UI mapping (lihat
+// STATE.produksiStockMapping), BUKAN ditebak otomatis di sini.
+function parseStokSheetBlok1(sheetText) {
+  const rowsOfCells = String(sheetText || '').split(/\r?\n/).map(parseCsvLine);
+  return parseStokGroupsFromCells(rowsOfCells);
+}
+// Sama persis logikanya dgn parseStokSheetBlok1, tapi input-nya array 2D mentah (dari Sheets API
+// spreadsheets.values.get, yg sudah bertipe asli -- angka sbg number, bukan string) -- dipakai jalur koneksi
+// LIVE Google Sheets, supaya tidak perlu bolak-balik ke teks CSV dulu (hindari bug escaping tanda kutip/koma).
+function parseStokGroupsFromRows2D(rows2D) {
+  const rowsOfCells = (rows2D || []).map(row => (row || []).map(c => c == null ? '' : String(c).trim()));
+  return parseStokGroupsFromCells(rowsOfCells);
+}
+function parseStokGroupsFromCells(rowsOfCells) {
+  const groups = [];
+  let state = 'SEEK_GROUP';
+  let current = null;
+  function endCurrentGroup() { if (current) groups.push(current); current = null; }
+  let i = 0;
+  while (i < rowsOfCells.length) {
+    const cells = rowsOfCells[i];
+    const col0 = cells[0] || '';
+    if (state === 'READ_ITEMS') {
+      if (col0 === '' || (isPureIntegerCell(col0) && labelsRunFrom(cells, 1).length >= 1)) {
+        endCurrentGroup(); state = 'SEEK_GROUP'; continue; // baris yg sama diproses ulang sbg kemungkinan grup baru
+      }
+      const values = [], warnings = [];
+      for (let k = 0; k < current.variantLabels.length; k++) {
+        const { value, warn } = parseNumCell(cells[1 + k]);
+        values.push(value);
+        if (warn) warnings.push(`${col0}/${current.variantLabels[k]}: ${warn}`);
+      }
+      current.items.push({ rowLabel: col0, qty: values, warnings });
+      i++; continue;
+    }
+    if (state === 'SEEK_HEADER') {
+      current.variantLabels = labelsRunFrom(cells, 1);
+      state = 'READ_ITEMS'; i++; continue;
+    }
+    // SEEK_GROUP
+    if (isPureIntegerCell(col0)) {
+      const labels = labelsRunFrom(cells, 1);
+      if (labels.length === 1) { current = { groupLabel: labels[0], variantLabels: [], items: [] }; state = 'SEEK_HEADER'; }
+      else if (labels.length > 1) { current = { groupLabel: labels.join(' / '), variantLabels: labels, items: [] }; state = 'READ_ITEMS'; }
+    }
+    i++;
+  }
+  endCurrentGroup();
+  return groups;
+}
+
+// Cari kode warna (3 huruf, posisi ke-4-6 SKU) dari nama warna -- pakai STATE.colorCodeMap yg SUDAH ADA
+// (dikelola di tab Produk & Kontrak > Kode Warna), supaya tidak perlu mapping baru terpisah khusus fitur ini.
+function cariKodeWarnaByNama(namaWarna) {
+  if (!namaWarna) return null;
+  const target = String(namaWarna).trim().toUpperCase();
+  const entry = Object.entries(STATE.colorCodeMap).find(([kode, nama]) => String(nama).trim().toUpperCase() === target);
+  return entry ? entry[0] : null;
+}
+// Kebalikan dari SIZE_CODE_MAP (ukuran -> kode 2 digit), dipakai bangun SKU dari hasil mapping ukuran standar.
+function cariKodeUkuranBySize(ukuran) {
+  const entry = Object.entries(SIZE_CODE_MAP).find(([kode, s]) => s === ukuran);
+  return entry ? entry[0] : null;
+}
+// Bangun SKU 8 karakter (prefix 3 + kode warna 3 + kode ukuran/varian 2) dari hasil mapping -- null kalau
+// komponen apapun belum ketemu (prefix/kode warna/kode ukuran), supaya pemanggil bisa tau cross-reference ke
+// orderDb tidak bisa dilakukan utk baris ini (bukan dianggap "qty 0").
+function bangunSkuProduksi(prefix, kodeWarna, kodeUkuranAtauCustom) {
+  if (!prefix || !kodeWarna || !kodeUkuranAtauCustom) return null;
+  return (prefix + kodeWarna + kodeUkuranAtauCustom).toUpperCase();
+}
+
+// Ratakan hasil parseStokSheetBlok1 + STATE.produksiStockMapping jadi baris flat {produkNama, warna, ukuranLabel,
+// sku, qtyStok} -- grup yg di-skip/belum dipetakan ATAU warna yg tidak ketemu di colorCodeMap dilewati (muncul
+// di `warnings` supaya kelihatan di UI, bukan diam-diam hilang).
+function ratakanStokProduksi(groups, mapping) {
+  const rows = [];
+  const warnings = [];
+  (groups || []).forEach(g => {
+    const gm = (mapping.groups || {})[g.groupLabel];
+    if (!gm || gm.skip || !gm.produkNama) return; // belum dipetakan / sengaja di-skip (non-UOUT dst)
+    const p = STATE.products.find(pr => pr.nama === gm.produkNama);
+    if (!p) { warnings.push(`Grup "${g.groupLabel}" dipetakan ke produk "${gm.produkNama}" yg sudah tidak terdaftar.`); return; }
+    const variantMap = ((mapping.variants || {})[g.groupLabel]) || {};
+    g.items.forEach(item => {
+      const kodeWarna = cariKodeWarnaByNama(item.rowLabel);
+      g.variantLabels.forEach((vl, idx) => {
+        const qty = item.qty[idx] || 0;
+        const vm = variantMap[vl];
+        if (!vm) { warnings.push(`Grup "${g.groupLabel}" varian "${vl}" belum dipetakan ke ukuran/kode SKU.`); return; }
+        const kodeUkuran = vm.ukuran ? cariKodeUkuranBySize(vm.ukuran) : (vm.kodeCustom || null);
+        const sku = bangunSkuProduksi(p.prefix, kodeWarna, kodeUkuran);
+        if (!kodeWarna) warnings.push(`Warna "${item.rowLabel}" (produk ${p.nama}) belum ada di Kode Warna (Data Master).`);
+        rows.push({ produkNama: p.nama, warna: item.rowLabel, ukuranLabel: vm.ukuran || vl, sku, qtyStok: qty });
+      });
+    });
+  });
+  return { rows, warnings };
+}
 
 function findProduct(nama) { return STATE.products.find(p => p.nama === nama); }
 function findPartnerByKode2(kode2) { return STATE.capitalPartners.find(p => p.kode2 === kode2); }
@@ -1517,7 +1707,9 @@ async function loadState(fileIdOverride) {
   const loaded = text ? JSON.parse(text) : {};
   // DEFAULT_STATE mencakup SEMUA field yg pernah ada -- supaya file lama (dari sebelum field baru ditambahkan)
   // tidak jadi undefined pas dimuat. Tiap kali nambah field baru ke STATE, tambahkan juga di sini.
-  const DEFAULT_STATE = { capitalPartners: [], stores: [], products: [], contracts: [], colorCodeMap: {}, pembagiPctManual: {}, orderDb: [], pendingOrderSku: {}, payouts: [], vendorPayouts: [], adsMingguan: [], biayaOperasional: [], opexKategori: OPEX_KATEGORI.slice(), alokasiProfit: [], alokasiKategori: ALOKASI_KATEGORI.slice(), saldoDiluarKontrak: {}, rolloverLog: [], customers: [], biayaRetur: [], karyawan: [], slipGaji: [], slipGajiSettings: { namaPerusahaan: 'UJUSO', alamatBaris: ['Jl. Permana Timur Blok D7 No. 28', 'Kel. Citeureup, Kec. Cimahi Utara', 'Kota Cimahi'], logoDataUri: DEFAULT_LOGO_UJUSO_DATA_URI, emailKontak: 'setiawandewanto@gmail.com' }, invoiceProducts: [], invoices: [], diskon: [], kwitansi: [] };
+  const DEFAULT_STATE = { capitalPartners: [], stores: [], products: [], contracts: [], colorCodeMap: {}, pembagiPctManual: {}, orderDb: [], pendingOrderSku: {}, payouts: [], vendorPayouts: [], adsMingguan: [], biayaOperasional: [], opexKategori: OPEX_KATEGORI.slice(), alokasiProfit: [], alokasiKategori: ALOKASI_KATEGORI.slice(), saldoDiluarKontrak: {}, rolloverLog: [], customers: [], biayaRetur: [], karyawan: [], slipGaji: [], slipGajiSettings: { namaPerusahaan: 'UJUSO', alamatBaris: ['Jl. Permana Timur Blok D7 No. 28', 'Kel. Citeureup, Kec. Cimahi Utara', 'Kota Cimahi'], logoDataUri: DEFAULT_LOGO_UJUSO_DATA_URI, emailKontak: 'setiawandewanto@gmail.com' }, invoiceProducts: [], invoices: [], diskon: [], kwitansi: [],
+    produksiWip: [], produksiPO: [], produksiStockMapping: { groups: {}, variants: {} }, produksiStockRaw: [],
+    produksiStockFetchedAt: null, produksiSheetFileId: null, produksiSettings: { targetMinggu: 4, windowMinggu: 8 } };
   STATE = Object.assign({}, DEFAULT_STATE, loaded);
 }
 
@@ -1722,6 +1914,78 @@ async function onPickerResult(data, msg) {
     await masukKeAppSetelahDapatFile(file.id); // pakai id dari Picker LANGSUNG, jangan divalidasi ulang (lihat catatan di loadState)
   } catch (e) {
     document.getElementById('app').innerHTML = `<div class="panel"><div class="status-box show err">Gagal memuat data dari file yang dipilih: ${e.message}. Pastikan file itu sudah dibagikan (Share) dengan akses Editor ke akun Google ini.</div></div>`;
+  }
+}
+
+// Picker KHUSUS pilih 1 Google Sheet (spreadsheet apapun, bukan file JSON spt di atas) -- dipakai fitur Rencana
+// Produksi utk hubungkan ke spreadsheet "LIVE UJUSO". Pola persis sama dgn bukaPickerSambungData (scope
+// drive.file yg sama, TIDAK perlu scope Drive lebih luas) -- yg BARU di sini cuma scope Sheets API (lihat
+// catatan di const SCOPE) utk baca ISI sheet-nya setelah dipilih.
+async function bukaPickerPilihSheetProduksi() {
+  const msg = document.getElementById('produksiSheetMsg');
+  if (!msg) return;
+  if (!GOOGLE_PICKER_API_KEY || GOOGLE_PICKER_API_KEY === 'GANTI_DENGAN_API_KEY_ANDA') {
+    showMsg(msg, 'err', 'Fitur ini belum di-setup: GOOGLE_PICKER_API_KEY belum diisi di kode index.html.');
+    return;
+  }
+  showMsg(msg, 'info', 'Membuka Google Drive Picker...');
+  try {
+    await pastikanPickerApiSiap();
+  } catch (e) {
+    showMsg(msg, 'err', e.message);
+    return;
+  }
+  const view = new google.picker.DocsView(google.picker.ViewId.SPREADSHEETS).setIncludeFolders(false);
+  const picker = new google.picker.PickerBuilder()
+    .addView(view)
+    .setOAuthToken(accessToken)
+    .setDeveloperKey(GOOGLE_PICKER_API_KEY)
+    .setAppId(GOOGLE_PROJECT_NUMBER)
+    .setOrigin(window.location.protocol + '//' + window.location.host)
+    .setCallback((data) => onPickerResultProduksi(data, msg))
+    .build();
+  picker.setVisible(true);
+  showMsg(msg, 'info', 'Pilih spreadsheet "LIVE UJUSO" pada jendela Google Drive yang terbuka.');
+}
+
+async function onPickerResultProduksi(data, msg) {
+  if (data.action !== google.picker.Action.PICKED) return;
+  const file = data.docs && data.docs[0];
+  if (!file) return;
+  STATE.produksiSheetFileId = file.id;
+  await saveState();
+  showMsg(msg, 'info', `Spreadsheet "${file.name}" terhubung. Mengambil data sheet "DATA"...`);
+  await fetchDanProsesStokDariSheet();
+}
+
+// Ambil isi sheet "DATA" (blok pertama, stok gudang total) dari spreadsheet yg sudah dihubungkan, lewat Sheets
+// API (BUKAN Drive API files.export -- itu cuma bisa ekspor sheet PERTAMA pada file multi-sheet, sedangkan
+// "DATA" di sini adalah salah satu dari banyak sheet/tab). valueRenderOption=UNFORMATTED_VALUE supaya angka
+// tetap bertipe number asli (bukan string berformat "1,234"), konsisten dgn cara spreadsheet aslinya menyimpan.
+// CATATAN: bagian fetch jaringan+OAuth ini tidak bisa diuji end-to-end lewat test otomatis (butuh browser+akun
+// Google sungguhan) -- mohon dicoba langsung di deployment asli, terutama kalau ini pemakaian PERTAMA setelah
+// update (scope baru mungkin perlu logout+login ulang dulu spy consent-nya diminta Google).
+async function fetchDanProsesStokDariSheet() {
+  const msg = document.getElementById('produksiSheetMsg');
+  if (!STATE.produksiSheetFileId) { if (msg) showMsg(msg, 'err', 'Belum ada Google Sheet yg terhubung.'); return; }
+  try {
+    const res = await fetch(
+      `https://sheets.googleapis.com/v4/spreadsheets/${STATE.produksiSheetFileId}/values/DATA?valueRenderOption=UNFORMATTED_VALUE`,
+      { headers: { Authorization: 'Bearer ' + accessToken } }
+    );
+    if (!res.ok) {
+      const body = await res.text();
+      throw new Error(`HTTP ${res.status} -- ${body.slice(0,300)}`);
+    }
+    const data = await res.json();
+    const groups = parseStokGroupsFromRows2D(data.values || []);
+    STATE.produksiStockRaw = groups;
+    STATE.produksiStockFetchedAt = new Date().toISOString();
+    await saveState();
+    if (msg) showMsg(msg, 'ok', `Berhasil ambil ${groups.length} grup produk dari sheet "DATA" (blok stok gudang total).`);
+    renderProduksi(document.getElementById('app'));
+  } catch (e) {
+    if (msg) showMsg(msg, 'err', `Gagal mengambil data sheet: ${e.message}. Kalau ini pertama kali dipakai setelah update, coba logout lalu login lagi dulu (izin akses Sheets baru perlu di-approve ulang).`);
   }
 }
 
@@ -4249,6 +4513,17 @@ function renderProdukDetailHtml(p) {
       <div class="status-box" id="kategoriJualMsg" style="margin-top:8px;"></div>
       <hr style="border:none; border-top:1px solid var(--line); margin:16px 0;">
       <div class="field" style="margin-bottom:14px; max-width:460px;">
+        <label>Status Produksi</label>
+        <select id="pr_statusProduksi_${p.id}">
+          <option value="aktif" ${p.statusProduksi !== 'stop' ? 'selected' : ''}>Aktif (masih/boleh diproduksi)</option>
+          <option value="stop" ${p.statusProduksi === 'stop' ? 'selected' : ''}>Stop Produksi (dihentikan)</option>
+        </select>
+        <div class="desc" style="margin-top:4px;">Stok produk ini tetap dilacak/ditampilkan spt biasa (mis. di tab Rencana Produksi), TAPI kalau ditandai "Stop Produksi" produk ini TIDAK PERNAH dimasukkan ke rekomendasi "perlu diproduksi" -- krn memang sudah diputuskan tidak diproduksi lagi (dijual sampai stok lama habis saja).</div>
+      </div>
+      <button class="btn btn-ghost" id="btnSimpanStatusProduksi" data-produk-id="${p.id}">Simpan Status Produksi</button>
+      <div class="status-box" id="statusProduksiMsg" style="margin-top:8px;"></div>
+      <hr style="border:none; border-top:1px solid var(--line); margin:16px 0;">
+      <div class="field" style="margin-bottom:14px; max-width:460px;">
         <label style="display:flex; align-items:center; gap:8px; font-weight:400; cursor:pointer;"><input type="checkbox" id="pr_tanpaUkuran_${p.id}" style="width:auto;" ${p.tanpaUkuran ? 'checked' : ''}> Produk Tanpa Ukuran (unisize -- harga konveksi sama semua)</label>
         <div class="desc" style="margin-top:4px;">Tandai ini kalau produk TIDAK punya variasi ukuran sama sekali (mis. deodoran) -- 2 huruf/digit akhir SKU-nya menandakan VARIAN/TIPE (mis. "NS" = No Smell), BUKAN kode ukuran. Harga lama yg sudah pernah diisi per size (kalau ada) TIDAK dihapus, cuma tidak lagi dipakai -- isi ulang 1 harga tunggalnya di bagian "Harga Konveksi" di bawah setelah disimpan.</div>
       </div>
@@ -6163,6 +6438,20 @@ function renderKontrak(container) {
       p.kategoriJual = sel.value || '';
       await saveState();
       showMsg(msg, 'ok', `Kategori Jual "${p.nama}" disimpan: ${p.kategoriJual === 'PO' ? 'PO / Pre Order (tanpa investor)' : 'Normal'}.`);
+      setTimeout(() => renderKontrak(container), 900);
+    });
+  }
+  const btnSimpanStatusProduksi = document.getElementById('btnSimpanStatusProduksi');
+  if (btnSimpanStatusProduksi) {
+    btnSimpanStatusProduksi.addEventListener('click', async () => {
+      const prodId = btnSimpanStatusProduksi.dataset.produkId;
+      const p = STATE.products.find(pr => pr.id === prodId);
+      const sel = document.getElementById('pr_statusProduksi_' + prodId);
+      const msg = document.getElementById('statusProduksiMsg');
+      if (!p || !sel) return;
+      p.statusProduksi = sel.value || 'aktif';
+      await saveState();
+      showMsg(msg, 'ok', `Status Produksi "${p.nama}" disimpan: ${p.statusProduksi === 'stop' ? 'Stop Produksi' : 'Aktif'}.`);
       setTimeout(() => renderKontrak(container), 900);
     });
   }
@@ -9416,7 +9705,547 @@ function renderGaji(container) {
   });
 }
 
-const renderers = { master: renderMaster, kontrak: renderKontrak, import: renderImport, database: renderDatabase, pelanggan: renderPelanggan, invoice: renderInvoiceTab, laporan: renderLaporan, ads: renderAds, opex: renderOpex, alokasi: renderAlokasiProfit, pnl: renderPnl, dashboard: renderDashboard, gaji: renderGaji };
+/* =========================================================================
+   TAB: RENCANA PRODUKSI (2026-11-22)
+   Fungsi parser & helper SKU (parseStokSheetBlok1 dkk, ratakanStokProduksi, cariKodeWarnaByNama, dst) sudah
+   didefinisikan di blok "FITUR: RENCANA PRODUKSI" dekat SIZE_CODE_MAP -- bagian ini KHUSUS mesin rekomendasi +
+   UI tab-nya.
+   ========================================================================= */
+let produksiSubTab = 'stok'; // 'stok' | 'wip' | 'po' | 'rekomendasi'
+let produksiPasteText = '';
+let editingWipId = null;
+let editingPOId = null;
+// Baseline qty saran minimal saat "Stok Kritis" (stok+WIP sudah habis) TAPI kecepatan jual historis blm bisa
+// dipercaya (2026-11-22, Setiawan: "bukan berarti jika tidak ada historis tidak di produksi, tapi bisa juga
+// krn stok habis dan kemampuan produksi tidak terkejar" ... "kalau tidak ada historis tidak apa apa jika
+// produksi hanya 5 pcs juga") -- qty hasil proyeksi velocity TIDAK PERNAH dianggap final "tidak perlu
+// produksi" kalau stoknya sudah 0, minimal selalu disarankan angka kecil ini spy tidak kosong total.
+const BASELINE_QTY_STOK_KRITIS = 5;
+
+function produkUoutList() { return STATE.products.filter(p => p.brand === 'URBAN OUTDOOR'); }
+
+// Kecepatan jual per SKU (unit/minggu) dari STATE.orderDb, dlm window N minggu terakhir dihitung dari HARI INI
+// -- ini basis "belajar otomatis" yg diminta user: tidak ada input manual kecepatan jual, selalu dihitung ulang
+// live dari data orderDb yg terus bertambah stlh tiap upload baru.
+function hitungKecepatanJualPerSku(windowMinggu) {
+  const w = windowMinggu > 0 ? windowMinggu : 8;
+  const now = new Date();
+  const batas = new Date(now.getTime() - w * 7 * 86400000);
+  const totalBySku = {};
+  STATE.orderDb.forEach(r => {
+    if (!r.sku) return;
+    const tglStr = r.tanggalPesan || r.tanggalPenarikan;
+    if (!tglStr) return;
+    const d = new Date(tglStr);
+    if (isNaN(d.getTime()) || d < batas || d > now) return;
+    totalBySku[r.sku] = (totalBySku[r.sku] || 0) + (r.qty || 0);
+  });
+  const perMinggu = {};
+  Object.entries(totalBySku).forEach(([sku, total]) => { perMinggu[sku] = total / w; });
+  return perMinggu;
+}
+
+// Tanggal pesanan pelanggan TERLAMA yg SKU-nya cocok dgn SKU PO ybs (dari STATE.pendingOrderSku, yg kadang
+// bawa field tanggalPesan kalau diisi lewat alur "Update Daftar Pesanan") -- ini basis urutan prioritas PO:
+// yg plg lama menunggu dikerjakan lebih dulu, BUKAN flat "PO selalu paling atas" / skor abstrak.
+function cariTanggalPesanTerlamaUntukSku(sku) {
+  if (!sku) return null;
+  let terlama = null;
+  Object.values(STATE.pendingOrderSku).forEach(rows => {
+    (rows || []).forEach(r => {
+      if (r.sku === sku && r.tanggalPesan) {
+        if (!terlama || new Date(r.tanggalPesan) < new Date(terlama)) terlama = r.tanggalPesan;
+      }
+    });
+  });
+  return terlama;
+}
+
+// Bangun SKU dari 1 entri manual (WIP/PO) {produkNama, warna, ukuran} -- null kalau blm bisa dipetakan penuh
+// ke kode SKU (mis. warna blm ada di Kode Warna, atau ukuran bukan SIZES standar & bukan kode custom yg sudah
+// dipetakan utk grup itu). Pemanggil WAJIB sedia fallback pencocokan berbasis teks produk+warna+ukuran
+// (lihat kunciEntriProduksi) spy data WIP/PO produk varian non-ukuran (DEO dkk) tetap bisa cocok ke stok.
+function skuDariEntriManual(entri) {
+  const p = findProduct(entri.produkNama);
+  if (!p) return null;
+  const kodeWarna = cariKodeWarnaByNama(entri.warna);
+  const kodeUkuran = cariKodeUkuranBySize(entri.ukuran);
+  return bangunSkuProduksi(p.prefix, kodeWarna, kodeUkuran);
+}
+
+// Kunci fallback produk+warna+ukuran (dipakai saat SKU tidak bisa dibangun) -- HARUS persis sama dgn label yg
+// dipakai ratakanStokProduksi (produkNama, warna=rowLabel, ukuran=ukuranLabel) agar WIP/PO manual bisa cocok.
+function kunciEntriProduksi(produkNama, warna, ukuran) {
+  return [String(produkNama || '').trim().toUpperCase(), String(warna || '').trim().toUpperCase(), String(ukuran || '').trim().toUpperCase()].join('||');
+}
+
+// Mesin rekomendasi inti. CATATAN KRITIS: fungsi ini HANYA MEMBACA STATE (stok hasil mapping, WIP, PO,
+// orderDb, pendingOrderSku, produksiSettings) dan TIDAK PERNAH menyentuh/mengubah STATE.capitalPartners,
+// p.kontrakAktif, payout investor, atau apapun yg berkaitan dgn alokasi/pembagian kontrak -- jadi fitur ini
+// TIDAK BISA mengubah data kontrak (dibuktikan test_produksi_jsdom.js: snapshot kontrak sebelum/sesudah sama).
+function hitungRekomendasiProduksi() {
+  const warnings = [];
+  const mapping = STATE.produksiStockMapping || { groups: {}, variants: {} };
+  const { rows: stockRows, warnings: stokWarnings } = ratakanStokProduksi(STATE.produksiStockRaw || [], mapping);
+  warnings.push(...stokWarnings);
+
+  const settings = STATE.produksiSettings || { targetMinggu: 4, windowMinggu: 8 };
+  const velocityBySku = hitungKecepatanJualPerSku(settings.windowMinggu || 8);
+  const targetMinggu = settings.targetMinggu || 4;
+
+  const wipBySku = {}, wipByKunci = {};
+  (STATE.produksiWip || []).forEach(w => {
+    const sku = skuDariEntriManual(w);
+    const kunci = kunciEntriProduksi(w.produkNama, w.warna, w.ukuran);
+    if (sku) wipBySku[sku] = (wipBySku[sku] || 0) + (w.qty || 0);
+    wipByKunci[kunci] = (wipByKunci[kunci] || 0) + (w.qty || 0);
+  });
+  const poBySku = {}, poByKunci = {};
+  (STATE.produksiPO || []).forEach(po => {
+    const sku = skuDariEntriManual(po);
+    const kunci = kunciEntriProduksi(po.produkNama, po.warna, po.ukuran);
+    if (sku) poBySku[sku] = (poBySku[sku] || 0) + (po.qtyPO || 0);
+    poByKunci[kunci] = (poByKunci[kunci] || 0) + (po.qtyPO || 0);
+  });
+
+  const hasil = stockRows.map(row => {
+    const p = findProduct(row.produkNama);
+    const sku = row.sku;
+    const kunci = kunciEntriProduksi(row.produkNama, row.warna, row.ukuranLabel);
+    const wip = (sku && wipBySku[sku]) || wipByKunci[kunci] || 0;
+    const poQty = (sku && poBySku[sku]) || poByKunci[kunci] || 0;
+    const velocity = (sku && velocityBySku[sku]) || 0;
+    const target = velocity * targetMinggu;
+    const qtyNeededMentah = Math.max(0, Math.ceil(target - (row.qtyStok + wip)));
+    // "Stok Kritis" (2026-11-22, permintaan user): stok+WIP sudah 0 (habis) -- di titik ini kecepatan jual
+    // HISTORIS BISA MENYESATKAN (rendah/nol bukan krn kurang diminati, tapi krn stockout/produksi tidak
+    // terkejar, jadi pembeli tidak sempat terekam beli sama sekali). Jadi: JANGAN PERNAH simpulkan "tidak perlu
+    // produksi" murni dari histori kosong/rendah saat stok sudah habis -- selalu sarankan minimal
+    // BASELINE_QTY_STOK_KRITIS pcs & tandai utk dicek manual, bukan didiamkan/dianggap qty 0.
+    const stokKritis = (row.qtyStok + wip) <= 0;
+    const qtyNeeded = stokKritis ? Math.max(qtyNeededMentah, BASELINE_QTY_STOK_KRITIS) : qtyNeededMentah;
+    const statusProduksi = (p && p.statusProduksi === 'stop') ? 'stop' : 'aktif';
+    const tanggalPesanTerlama = poQty > 0 ? cariTanggalPesanTerlamaUntukSku(sku) : null;
+    return { produkNama: row.produkNama, warna: row.warna, ukuran: row.ukuranLabel, sku, stok: row.qtyStok, wip, poQty, velocityPerMinggu: velocity, target, qtyNeeded, stokKritis, statusProduksi, tanggalPesanTerlama };
+  });
+
+  // Produk berstatus "stop" TIDAK PERNAH masuk rekomendasi apapun (PO maupun restock biasa) -- stoknya tetap
+  // ditampilkan di tabel "Ringkasan Stok per Produk" (htmlProduksiStok), terpisah dari sini.
+  const aktif = hasil.filter(h => h.statusProduksi !== 'stop');
+
+  const poItems = aktif.filter(h => h.poQty > 0).sort((a, b) => {
+    const da = a.tanggalPesanTerlama ? new Date(a.tanggalPesanTerlama).getTime() : Infinity;
+    const db = b.tanggalPesanTerlama ? new Date(b.tanggalPesanTerlama).getTime() : Infinity;
+    return da - db;
+  });
+  const poKunciSet = new Set(poItems.map(h => kunciEntriProduksi(h.produkNama, h.warna, h.ukuran)));
+  // stokKritis SELALU masuk restockItems walau qtyNeeded hasil hitungan mentah = 0 (baseline sudah dipaksa
+  // minimal BASELINE_QTY_STOK_KRITIS di atas) -- lalu diurutkan PALING ATAS (lebih mendesak dari sekadar qty
+  // besar biasa), krn ini kasus stok BENAR-BENAR HABIS, bukan cuma "menipis sesuai proyeksi".
+  const restockItems = aktif
+    .filter(h => (h.qtyNeeded > 0 || h.stokKritis) && !poKunciSet.has(kunciEntriProduksi(h.produkNama, h.warna, h.ukuran)))
+    .sort((a, b) => (Number(b.stokKritis) - Number(a.stokKritis)) || (b.qtyNeeded - a.qtyNeeded));
+
+  return { poItems, restockItems, allRows: hasil, warnings };
+}
+
+function htmlProduksiStok(groups, stockRows, warnings) {
+  const mapping = STATE.produksiStockMapping || { groups: {}, variants: {} };
+  const totalByProduk = {};
+  stockRows.forEach(r => { totalByProduk[r.produkNama] = (totalByProduk[r.produkNama] || 0) + r.qtyStok; });
+
+  return `
+    <div class="panel">
+      <h2>Koneksi Google Sheet (Stok Gudang)</h2>
+      <div class="desc">Sumber stok: spreadsheet "LIVE UJUSO", sheet "DATA", blok PERTAMA (stok gudang total -- bukan blok "Shopee"). Setelah terhubung, klik "Ambil Ulang Data" kapan saja utk sinkron ulang data terbaru.</div>
+      <div style="margin-top:8px; display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+        <button class="btn btn-primary" id="btnPilihSheetProduksi">${STATE.produksiSheetFileId ? 'Ganti Google Sheet' : 'Hubungkan Google Sheet'}</button>
+        ${STATE.produksiSheetFileId ? `<button class="btn btn-ghost" id="btnAmbilUlangSheetProduksi">Ambil Ulang Data</button>` : ''}
+      </div>
+      <div style="margin-top:6px; font-size:12px; color:var(--ink-soft);">
+        ${STATE.produksiSheetFileId
+          ? `Terhubung. Terakhir diambil: ${STATE.produksiStockFetchedAt ? fmtTanggalPanjang(STATE.produksiStockFetchedAt) : 'belum pernah'} -- ${groups.length} grup produk.`
+          : 'Belum terhubung ke Google Sheet manapun.'}
+      </div>
+      <div class="status-box" id="produksiSheetMsg"></div>
+
+      <div style="margin-top:16px; padding-top:14px; border-top:1px solid var(--line);">
+        <div class="desc">Alternatif kalau koneksi live belum bisa dipakai: tempel teks sheet "DATA" di sini (boleh format "## Sheet name: DATA" seperti hasil export, atau teks sheet-nya saja).</div>
+        <textarea id="produksiPasteText" rows="5" style="width:100%; font-family:monospace; font-size:11px; margin-top:6px;" placeholder="Tempel teks sheet DATA di sini...">${produksiPasteText}</textarea>
+        <button class="btn btn-ghost" id="btnProsesPasteProduksi" style="margin-top:6px;">Proses Teks</button>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>Pemetaan Grup Produk &rarr; Produk Outmark OS</h2>
+      <div class="desc">${groups.length} grup ditemukan di sheet. Petakan tiap grup ke produk UOUT yg sesuai (atau lewati kalau bukan UOUT/tidak perlu dilacak). Cukup sekali -- tersimpan permanen sampai diubah lagi.</div>
+      ${!groups.length ? '<div class="empty-note">Belum ada data stok. Hubungkan Google Sheet atau tempel teks dulu di atas.</div>' : `
+      <div style="margin-top:10px;">
+        ${groups.map((g, idx) => {
+          const gm = (mapping.groups || {})[g.groupLabel];
+          return `
+          <div style="margin-bottom:10px; padding:10px; border:1px solid var(--line); border-radius:8px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap;">
+              <div><strong>${g.groupLabel}</strong> <span style="color:var(--ink-soft); font-size:11px;">(${g.items.length} baris warna, ${g.variantLabels.length} varian/ukuran)</span></div>
+              <div>${gm && gm.skip ? '<span class="pill off">Dilewati</span>' : (gm && gm.produkNama ? `<span class="pill ok">&rarr; ${gm.produkNama}</span>` : '<span class="pill pending">Belum dipetakan</span>')}</div>
+            </div>
+            <div class="grid2" style="align-items:end; margin-top:8px;">
+              <div class="field"><label>Petakan ke Produk</label>
+                <select data-group-idx="${idx}" class="sel-map-produk">
+                  <option value="">-- Lewati (bukan UOUT) --</option>
+                  ${produkUoutList().map(p => `<option value="${p.nama}" ${gm && gm.produkNama === p.nama ? 'selected' : ''}>${p.nama}</option>`).join('')}
+                </select>
+              </div>
+              <button class="btn btn-ghost btn-simpan-map-produk" data-group-idx="${idx}">Simpan Pemetaan Grup</button>
+            </div>
+            ${gm && gm.produkNama ? `
+            <div style="margin-top:8px; padding-top:8px; border-top:1px dashed var(--line);">
+              <div class="desc" style="margin-bottom:6px;">Petakan tiap varian/ukuran ke ukuran standar ATAU kode custom 2 huruf (utk varian bukan-ukuran spt scent/model):</div>
+              ${g.variantLabels.map((vl, vidx) => {
+                const vm = ((mapping.variants || {})[g.groupLabel] || {})[vl] || {};
+                return `<div style="display:flex; gap:8px; align-items:center; margin-bottom:4px; flex-wrap:wrap;">
+                  <span style="min-width:120px; font-size:12.5px;">${vl}</span>
+                  <select data-group-idx="${idx}" data-variant-idx="${vidx}" class="sel-map-ukuran-std" style="max-width:140px;">
+                    <option value="">-- ukuran standar --</option>
+                    ${SIZES.map(s => `<option value="${s}" ${vm.ukuran === s ? 'selected' : ''}>${s}</option>`).join('')}
+                  </select>
+                  <span style="font-size:11px; color:var(--ink-soft);">atau</span>
+                  <input type="text" maxlength="2" placeholder="kode custom" data-group-idx="${idx}" data-variant-idx="${vidx}" class="inp-map-ukuran-custom" value="${vm.kodeCustom && !vm.ukuran ? vm.kodeCustom : ''}" style="max-width:120px; text-transform:uppercase;">
+                </div>`;
+              }).join('')}
+              <button class="btn btn-ghost btn-simpan-map-variants" data-group-idx="${idx}" style="margin-top:4px;">Simpan Pemetaan Varian/Ukuran</button>
+            </div>` : ''}
+          </div>`;
+        }).join('')}
+      </div>`}
+    </div>
+
+    <div class="panel">
+      <h2>Ringkasan Stok per Produk (hasil pemetaan)</h2>
+      ${!Object.keys(totalByProduk).length ? '<div class="empty-note">Belum ada stok yg berhasil dipetakan.</div>' : `
+      <table class="data compact">
+        <thead><tr><th>Produk</th><th class="num">Total Stok (semua warna/ukuran)</th><th>Status Produksi</th></tr></thead>
+        <tbody>
+          ${Object.entries(totalByProduk).map(([nama, total]) => {
+            const p = findProduct(nama);
+            const stop = p && p.statusProduksi === 'stop';
+            return `<tr><td>${nama}</td><td class="num">${total}</td><td>${stop ? '<span class="pill off">Stop Produksi</span>' : '<span class="pill ok">Aktif</span>'}</td></tr>`;
+          }).join('')}
+        </tbody>
+      </table>`}
+      ${warnings.length ? `<div class="desc" style="margin-top:10px; color:#b45309;">Peringatan (${warnings.length}): ${warnings.slice(0, 10).join(' | ')}${warnings.length > 10 ? ' ...' : ''}</div>` : ''}
+    </div>
+  `;
+}
+
+function attachListenersProduksiStok(container) {
+  const btnPilih = document.getElementById('btnPilihSheetProduksi');
+  if (btnPilih) btnPilih.addEventListener('click', bukaPickerPilihSheetProduksi);
+  const btnAmbil = document.getElementById('btnAmbilUlangSheetProduksi');
+  if (btnAmbil) btnAmbil.addEventListener('click', fetchDanProsesStokDariSheet);
+
+  const taPaste = document.getElementById('produksiPasteText');
+  if (taPaste) taPaste.addEventListener('input', () => { produksiPasteText = taPaste.value; });
+
+  const btnPaste = document.getElementById('btnProsesPasteProduksi');
+  if (btnPaste) btnPaste.addEventListener('click', async () => {
+    const msg = document.getElementById('produksiSheetMsg');
+    const teks = document.getElementById('produksiPasteText').value;
+    produksiPasteText = teks;
+    const extracted = extractSheetSection(teks, 'DATA');
+    const teksUntukParse = extracted != null ? extracted : teks;
+    const groupsBaru = parseStokSheetBlok1(teksUntukParse);
+    if (!groupsBaru.length) { showMsg(msg, 'err', 'Tidak ada grup produk yg terdeteksi dari teks ini. Pastikan formatnya sesuai sheet "DATA".'); return; }
+    STATE.produksiStockRaw = groupsBaru;
+    STATE.produksiStockFetchedAt = new Date().toISOString();
+    await saveState();
+    showMsg(msg, 'ok', `Berhasil memproses ${groupsBaru.length} grup produk dari teks yg ditempel.`);
+    renderProduksi(container);
+  });
+
+  container.querySelectorAll('.btn-simpan-map-produk').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const idx = Number(btn.dataset.groupIdx);
+      const g = (STATE.produksiStockRaw || [])[idx];
+      if (!g) return;
+      const sel = container.querySelector(`.sel-map-produk[data-group-idx="${idx}"]`);
+      const produkNama = sel ? sel.value : '';
+      STATE.produksiStockMapping.groups = STATE.produksiStockMapping.groups || {};
+      STATE.produksiStockMapping.groups[g.groupLabel] = produkNama ? { produkNama, skip: false } : { skip: true };
+      await saveState();
+      renderProduksi(container);
+    });
+  });
+
+  container.querySelectorAll('.btn-simpan-map-variants').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const idx = Number(btn.dataset.groupIdx);
+      const g = (STATE.produksiStockRaw || [])[idx];
+      if (!g) return;
+      STATE.produksiStockMapping.variants = STATE.produksiStockMapping.variants || {};
+      STATE.produksiStockMapping.variants[g.groupLabel] = STATE.produksiStockMapping.variants[g.groupLabel] || {};
+      g.variantLabels.forEach((vl, vidx) => {
+        const selStd = container.querySelector(`.sel-map-ukuran-std[data-group-idx="${idx}"][data-variant-idx="${vidx}"]`);
+        const inpCustom = container.querySelector(`.inp-map-ukuran-custom[data-group-idx="${idx}"][data-variant-idx="${vidx}"]`);
+        const std = selStd ? selStd.value : '';
+        const custom = inpCustom ? inpCustom.value.trim().toUpperCase() : '';
+        STATE.produksiStockMapping.variants[g.groupLabel][vl] = std ? { ukuran: std } : (custom ? { kodeCustom: custom } : {});
+      });
+      await saveState();
+      renderProduksi(container);
+    });
+  });
+}
+
+function htmlProduksiWip() {
+  const editing = editingWipId ? STATE.produksiWip.find(w => w.id === editingWipId) : null;
+  const rows = STATE.produksiWip.slice().sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''));
+  return `
+    <div class="panel">
+      <h2>${editing ? 'Edit' : 'Tambah'} Data Sedang Dijahit (WIP)</h2>
+      <div class="desc">Input manual qty yg SEDANG diproduksi/dijahit per produk + warna + ukuran -- dipakai utk mengurangi kebutuhan produksi tambahan (stok + WIP dianggap "akan ada" lebih dulu). Isi Warna/Ukuran sesuai label yg sama dgn di tab Stok &amp; Pemetaan spy tercocokkan otomatis.</div>
+      <form id="formProduksiWip">
+        <div class="grid2">
+          <div class="field"><label>Produk</label>
+            <select id="wip_produk" required>
+              <option value="">Pilih produk</option>
+              ${produkUoutList().map(p => `<option value="${p.nama}" ${editing && editing.produkNama === p.nama ? 'selected' : ''}>${p.nama}</option>`).join('')}
+            </select>
+          </div>
+          <div class="field"><label>Qty</label><input type="number" id="wip_qty" min="1" required value="${editing ? editing.qty : ''}"></div>
+        </div>
+        <div class="grid2">
+          <div class="field"><label>Warna</label><input type="text" id="wip_warna" required value="${editing ? (editing.warna || '').replace(/"/g, '&quot;') : ''}" placeholder="sesuai nama warna di stok"></div>
+          <div class="field"><label>Ukuran</label><input type="text" id="wip_ukuran" required value="${editing ? (editing.ukuran || '').replace(/"/g, '&quot;') : ''}" placeholder="S/M/L/dst atau label varian"></div>
+        </div>
+        <div class="field"><label>Catatan (opsional)</label><input type="text" id="wip_catatan" value="${editing && editing.catatan ? editing.catatan.replace(/"/g, '&quot;') : ''}"></div>
+        <button type="submit" class="btn btn-primary">${editing ? 'Simpan Perubahan' : '+ Tambah WIP'}</button>
+        ${editing ? `<button type="button" class="btn btn-ghost" id="btnBatalEditWip" style="margin-top:8px;">Batal Edit</button>` : ''}
+        <div class="status-box" id="wipMsg"></div>
+      </form>
+    </div>
+    <div class="panel">
+      <h2>Daftar WIP</h2>
+      ${!rows.length ? '<div class="empty-note">Belum ada data WIP.</div>' : `
+      <table class="data compact">
+        <thead><tr><th>Produk</th><th>Warna</th><th>Ukuran</th><th class="num">Qty</th><th>Catatan</th><th></th></tr></thead>
+        <tbody>
+          ${rows.map(w => `<tr>
+            <td>${w.produkNama}</td><td>${w.warna}</td><td>${w.ukuran}</td><td class="num">${w.qty}</td>
+            <td style="font-size:11px; color:var(--ink-soft);">${w.catatan || '-'}</td>
+            <td style="white-space:nowrap;">
+              <button class="btn btn-ghost" data-edit-wip="${w.id}" style="padding:3px 8px; font-size:11px;">Edit</button>
+              <button class="icon-del" data-del-wip="${w.id}">✕</button>
+            </td>
+          </tr>`).join('')}
+        </tbody>
+      </table>`}
+    </div>
+  `;
+}
+
+function attachListenersProduksiWip(container) {
+  const form = document.getElementById('formProduksiWip');
+  if (form) form.addEventListener('submit', async (ev) => {
+    ev.preventDefault();
+    const msg = document.getElementById('wipMsg');
+    const produkNama = document.getElementById('wip_produk').value;
+    const qty = Number(document.getElementById('wip_qty').value);
+    const warna = document.getElementById('wip_warna').value.trim();
+    const ukuran = document.getElementById('wip_ukuran').value.trim();
+    const catatan = document.getElementById('wip_catatan').value.trim();
+    if (!produkNama || !warna || !ukuran || !qty || qty < 1) { showMsg(msg, 'err', 'Lengkapi semua field wajib (qty minimal 1).'); return; }
+    if (editingWipId) {
+      const w = STATE.produksiWip.find(x => x.id === editingWipId);
+      if (w) { w.produkNama = produkNama; w.qty = qty; w.warna = warna; w.ukuran = ukuran; w.catatan = catatan || null; w.updatedAt = new Date().toISOString(); }
+      editingWipId = null;
+    } else {
+      STATE.produksiWip.push({ id: uid('wip'), produkNama, qty, warna, ukuran, catatan: catatan || null, updatedAt: new Date().toISOString() });
+    }
+    await saveState();
+    renderProduksi(container);
+  });
+  const btnBatal = document.getElementById('btnBatalEditWip');
+  if (btnBatal) btnBatal.addEventListener('click', () => { editingWipId = null; renderProduksi(container); });
+  container.querySelectorAll('[data-edit-wip]').forEach(btn => btn.addEventListener('click', () => { editingWipId = btn.dataset.editWip; renderProduksi(container); }));
+  container.querySelectorAll('[data-del-wip]').forEach(btn => btn.addEventListener('click', async () => {
+    if (!confirm('Hapus data WIP ini?')) return;
+    STATE.produksiWip = STATE.produksiWip.filter(w => w.id !== btn.dataset.delWip);
+    await saveState();
+    renderProduksi(container);
+  }));
+}
+
+function htmlProduksiPO() {
+  const editing = editingPOId ? STATE.produksiPO.find(w => w.id === editingPOId) : null;
+  const rows = STATE.produksiPO.slice().sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''));
+  return `
+    <div class="panel">
+      <h2>${editing ? 'Edit' : 'Tambah'} Data PO (Pre-Order)</h2>
+      <div class="desc">Input manual apa saja yg sudah di-PO ke konveksi, per produk + warna + ukuran. Akan dicocokkan otomatis ke data pesanan pelanggan yg sudah diupload (tab Rekomendasi Produksi) utk tentukan urutan prioritas (tanggal pesanan TERLAMA dikerjakan lebih dulu).</div>
+      <form id="formProduksiPO">
+        <div class="grid2">
+          <div class="field"><label>Produk</label>
+            <select id="po_produk" required>
+              <option value="">Pilih produk</option>
+              ${produkUoutList().map(p => `<option value="${p.nama}" ${editing && editing.produkNama === p.nama ? 'selected' : ''}>${p.nama}</option>`).join('')}
+            </select>
+          </div>
+          <div class="field"><label>Qty PO</label><input type="number" id="po_qty" min="1" required value="${editing ? editing.qtyPO : ''}"></div>
+        </div>
+        <div class="grid2">
+          <div class="field"><label>Warna</label><input type="text" id="po_warna" required value="${editing ? (editing.warna || '').replace(/"/g, '&quot;') : ''}" placeholder="sesuai nama warna di stok"></div>
+          <div class="field"><label>Ukuran</label><input type="text" id="po_ukuran" required value="${editing ? (editing.ukuran || '').replace(/"/g, '&quot;') : ''}" placeholder="S/M/L/dst atau label varian"></div>
+        </div>
+        <div class="field"><label>Catatan (opsional)</label><input type="text" id="po_catatan" value="${editing && editing.catatan ? editing.catatan.replace(/"/g, '&quot;') : ''}"></div>
+        <button type="submit" class="btn btn-primary">${editing ? 'Simpan Perubahan' : '+ Tambah PO'}</button>
+        ${editing ? `<button type="button" class="btn btn-ghost" id="btnBatalEditPO" style="margin-top:8px;">Batal Edit</button>` : ''}
+        <div class="status-box" id="poMsg"></div>
+      </form>
+    </div>
+    <div class="panel">
+      <h2>Daftar PO</h2>
+      ${!rows.length ? '<div class="empty-note">Belum ada data PO.</div>' : `
+      <table class="data compact">
+        <thead><tr><th>Produk</th><th>Warna</th><th>Ukuran</th><th class="num">Qty PO</th><th>Catatan</th><th></th></tr></thead>
+        <tbody>
+          ${rows.map(po => `<tr>
+            <td>${po.produkNama}</td><td>${po.warna}</td><td>${po.ukuran}</td><td class="num">${po.qtyPO}</td>
+            <td style="font-size:11px; color:var(--ink-soft);">${po.catatan || '-'}</td>
+            <td style="white-space:nowrap;">
+              <button class="btn btn-ghost" data-edit-po="${po.id}" style="padding:3px 8px; font-size:11px;">Edit</button>
+              <button class="icon-del" data-del-po="${po.id}">✕</button>
+            </td>
+          </tr>`).join('')}
+        </tbody>
+      </table>`}
+    </div>
+  `;
+}
+
+function attachListenersProduksiPO(container) {
+  const form = document.getElementById('formProduksiPO');
+  if (form) form.addEventListener('submit', async (ev) => {
+    ev.preventDefault();
+    const msg = document.getElementById('poMsg');
+    const produkNama = document.getElementById('po_produk').value;
+    const qtyPO = Number(document.getElementById('po_qty').value);
+    const warna = document.getElementById('po_warna').value.trim();
+    const ukuran = document.getElementById('po_ukuran').value.trim();
+    const catatan = document.getElementById('po_catatan').value.trim();
+    if (!produkNama || !warna || !ukuran || !qtyPO || qtyPO < 1) { showMsg(msg, 'err', 'Lengkapi semua field wajib (qty minimal 1).'); return; }
+    if (editingPOId) {
+      const po = STATE.produksiPO.find(x => x.id === editingPOId);
+      if (po) { po.produkNama = produkNama; po.qtyPO = qtyPO; po.warna = warna; po.ukuran = ukuran; po.catatan = catatan || null; po.updatedAt = new Date().toISOString(); }
+      editingPOId = null;
+    } else {
+      STATE.produksiPO.push({ id: uid('po'), produkNama, qtyPO, warna, ukuran, catatan: catatan || null, updatedAt: new Date().toISOString() });
+    }
+    await saveState();
+    renderProduksi(container);
+  });
+  const btnBatal = document.getElementById('btnBatalEditPO');
+  if (btnBatal) btnBatal.addEventListener('click', () => { editingPOId = null; renderProduksi(container); });
+  container.querySelectorAll('[data-edit-po]').forEach(btn => btn.addEventListener('click', () => { editingPOId = btn.dataset.editPo; renderProduksi(container); }));
+  container.querySelectorAll('[data-del-po]').forEach(btn => btn.addEventListener('click', async () => {
+    if (!confirm('Hapus data PO ini?')) return;
+    STATE.produksiPO = STATE.produksiPO.filter(po => po.id !== btn.dataset.delPo);
+    await saveState();
+    renderProduksi(container);
+  }));
+}
+
+function htmlProduksiRekomendasi() {
+  const settings = STATE.produksiSettings || { targetMinggu: 4, windowMinggu: 8 };
+  const { poItems, restockItems, warnings } = hitungRekomendasiProduksi();
+  return `
+    <div class="panel">
+      <h2>Pengaturan Proyeksi</h2>
+      <div class="grid2">
+        <div class="field"><label>Target cadangan stok (minggu)</label><input type="number" id="produksi_targetMinggu" min="1" value="${settings.targetMinggu}"></div>
+        <div class="field"><label>Jendela histori kecepatan jual (minggu)</label><input type="number" id="produksi_windowMinggu" min="1" value="${settings.windowMinggu}"></div>
+      </div>
+      <button class="btn btn-ghost" id="btnSimpanSettingProduksi">Simpan Pengaturan</button>
+      <div class="status-box" id="produksiSettingMsg"></div>
+    </div>
+
+    <div class="panel">
+      <h2>Prioritas #1 -- Sudah Ada PO (Pre-Order)</h2>
+      <div class="desc">Diurutkan dari tanggal pesanan pelanggan TERLAMA (paling mendesak dikerjakan) -- dicocokkan dgn data "Update Daftar Pesanan" yg sudah diupload.</div>
+      ${!poItems.length ? '<div class="empty-note">Tidak ada PO yg cocok dgn pesanan pelanggan saat ini.</div>' : `
+      <table class="data compact">
+        <thead><tr><th>Produk</th><th>Warna</th><th>Ukuran</th><th class="num">Qty PO</th><th>Tgl Pesanan Terlama</th></tr></thead>
+        <tbody>
+          ${poItems.map(h => `<tr>
+            <td>${h.produkNama}</td><td>${h.warna}</td><td>${h.ukuran}</td><td class="num">${h.poQty}</td>
+            <td>${h.tanggalPesanTerlama ? fmtTanggal(h.tanggalPesanTerlama, { short: true }) : '<span style="color:var(--ink-soft);">belum ketemu pesanan cocok</span>'}</td>
+          </tr>`).join('')}
+        </tbody>
+      </table>`}
+    </div>
+
+    <div class="panel">
+      <h2>Rekomendasi Restock (berdasarkan kecepatan jual histori)</h2>
+      ${!restockItems.length ? '<div class="empty-note">Tidak ada rekomendasi restock saat ini (stok+WIP sudah cukup, atau belum ada data kecepatan jual).</div>' : `
+      <table class="data compact">
+        <thead><tr><th>Produk</th><th>Warna</th><th>Ukuran</th><th class="num">Stok</th><th class="num">WIP</th><th class="num">Jual/Minggu</th><th class="num">Perlu Diproduksi</th><th></th></tr></thead>
+        <tbody>
+          ${restockItems.map(h => `<tr>
+            <td>${h.produkNama}</td><td>${h.warna}</td><td>${h.ukuran}</td><td class="num">${h.stok}</td><td class="num">${h.wip}</td>
+            <td class="num">${h.velocityPerMinggu.toFixed(1)}</td><td class="num"><strong>${h.qtyNeeded}</strong></td>
+            <td>${h.stokKritis ? '<span class="pill off">Stok Kritis</span>' : ''}</td>
+          </tr>`).join('')}
+        </tbody>
+      </table>
+      ${restockItems.some(h => h.stokKritis) ? `<div class="desc" style="margin-top:8px;">"Stok Kritis" = stok+WIP produk ini sudah HABIS. Qty di atas BUKAN murni dari kecepatan jual historis -- kecepatan jual rendah/nol saat stok sudah habis bisa krn stockout/produksi tidak terkejar, BUKAN krn memang kurang diminati, jadi selalu disarankan minimal ${BASELINE_QTY_STOK_KRITIS} pcs walau histori belum ada/sedikit. Cek manual sebelum putuskan qty final.</div>` : ''}`}
+      ${warnings.length ? `<div class="desc" style="margin-top:10px; color:#b45309;">Peringatan (${warnings.length}): ${warnings.slice(0, 10).join(' | ')}${warnings.length > 10 ? ' ...' : ''}</div>` : ''}
+    </div>
+  `;
+}
+
+function attachListenersProduksiRekomendasi(container) {
+  const btn = document.getElementById('btnSimpanSettingProduksi');
+  if (btn) btn.addEventListener('click', async () => {
+    const msg = document.getElementById('produksiSettingMsg');
+    const targetMinggu = Number(document.getElementById('produksi_targetMinggu').value) || 4;
+    const windowMinggu = Number(document.getElementById('produksi_windowMinggu').value) || 8;
+    STATE.produksiSettings = { targetMinggu, windowMinggu };
+    await saveState();
+    showMsg(msg, 'ok', 'Pengaturan disimpan.');
+    renderProduksi(container);
+  });
+}
+
+function renderProduksi(container) {
+  const groups = STATE.produksiStockRaw || [];
+  const { rows: stockRows, warnings: mappingWarnings } = ratakanStokProduksi(groups, STATE.produksiStockMapping || { groups: {}, variants: {} });
+
+  container.innerHTML = `
+    <div class="panel" style="padding-bottom:0;">
+      <div style="display:flex; gap:2px; border-bottom:1px solid var(--line); flex-wrap:wrap;">
+        <button class="btn-subtab ${produksiSubTab === 'stok' ? 'active' : ''}" data-subtab-produksi="stok">Stok &amp; Pemetaan</button>
+        <button class="btn-subtab ${produksiSubTab === 'wip' ? 'active' : ''}" data-subtab-produksi="wip">Sedang Dijahit (WIP)</button>
+        <button class="btn-subtab ${produksiSubTab === 'po' ? 'active' : ''}" data-subtab-produksi="po">PO (Pre-Order)</button>
+        <button class="btn-subtab ${produksiSubTab === 'rekomendasi' ? 'active' : ''}" data-subtab-produksi="rekomendasi">Rekomendasi Produksi</button>
+      </div>
+    </div>
+    ${produksiSubTab === 'stok' ? htmlProduksiStok(groups, stockRows, mappingWarnings) : ''}
+    ${produksiSubTab === 'wip' ? htmlProduksiWip() : ''}
+    ${produksiSubTab === 'po' ? htmlProduksiPO() : ''}
+    ${produksiSubTab === 'rekomendasi' ? htmlProduksiRekomendasi() : ''}
+  `;
+
+  container.querySelectorAll('[data-subtab-produksi]').forEach(btn => {
+    btn.addEventListener('click', () => { produksiSubTab = btn.dataset.subtabProduksi; renderProduksi(container); });
+  });
+
+  if (produksiSubTab === 'stok') attachListenersProduksiStok(container);
+  if (produksiSubTab === 'wip') attachListenersProduksiWip(container);
+  if (produksiSubTab === 'po') attachListenersProduksiPO(container);
+  if (produksiSubTab === 'rekomendasi') attachListenersProduksiRekomendasi(container);
+}
+
+const renderers = { master: renderMaster, kontrak: renderKontrak, produksi: renderProduksi, import: renderImport, database: renderDatabase, pelanggan: renderPelanggan, invoice: renderInvoiceTab, laporan: renderLaporan, ads: renderAds, opex: renderOpex, alokasi: renderAlokasiProfit, pnl: renderPnl, dashboard: renderDashboard, gaji: renderGaji };
 function switchTab(tab) {
   document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
   renderers[tab](document.getElementById('app'));
