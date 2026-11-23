@@ -103,6 +103,15 @@
   table.data th { font-family: 'Inter', sans-serif; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em; color: var(--ink-soft); text-align: left; background: var(--paper); border-bottom: 1px solid var(--line); padding: 9px 8px; white-space: nowrap; }
   table.data.compact th, table.data.compact td { padding: 6px 8px; font-size: 12px; white-space: nowrap; }
   table.data td { padding: 9px 8px; border-bottom: 1px solid var(--line-soft); }
+  /* Tabel Prioritas PO (2026-11-23, Setiawan: "ada slider geser-geser, bagaimana agar tidak ribet"): TANPA scroll samping --
+     kolom ringkas boleh wrap, Keterangan dipindah jadi baris penuh di bawah barisnya (bukan kolom lebar di kanan). */
+  table.data.po-tbl { table-layout: auto; width: 100%; }
+  table.data.po-tbl th, table.data.po-tbl td { white-space: normal; padding: 6px 6px; line-height: 1.25; vertical-align: top; }
+  table.data.po-tbl th.num, table.data.po-tbl td.num { text-align: center; }
+  @media (max-width: 560px) { table.data.po-tbl th, table.data.po-tbl td { padding: 5px 3px; font-size: 10.5px; } table.data.po-tbl th { font-size: 9px; letter-spacing: 0; } table.data.po-tbl tr.po-ket td { font-size: 11px; } }
+  table.data.po-tbl tr.po-has-ket td { border-bottom: none; }
+  table.data.po-tbl tr.po-ket td { padding: 0 6px 8px 6px; font-size: 12px; }
+  table.data.po-tbl tr.po-urgent td, table.data.po-tbl tr.po-ket.po-ket-urgent td { background: rgba(220,38,38,.07); }
   .pill { display: inline-block; font-family: 'Inter', sans-serif; font-weight: 600; font-size: 11px; padding: 3px 9px; border-radius: 999px; background: var(--paper); color: var(--ink-soft); }
   .pill.ok { background: rgba(22,163,74,.12); color: var(--ok); }
   .pill.off { background: rgba(220,38,38,.10); color: var(--err); }
@@ -11854,16 +11863,22 @@ function htmlPrioritasPO(poItemsOverride) {
       <div class="desc">Diurutkan dari tanggal pesanan pelanggan TERLAMA (paling mendesak dikerjakan) -- dicocokkan dgn data "Update Daftar Pesanan" yg sudah diupload. PO ditutup dulu oleh yg <b>sedang dijahit</b>, lalu <b>stok gudang</b> (kalau stok cukup, tandanya <b style="color:#d97706;">STOK ADA</b>: tinggal dikemas, tidak perlu produksi). Sisa qty yg sudah menunggu <b>lebih dari ${BATAS_HARI_PO_URGENT} hari</b> dan belum tertutup ditandai <b style="color:#dc2626;">URGENT</b> -- dihitung per pesanan, jadi hanya qty yg benar-benar lama yg ditandai (bukan seluruh baris).</div>
       ${jmlUrgent ? `<div style="margin-top:6px; padding:6px 12px; border-radius:8px; background:rgba(220,38,38,.08); color:#991b1b; font-size:12.5px;">&#9888; <b>${jmlUrgent} baris URGENT (${qtyUrgent} pcs)</b> -- sudah menunggu lebih dari ${BATAS_HARI_PO_URGENT} hari dan belum tertutup yg dijahit maupun stok.</div>` : ''}
       ${!poItems.length ? '<div class="empty-note">Tidak ada PO yg cocok dgn pesanan pelanggan saat ini.</div>' : `
-      <div style="overflow-x:auto;"><table class="data compact" style="min-width:760px;">
-        <thead><tr><th>Produk</th><th>Warna</th><th>Ukuran</th><th class="num">Qty PO</th><th class="num">Sedang Dijahit</th><th class="num">Stok Gudang</th><th class="num">Sisa Perlu Order</th><th>Tgl Pesanan Terlama</th><th>Keterangan</th></tr></thead>
+      <table class="data compact po-tbl">
+        <thead><tr><th>Produk</th><th>Warna</th><th>Ukuran</th><th class="num">Qty PO</th><th class="num">Sedang Dijahit</th><th class="num">Stok Gudang</th><th class="num">Sisa Perlu Order</th><th>Tgl Pesanan Terlama</th></tr></thead>
         <tbody>
-          ${poItems.map((h, i) => { const u = info[i]; const rincianTeks = u.detail.filter(d => d.sisa > 0).map(d => fmtTglPendek(d.tanggal) + ': ' + d.sisa + ' pcs').join(', '); return `<tr${u.urgent ? ' class="po-urgent" style="background:rgba(220,38,38,.07);"' : ''}>
+          ${poItems.map((h, i) => {
+            const u = info[i];
+            const rincianTeks = u.detail.filter(d => d.sisa > 0).map(d => fmtTglPendek(d.tanggal) + ': ' + d.sisa + ' pcs').join(', ');
+            const hariTua = h.tanggalPesanTerlama ? hariPoMenunggu(h.tanggalPesanTerlama) : null;
+            const ket = (u.urgent ? `<span style="display:inline-block; padding:1px 8px; border-radius:10px; font-size:10.5px; font-weight:700; color:#fff; background:#dc2626;">URGENT</span> <span style="font-weight:700; color:#dc2626;">${u.urgentQty} pcs menunggu &gt; ${BATAS_HARI_PO_URGENT} hari</span> <span style="font-size:11px; color:#b91c1c;">(terlama ${u.hari} hari${u.perkiraan ? ', perkiraan' : ''})</span>` : '')
+              + (h.poDariStok > 0 ? `${u.urgent ? ' &nbsp;' : ''}<span style="display:inline-block; padding:1px 8px; border-radius:10px; font-size:10.5px; font-weight:700; color:#fff; background:#d97706;">STOK ADA</span> <span style="color:#92400e;">${h.poDariStok} pcs bisa dipenuhi dari stok gudang (${h.stok}) -- kemas &amp; kirim dulu${hariTua != null && hariTua > BATAS_HARI_PO_URGENT ? ', pesanan sudah menunggu ' + hariTua + ' hari' : ''}</span>` : '');
+            return `<tr class="${u.urgent ? 'po-urgent ' : ''}${ket ? 'po-has-ket' : ''}">
             <td>${h.produkNama}</td><td>${warnaTampilKartu(h.warna, h.produkNama)}</td><td>${h.ukuran}</td><td class="num">${h.poQty}</td><td class="num">${h.wip || '-'}</td><td class="num">${h.stok || '-'}</td><td class="num" style="font-weight:700;">${h.poSisa}</td>
             <td>${h.tanggalPesanTerlama ? fmtTanggal(h.tanggalPesanTerlama, { short: true }) : '<span style="color:var(--ink-soft);">belum ketemu pesanan cocok</span>'}</td>
-            <td style="min-width:250px;"${rincianTeks ? ` title="Sisa per tanggal pesan: ${rincianTeks.replace(/"/g, '&quot;')}"` : ''}>${u.urgent ? `<span style="display:inline-block; padding:1px 8px; border-radius:10px; font-size:10.5px; font-weight:700; color:#fff; background:#dc2626;">URGENT</span> <span style="font-size:11.5px; font-weight:700; color:#dc2626;">${u.urgentQty} pcs menunggu &gt; ${BATAS_HARI_PO_URGENT} hari</span> <span style="font-size:11px; color:#b91c1c;">(terlama ${u.hari} hari${u.perkiraan ? ', perkiraan' : ''})</span>` : ''}${h.poDariStok > 0 ? `${u.urgent ? '<br>' : ''}<span style="display:inline-block; padding:1px 8px; border-radius:10px; font-size:10.5px; font-weight:700; color:#fff; background:#d97706;">STOK ADA</span> <span style="font-size:11.5px; color:#92400e;">${h.poDariStok} pcs bisa dipenuhi dari stok gudang (${h.stok}) -- kemas &amp; kirim dulu${h.tanggalPesanTerlama && hariPoMenunggu(h.tanggalPesanTerlama) > BATAS_HARI_PO_URGENT ? ', pesanan sudah menunggu ' + hariPoMenunggu(h.tanggalPesanTerlama) + ' hari' : ''}</span>` : ''}</td>
-          </tr>`; }).join('')}
+          </tr>${ket ? `<tr class="po-ket${u.urgent ? ' po-ket-urgent' : ''}"><td colspan="8"${rincianTeks ? ` title="Sisa per tanggal pesan: ${rincianTeks.replace(/"/g, '&quot;')}"` : ''}>&#8627; ${ket}</td></tr>` : ''}`;
+          }).join('')}
         </tbody>
-      </table></div>`}
+      </table>`}
     </div>
   `;
 }
