@@ -840,6 +840,24 @@ function migrasiOtomatisAliasMaroon() {
   STATE.colorCodeAlias[kodeMar] = (STATE.colorCodeAlias[kodeMar] || []).concat(['MAROON']);
   return true;
 }
+// (2026-11-23) Setiawan: "di daftar WIP ini black manta XXL 30, lalu disini sedang dijahit 40?" -- penyebab: alias
+// "DUSTY PINK" terdaftar di kode HITAM (HTM), bukan di PINK (PNK; PNK sendiri sudah punya "DUSTY PINK TH" & "DP"),
+// jadi WIP ROVEE "DUSTY PINK" (S 10, L 10, XXL 10) ikut TERHITUNG sebagai HITAM (30+10=40, 35+10=45, 15+10=25) dan
+// PINK malah kelihatan tidak ada yg dijahit. Sama spt kasus MAROON: konflik data alias lintas-kode (alias yg
+// sama dgn nama warna lain), dibenahi OTOMATIS & idempotent tiap loadState, sempit (hanya alias "DUSTY PINK" ->
+// kode bernama utama "PINK", alasan: 5 warna utama ROVEE = HITAM/OLIVE GREEN/BURGUNDY MAROON/ABU/PINK, dan
+// PNK sudah punya varian "DUSTY PINK TH"/"DP"). Return true kalau benar2 mengubah sesuatu.
+function migrasiOtomatisAliasDustyPink() {
+  if (!STATE.colorCodeMap || !STATE.colorCodeAlias) return false;
+  const kodePink = Object.keys(STATE.colorCodeMap).find(k => normalisasiNamaUtkBanding(STATE.colorCodeMap[k]) === 'PINK');
+  if (!kodePink) return false;
+  const kodeSalah = Object.keys(STATE.colorCodeAlias).find(k => k !== kodePink && (STATE.colorCodeAlias[k] || []).some(a => normalisasiNamaUtkBanding(a) === 'DUSTY PINK'));
+  if (!kodeSalah) return false;
+  if ((STATE.colorCodeAlias[kodePink] || []).some(a => normalisasiNamaUtkBanding(a) === 'DUSTY PINK')) return false;
+  STATE.colorCodeAlias[kodeSalah] = (STATE.colorCodeAlias[kodeSalah] || []).filter(a => normalisasiNamaUtkBanding(a) !== 'DUSTY PINK');
+  STATE.colorCodeAlias[kodePink] = (STATE.colorCodeAlias[kodePink] || []).concat(['DUSTY PINK']);
+  return true;
+}
 // "Kualifier" nama produk (2026-11-22 round 20, Setiawan: "disini ga perlu ada tulisan tanpa hijab lagi di
 // warna, kan di judul sudah jelas rovee tanpa hijab") -- kata ke-2 dst nama produk (mis. "ROVEE TANPA HIJAB"
 // -> "TANPA HIJAB") dianggap kualifier pembeda dari produk "induk"-nya (kata pertama). Kalau teks warna
@@ -2440,7 +2458,8 @@ async function loadState(fileIdOverride) {
   STATE = Object.assign({}, DEFAULT_STATE, loaded);
   // (2026-11-22 round 20 lanjutan lagi lagi) migrasi housekeeping OTOMATIS, lihat migrasiOtomatisAliasMaroon --
   // gagal simpan di sini TIDAK menghalangi load (migrasi akan dicoba lagi otomatis next load, idempotent).
-  if (migrasiOtomatisAliasMaroon()) saveState().catch(() => {});
+  const adaMigrasiAlias = [migrasiOtomatisAliasMaroon(), migrasiOtomatisAliasDustyPink()].some(Boolean);
+  if (adaMigrasiAlias) saveState().catch(() => {});
 }
 
 async function saveState() {
@@ -10935,6 +10954,24 @@ function hitungRekomendasiProduksi() {
 // fungsi dibuat khusus biar jelas konteksnya dipakai di kartu Order Produksi, lihat hitungKartuProduksi).
 // (2026-11-22 round 10, Setiawan: "seharusnya di pisah juga berdasarkan warna" -- SEBELUMNYA kunci ini cuma
 // produk+ukuran [digabung lintas warna], sekarang per warna spy bisa ditimpa manual per warna jg.
+// (2026-11-23) Setiawan: judul kartu harus bisa diubah langsung (nama konveksi belum tentu sama dgn nama di sini,
+// mis. "OSWALD" = Oswalder Waterproof, "OSWAWB" = Oswalder Windbreaker) + produk yg sudah henti produksi
+// (mis. FORSAKERVOL2) bisa distop dari kartu. Dua fungsi pure ini dipanggil handler tombol di kartu. Keduanya
+// HANYA mengubah p.namaTampilan (label tampilan) / p.statusProduksi -- nama resmi p.nama (kunci SKU/kontrak)
+// & kontrak/payout TIDAK disentuh. Return {ok, pesan}.
+function simpanNamaTampilanProduk(produkNama, namaBaru) {
+  const p = findProduct(produkNama);
+  if (!p) return { ok: false, pesan: 'Produk tidak ditemukan.' };
+  const v = String(namaBaru || '').trim();
+  p.namaTampilan = v || null;
+  return { ok: true, pesan: v ? `Nama kartu "${p.nama}" diubah jadi "${v}".` : `Nama kartu "${p.nama}" dikembalikan ke nama resmi.` };
+}
+function setStatusProduksiProduk(produkNama, status) {
+  const p = findProduct(produkNama);
+  if (!p) return { ok: false, pesan: 'Produk tidak ditemukan.' };
+  p.statusProduksi = status === 'stop' ? 'stop' : 'aktif';
+  return { ok: true, pesan: p.statusProduksi === 'stop' ? `"${p.namaTampilan || p.nama}" ditandai Stop Produksi -- tidak muncul lagi di kartu & rekomendasi.` : `"${p.namaTampilan || p.nama}" diaktifkan kembali.` };
+}
 function kunciKartuProduksi(produkNama, warna, ukuran) {
   return kunciEntriProduksi(produkNama, warna, ukuran);
 }
@@ -11674,6 +11711,14 @@ function htmlProduksiRekomendasi() {
             </div>
             <button type="button" class="btn btn-ghost btn-unduh-kartu" data-kartu-idx="${kIdx}" data-produk="${namaTampil.replace(/"/g, '&quot;')}" style="padding:3px 8px; font-size:11px; flex:none;">Unduh PNG</button>
           </div>
+          <div class="kartu-tools no-png" style="display:flex; gap:6px; flex-wrap:wrap; margin-bottom:6px;">
+            <button type="button" class="btn btn-ghost btn-ubah-nama-kartu" data-produk="${k.produkNama.replace(/"/g, '&quot;')}" style="padding:2px 8px; font-size:11px;">&#9998; Ubah Nama</button>
+            <button type="button" class="btn btn-ghost btn-stop-produksi-kartu" data-produk="${k.produkNama.replace(/"/g, '&quot;')}" style="padding:2px 8px; font-size:11px;">&#9209; Stop Produksi</button>
+          </div>
+          <div class="kartu-ubah-nama-form no-png" data-produk-form="${k.produkNama.replace(/"/g, '&quot;')}" style="display:none; gap:6px; margin-bottom:8px; align-items:center;">
+            <input type="text" class="inp-nama-kartu" value="${namaTampil.replace(/"/g, '&quot;')}" placeholder="mis. OSWALDER WATERPROOF" style="flex:1; min-width:120px;">
+            <button type="button" class="btn btn-primary btn-simpan-nama-kartu" data-produk="${k.produkNama.replace(/"/g, '&quot;')}" style="padding:3px 10px; font-size:11px;">Simpan</button>
+          </div>
           ${!piv.ukuranRows.length ? '<div class="desc" style="margin:6px 0;">Semua PO produk ini sudah sedang dijahit -- tidak perlu order lagi (lihat rincian di bawah).</div>' : ''}
           <div style="overflow-x:auto;${!piv.ukuranRows.length ? ' display:none;' : ''}">
           <table class="data compact kartu-pivot" style="width:${54 + piv.warnaCols.length * 78 + 58}px;">
@@ -11719,6 +11764,7 @@ function htmlProduksiRekomendasi() {
         </div>`;
         }).join('')}
       </div>
+      ${(() => { const stopList = produkUoutList().filter(pr => pr.statusProduksi === 'stop'); return stopList.length ? `<div class="desc" style="margin-top:10px;"><b>Produk Stop Produksi</b> (tidak muncul di kartu &amp; rekomendasi): ${stopList.map(pr => `${(pr.namaTampilan || pr.nama).replace(/</g, '&lt;')} <button type="button" class="btn btn-ghost btn-aktifkan-produksi" data-produk="${pr.nama.replace(/"/g, '&quot;')}" style="padding:1px 8px; font-size:11px;">Aktifkan kembali</button>`).join(' &nbsp; ')}</div>` : ''; })()}
       <div class="desc" style="margin-top:10px;">&#9888; (lihat tooltip sel) = "Stok Kritis" (stok+WIP produk+ukuran ini sudah HABIS) -- qty minimal disarankan ${BASELINE_QTY_STOK_KRITIS} pcs walau histori jual belum ada/sedikit, krn histori rendah/nol saat stok habis bisa krn stockout, bukan krn kurang diminati. Cek manual sebelum putuskan qty final.</div>
       `}
       ${warnings.length ? `<div class="desc" style="margin-top:10px; color:#b45309;">Peringatan (${warnings.length}): ${warnings.slice(0, 10).join(' | ')}${warnings.length > 10 ? ' ...' : ''}</div>` : ''}
@@ -11788,6 +11834,7 @@ function attachListenersProduksiRekomendasi(container) {
         const canvas = await window.html2canvas(card, {
           backgroundColor: '#ffffff', scale: 2,
           onclone: (docClone) => {
+            docClone.querySelectorAll('.no-png').forEach(el => el.remove()); // tombol Ubah Nama/Stop tidak ikut di gambar
             docClone.querySelectorAll('.inp-kartu-qty').forEach(inp => {
               const span = docClone.createElement('span');
               span.textContent = inp.value !== '' ? inp.value : '-';
@@ -11806,6 +11853,32 @@ function attachListenersProduksiRekomendasi(container) {
       }
     });
   });
+  // (2026-11-23) Ubah Nama / Stop Produksi / Aktifkan kembali langsung dari kartu -- lihat simpanNamaTampilanProduk.
+  const simpanDanRender = async (hasil) => {
+    const msg = document.getElementById('kartuProduksiMsg');
+    if (!hasil.ok) { showMsg(msg, 'err', hasil.pesan); return; }
+    await withSaving(msg, hasil.pesan, async () => { await saveState(); });
+    setTimeout(() => renderProduksi(container), 700);
+  };
+  container.querySelectorAll('.btn-ubah-nama-kartu').forEach(btn => btn.addEventListener('click', () => {
+    const card = btn.closest('.kartu-produksi-card');
+    const form = card && card.querySelector('.kartu-ubah-nama-form');
+    if (!form) return;
+    form.style.display = form.style.display === 'none' ? 'flex' : 'none';
+    const inp = form.querySelector('.inp-nama-kartu'); if (inp && form.style.display !== 'none') inp.focus();
+  }));
+  container.querySelectorAll('.btn-simpan-nama-kartu').forEach(btn => btn.addEventListener('click', async () => {
+    const card = btn.closest('.kartu-produksi-card');
+    const inp = card && card.querySelector('.inp-nama-kartu');
+    await simpanDanRender(simpanNamaTampilanProduk(btn.dataset.produk, inp ? inp.value : ''));
+  }));
+  container.querySelectorAll('.btn-stop-produksi-kartu').forEach(btn => btn.addEventListener('click', async () => {
+    if (!confirm(`Tandai "${btn.dataset.produk}" sebagai STOP PRODUKSI? Kartunya tidak akan muncul lagi (stok tetap dilacak). Bisa diaktifkan kembali dari bagian bawah kartu.`)) return;
+    await simpanDanRender(setStatusProduksiProduk(btn.dataset.produk, 'stop'));
+  }));
+  container.querySelectorAll('.btn-aktifkan-produksi').forEach(btn => btn.addEventListener('click', async () => {
+    await simpanDanRender(setStatusProduksiProduk(btn.dataset.produk, 'aktif'));
+  }));
   const btnSimpanKartu = document.getElementById('btnSimpanKartuProduksi');
   if (btnSimpanKartu) btnSimpanKartu.addEventListener('click', async () => {
     STATE.produksiOverrideQty = STATE.produksiOverrideQty || {};
