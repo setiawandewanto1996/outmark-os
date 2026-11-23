@@ -10888,9 +10888,14 @@ function hitungRekomendasiProduksi() {
     // dikurangkan di jalur restock (qtyNeeded), TIDAK di jalur PO, jadi kartu Order Produksi tetap menampilkan
     // qty PO penuh walau sebagian/seluruhnya sudah dijahit. poQty (angka PO mentah) tetap dipertahankan utk
     // tabel Prioritas PO; poSisa = yg MASIH perlu diorder = max(0, poQty - wip).
-    const poSisa = Math.max(0, poQty - wip);
+    // (2026-11-23, Setiawan: "ini Mesh Green L/XL stoknya ada 13, kenapa PO-nya masih urgent?") STOK GUDANG yg ada juga
+    // menutup PO: PO hanya perlu DIPRODUKSI kalau qty-nya melebihi (sedang dijahit + stok). Urutan penutup: WIP dulu, sisanya
+    // stok. Kalau stok cukup, PO itu bukan soal produksi melainkan tinggal DIKEMAS/DIKIRIM dari stok (ditandai di tabel).
+    const poDariWip = Math.min(Math.max(0, wip), poQty);
+    const poDariStok = Math.min(Math.max(0, stok), Math.max(0, poQty - poDariWip));
+    const poSisa = Math.max(0, poQty - poDariWip - poDariStok);
     const poRincian = poQty > 0 ? ((sku && poRincianBySku[sku]) || poRincianByKunci[kunci] || []) : [];
-    return { produkNama, warna, ukuran, sku, stok, wip, poQty, poSisa, velocityPerMinggu: velocity, target, qtyNeeded, stokKritis, statusProduksi, tanggalPesanTerlama, poRincian };
+    return { produkNama, warna, ukuran, sku, stok, wip, poQty, poSisa, poDariWip, poDariStok, velocityPerMinggu: velocity, target, qtyNeeded, stokKritis, statusProduksi, tanggalPesanTerlama, poRincian };
   };
 
   // (round 19) warna baris stok fisik jg disamakan via warnaKanonis sebelum masuk hitungBarisRekomendasi --
@@ -11021,7 +11026,7 @@ function hitungKartuProduksi() {
   allRows.forEach(h => {
     if (h.statusProduksi === 'stop') return;
     if (h.poQty > 0) {
-      (rincianPerProduk[h.produkNama] = rincianPerProduk[h.produkNama] || []).push({ warna: warnaTampilKartu(h.warna, h.produkNama), ukuran: h.ukuran, po: h.poQty, wip: h.wip || 0, sisa: h.poSisa });
+      (rincianPerProduk[h.produkNama] = rincianPerProduk[h.produkNama] || []).push({ warna: warnaTampilKartu(h.warna, h.produkNama), ukuran: h.ukuran, po: h.poQty, wip: h.wip || 0, stok: h.poDariStok || 0, sisa: h.poSisa });
     }
     const kunci = kunciKartuProduksi(h.produkNama, h.warna, h.ukuran);
     // (2026-11-23) PO sudah dikurangi yg sedang dijahit (poSisa); kalau PO ada tapi SEMUANYA sudah dijahit -> 0 (tidak perlu order lagi), BUKAN jatuh balik ke rekomendasi restock.
@@ -11039,7 +11044,7 @@ function hitungKartuProduksi() {
   });
   // Produk yg PO-nya SEMUA sudah sedang dijahit (tidak ada baris di pivot) tetap dimunculkan kartunya supaya
   // user melihat rincian (PO - sedang dijahit = 0), bukan hilang diam2.
-  Object.keys(rincianPerProduk).forEach(n => { if (!perProduk[n] && rincianPerProduk[n].some(r => r.wip > 0)) { perProduk[n] = []; urutanProduk.push(n); } });
+  Object.keys(rincianPerProduk).forEach(n => { if (!perProduk[n] && rincianPerProduk[n].some(r => r.wip > 0 || r.stok > 0)) { perProduk[n] = []; urutanProduk.push(n); } });
   const idxUk = (u) => { const i = SIZES.indexOf(URUTAN_ALIAS_UKURAN_CUSTOM[u] || u); return i === -1 ? SIZES.length : i; };
   return urutanProduk.map(produkNama => {
     const rincian = (rincianPerProduk[produkNama] || []).slice().sort((a, b) => (a.warna < b.warna ? -1 : a.warna > b.warna ? 1 : idxUk(a.ukuran) - idxUk(b.ukuran)));
@@ -11192,7 +11197,8 @@ function hitungRencanaForecast(opsi) {
     if (smaBiasa > 0) { const rasio = sma4 / smaBiasa; if (rasio > 1.15) tren = 'naik'; else if (rasio < 0.85) tren = 'turun'; }
     const poSisa = h.poSisa || 0;
     const wipSisa = Math.max(0, (h.wip || 0) - (h.poQty || 0)); // WIP yg sudah dipakai menutup PO tidak dihitung ulang utk restok
-    const tersedia = (h.stok || 0) + wipSisa;
+    const stokBebas = Math.max(0, (h.stok || 0) - (h.poDariStok || 0)); // stok yg sudah dialokasikan utk PO tidak dihitung sbg cadangan penjualan
+    const tersedia = stokBebas + wipSisa;
     // KOREKSI STOK HABIS (2026-11-23, Setiawan: "ini mah 5 pcs aja per stok kosong? mana forecasting-nya"): varian yg stoknya
     // kosong TIDAK bisa terjual, jadi minggu2 nol penjualannya bukan "tidak laku" melainkan "tidak ada barang" -- rata-rata
     // biasa (SMA) lalu menyusut dan meramal terlalu kecil. Utk varian stok habis, forecast = rata-rata HANYA minggu yg ada
@@ -11204,7 +11210,7 @@ function hitungRencanaForecast(opsi) {
     }
     const restok = Math.max(0, Math.ceil(forecast * targetMinggu - tersedia));
     const coverMinggu = forecast > 0 ? tersedia / forecast : Infinity;
-    const info = { produkNama: h.produkNama, warna: h.warna, ukuran: h.ukuran, sku: h.sku, stok: h.stok || 0, wip: h.wip || 0, poQty: h.poQty || 0, poSisa, seri, forecast, smaBiasa, dikoreksi, tren, tersedia, coverMinggu, restok };
+    const info = { produkNama: h.produkNama, warna: h.warna, ukuran: h.ukuran, sku: h.sku, stok: h.stok || 0, wip: h.wip || 0, poQty: h.poQty || 0, poSisa, poDariStok: h.poDariStok || 0, seri, forecast, smaBiasa, dikoreksi, tren, tersedia, coverMinggu, restok };
     baris.push(info);
     if (poSisa > 0) { const u = infoUrgentPOBaris(h, o.sekarang); antrean.push(Object.assign({ tipe: 'PO', qty: poSisa, tanggalPesanTerlama: h.tanggalPesanTerlama || null, urgent: u.urgent, urgentQty: u.urgentQty, hariMenunggu: u.hari }, info)); }
     if (restok > 0) antrean.push(Object.assign({ tipe: 'RESTOK', qty: restok, tanggalPesanTerlama: null }, info));
@@ -11832,7 +11838,9 @@ function infoUrgentPO(rincian, wip, sekarang) {
 function infoUrgentPOBaris(h, sekarang) {
   let rincian = h.poRincian || [];
   if (!rincian.length && h.tanggalPesanTerlama && h.poQty > 0) rincian = [{ tanggal: new Date(h.tanggalPesanTerlama).toISOString().slice(0, 10), qty: h.poQty, perkiraan: true }];
-  return infoUrgentPO(rincian, h.wip, sekarang);
+  // Penutup pesanan lama = yg sedang dijahit + stok gudang (poQty - poSisa); fallback ke wip utk baris tanpa poSisa.
+  const tertutup = h.poSisa != null ? Math.max(0, (h.poQty || 0) - h.poSisa) : (h.wip || 0);
+  return infoUrgentPO(rincian, tertutup, sekarang);
 }
 function htmlPrioritasPO(poItemsOverride) {
   const poItems = poItemsOverride || hitungRekomendasiProduksi().poItems;
@@ -11843,16 +11851,16 @@ function htmlPrioritasPO(poItemsOverride) {
   return `
     <div class="panel">
       <h2>Prioritas #1 -- Sudah Ada PO (Pre-Order)</h2>
-      <div class="desc">Diurutkan dari tanggal pesanan pelanggan TERLAMA (paling mendesak dikerjakan) -- dicocokkan dgn data "Update Daftar Pesanan" yg sudah diupload. Qty yg sudah menunggu <b>lebih dari ${BATAS_HARI_PO_URGENT} hari</b> dan belum dijahit ditandai <b style="color:#dc2626;">URGENT</b> -- dihitung per pesanan, jadi hanya qty yg benar-benar lama yg ditandai (bukan seluruh baris).</div>
-      ${jmlUrgent ? `<div style="margin-top:6px; padding:6px 12px; border-radius:8px; background:rgba(220,38,38,.08); color:#991b1b; font-size:12.5px;">&#9888; <b>${jmlUrgent} baris URGENT (${qtyUrgent} pcs)</b> -- sudah menunggu lebih dari ${BATAS_HARI_PO_URGENT} hari dan belum dijahit.</div>` : ''}
+      <div class="desc">Diurutkan dari tanggal pesanan pelanggan TERLAMA (paling mendesak dikerjakan) -- dicocokkan dgn data "Update Daftar Pesanan" yg sudah diupload. PO ditutup dulu oleh yg <b>sedang dijahit</b>, lalu <b>stok gudang</b> (kalau stok cukup, tandanya <b style="color:#d97706;">STOK ADA</b>: tinggal dikemas, tidak perlu produksi). Sisa qty yg sudah menunggu <b>lebih dari ${BATAS_HARI_PO_URGENT} hari</b> dan belum tertutup ditandai <b style="color:#dc2626;">URGENT</b> -- dihitung per pesanan, jadi hanya qty yg benar-benar lama yg ditandai (bukan seluruh baris).</div>
+      ${jmlUrgent ? `<div style="margin-top:6px; padding:6px 12px; border-radius:8px; background:rgba(220,38,38,.08); color:#991b1b; font-size:12.5px;">&#9888; <b>${jmlUrgent} baris URGENT (${qtyUrgent} pcs)</b> -- sudah menunggu lebih dari ${BATAS_HARI_PO_URGENT} hari dan belum tertutup yg dijahit maupun stok.</div>` : ''}
       ${!poItems.length ? '<div class="empty-note">Tidak ada PO yg cocok dgn pesanan pelanggan saat ini.</div>' : `
       <div style="overflow-x:auto;"><table class="data compact" style="min-width:760px;">
-        <thead><tr><th>Produk</th><th>Warna</th><th>Ukuran</th><th class="num">Qty PO</th><th class="num">Sedang Dijahit</th><th class="num">Sisa Perlu Order</th><th>Tgl Pesanan Terlama</th><th>Keterangan</th></tr></thead>
+        <thead><tr><th>Produk</th><th>Warna</th><th>Ukuran</th><th class="num">Qty PO</th><th class="num">Sedang Dijahit</th><th class="num">Stok Gudang</th><th class="num">Sisa Perlu Order</th><th>Tgl Pesanan Terlama</th><th>Keterangan</th></tr></thead>
         <tbody>
           ${poItems.map((h, i) => { const u = info[i]; const rincianTeks = u.detail.filter(d => d.sisa > 0).map(d => fmtTglPendek(d.tanggal) + ': ' + d.sisa + ' pcs').join(', '); return `<tr${u.urgent ? ' class="po-urgent" style="background:rgba(220,38,38,.07);"' : ''}>
-            <td>${h.produkNama}</td><td>${warnaTampilKartu(h.warna, h.produkNama)}</td><td>${h.ukuran}</td><td class="num">${h.poQty}</td><td class="num">${h.wip || '-'}</td><td class="num" style="font-weight:700;">${h.poSisa}</td>
+            <td>${h.produkNama}</td><td>${warnaTampilKartu(h.warna, h.produkNama)}</td><td>${h.ukuran}</td><td class="num">${h.poQty}</td><td class="num">${h.wip || '-'}</td><td class="num">${h.stok || '-'}</td><td class="num" style="font-weight:700;">${h.poSisa}</td>
             <td>${h.tanggalPesanTerlama ? fmtTanggal(h.tanggalPesanTerlama, { short: true }) : '<span style="color:var(--ink-soft);">belum ketemu pesanan cocok</span>'}</td>
-            <td style="min-width:250px;"${rincianTeks ? ` title="Sisa per tanggal pesan: ${rincianTeks.replace(/"/g, '&quot;')}"` : ''}>${u.urgent ? `<span style="display:inline-block; padding:1px 8px; border-radius:10px; font-size:10.5px; font-weight:700; color:#fff; background:#dc2626;">URGENT</span> <span style="font-size:11.5px; font-weight:700; color:#dc2626;">${u.urgentQty} pcs menunggu &gt; ${BATAS_HARI_PO_URGENT} hari</span> <span style="font-size:11px; color:#b91c1c;">(terlama ${u.hari} hari${u.perkiraan ? ', perkiraan' : ''})</span>` : ''}</td>
+            <td style="min-width:250px;"${rincianTeks ? ` title="Sisa per tanggal pesan: ${rincianTeks.replace(/"/g, '&quot;')}"` : ''}>${u.urgent ? `<span style="display:inline-block; padding:1px 8px; border-radius:10px; font-size:10.5px; font-weight:700; color:#fff; background:#dc2626;">URGENT</span> <span style="font-size:11.5px; font-weight:700; color:#dc2626;">${u.urgentQty} pcs menunggu &gt; ${BATAS_HARI_PO_URGENT} hari</span> <span style="font-size:11px; color:#b91c1c;">(terlama ${u.hari} hari${u.perkiraan ? ', perkiraan' : ''})</span>` : ''}${h.poDariStok > 0 ? `${u.urgent ? '<br>' : ''}<span style="display:inline-block; padding:1px 8px; border-radius:10px; font-size:10.5px; font-weight:700; color:#fff; background:#d97706;">STOK ADA</span> <span style="font-size:11.5px; color:#92400e;">${h.poDariStok} pcs bisa dipenuhi dari stok gudang (${h.stok}) -- kemas &amp; kirim dulu${h.tanggalPesanTerlama && hariPoMenunggu(h.tanggalPesanTerlama) > BATAS_HARI_PO_URGENT ? ', pesanan sudah menunggu ' + hariPoMenunggu(h.tanggalPesanTerlama) + ' hari' : ''}</span>` : ''}</td>
           </tr>`; }).join('')}
         </tbody>
       </table></div>`}
@@ -12098,13 +12106,13 @@ function htmlProduksiRekomendasi() {
             </tbody>
           </table>
           </div>
-          ${(k.rincian || []).some(r => r.wip > 0) ? `
+          ${(k.rincian || []).some(r => r.wip > 0 || r.stok > 0) ? `
           <div class="kartu-rincian" style="margin-top:12px;">
-            <div style="font-size:11px; font-weight:700; color:var(--ink-soft); margin-bottom:4px;">RINCIAN: PO &minus; SEDANG DIJAHIT (JAHIT) = SISA ORDER</div>
+            <div style="font-size:11px; font-weight:700; color:var(--ink-soft); margin-bottom:4px;">RINCIAN: PO &minus; SEDANG DIJAHIT (JAHIT) &minus; STOK GUDANG (STOK) = SISA ORDER</div>
             <table class="data compact kartu-pivot kartu-rincian-tbl" style="width:100%;">
-              <colgroup><col style="width:36%;"><col style="width:21%;"><col style="width:13%;"><col style="width:15%;"><col style="width:15%;"></colgroup>
-              <thead><tr><th>Warna</th><th>Ukuran</th><th>PO</th><th>Jahit</th><th>Sisa</th></tr></thead>
-              <tbody>${k.rincian.map(r => `<tr><td>${r.warna}</td><td>${r.ukuran}</td><td>${r.po}</td><td>${r.wip || '-'}</td><td style="font-weight:700;">${r.sisa}</td></tr>`).join('')}</tbody>
+              <colgroup><col style="width:31%;"><col style="width:18%;"><col style="width:12%;"><col style="width:13%;"><col style="width:13%;"><col style="width:13%;"></colgroup>
+              <thead><tr><th>Warna</th><th>Ukuran</th><th>PO</th><th>Jahit</th><th>Stok</th><th>Sisa</th></tr></thead>
+              <tbody>${k.rincian.map(r => `<tr><td>${r.warna}</td><td>${r.ukuran}</td><td>${r.po}</td><td>${r.wip || '-'}</td><td>${r.stok || '-'}</td><td style="font-weight:700;">${r.sisa}</td></tr>`).join('')}</tbody>
             </table>
           </div>` : ''}
         </div>`;
@@ -12121,7 +12129,7 @@ function htmlProduksiRekomendasi() {
 // Teks rumus transparan utk 1 item antrean: "3,6 x 4 minggu - stok 0 = 15" (restok) atau "PO 28 - dijahit 10 = 18" (PO).
 function teksHitunganForecast(it, targetMinggu) {
   const k = (v) => (Math.round(v * 10) / 10).toString().replace('.', ',');
-  if (it.tipe === 'PO') return 'PO ' + it.poQty + ' - dijahit ' + it.wip + ' = ' + it.qty;
+  if (it.tipe === 'PO') return 'PO ' + it.poQty + ' - dijahit ' + Math.min(it.wip || 0, it.poQty || 0) + (it.poDariStok ? ' - stok ' + it.poDariStok : '') + ' = ' + it.qty;
   return k(it.forecast) + (it.dikoreksi ? '*' : '') + ' \u00d7 ' + targetMinggu + ' mgg - tersedia ' + it.tersedia + ' = ' + it.qty;
 }
 function htmlStatistikKapasitas(st, satuan) {
