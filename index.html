@@ -172,6 +172,16 @@
   .kartu-produksi-card.purple table.data thead th { background: rgba(124,106,237,.14); color: #4C3FBF; }
   .kartu-produksi-card.amber table.data thead th { background: rgba(245,158,11,.14); color: #92400E; }
   .kartu-produksi-card.rose table.data thead th { background: rgba(236,72,153,.14); color: #9D174D; }
+  /* (2026-11-23) Setiawan: "bisa di wrap text saja, agar jarak baris dan kolomnya sama" -- tabel kartu pakai
+     table-layout:fixed + lebar kolom seragam (lihat <colgroup> di htmlProduksiRekomendasi), judul warna panjang
+     (mis. BURGUNDY MAROON) turun ke baris berikutnya (wrap) alih2 melebarkan 1 kolom saja, semua sel rata tengah
+     & tinggi baris seragam -- berlaku sama utk tampilan layar & hasil Unduh PNG. */
+  .kartu-produksi-card table.kartu-pivot { table-layout: fixed; border-collapse: collapse; }
+  .kartu-produksi-card table.kartu-pivot th, .kartu-produksi-card table.kartu-pivot td { white-space: normal; word-break: break-word; overflow-wrap: anywhere; text-align: center; vertical-align: middle; padding: 6px 4px; line-height: 1.25; }
+  .kartu-produksi-card table.kartu-pivot th { height: 38px; }
+  .kartu-produksi-card table.kartu-pivot td { height: 40px; }
+  .kartu-produksi-card table.kartu-pivot th:first-child, .kartu-produksi-card table.kartu-pivot td:first-child { text-align: left; }
+  .kartu-produksi-card table.kartu-pivot input.inp-kartu-qty { width: 100% !important; max-width: 56px; text-align: center !important; box-sizing: border-box; margin: 0 auto; display: block; }
   .kartu-produksi-card tbody tr:nth-child(even) td { background: rgba(17,24,39,.025); }
   .kartu-produksi-card tbody tr:last-child td { background: rgba(17,24,39,.05); font-weight: 700; }
   .btn-unduh-kartu { border-radius: 999px !important; font-weight: 600; border-color: var(--accent) !important; color: var(--accent-ink) !important; }
@@ -796,6 +806,28 @@ function tambahAliasKodeWarna(kode, aliasMentah) {
   STATE.colorCodeAlias[kode].push(alias);
   return { ok: true, pesan: `Alias "${alias}" utk kode ${kode} tersimpan.` };
 }
+// (2026-11-22 round 20 lanjutan lagi lagi) MIGRASI OTOMATIS -- Setiawan SUDAH berkali2 eksplisit konfirmasi
+// keputusan bisnisnya: "maroon dan burgundy maroon sama sku nya MAR, sedangkan marun yang sku nya MRN itu
+// beda" + "aku tidak ingin ada beda... karena warnanya pada dasarnya sama saja" (soal teks "Maroon" di sheet
+// ROVEE TANPA HIJAB yg harusnya = BURGUNDY MAROON) -- tapi langkah manual via UI (hapus alias "MAROON" dari
+// MRN, tambah ke MAR) berulang kali TIDAK kesampaian dieksekusi beliau sendiri (msh kejadian di Prioritas PO
+// setelah beberapa round). Drpd terus minta klik UI yg sama, migrasi ini jalan OTOMATIS 1x tiap kali data
+// dimuat (dipanggil dari loadState) KALAU kondisi KONFLIK PERSIS ini terdeteksi -- idempotent: begitu alias
+// sudah pindah, kondisinya tidak terpenuhi lagi & tidak jalan lagi. TIDAK menyentuh kode warna LAIN manapun
+// (general-purpose tapi scope deteksinya sengaja SEMPIT -- cuma kasus ini, bukan auto-merge sembarang alias).
+// Return true kalau benar2 ada perubahan (dipakai pemanggil utk tahu perlu saveState() atau tidak).
+function migrasiOtomatisAliasMaroon() {
+  if (!STATE.colorCodeMap || !STATE.colorCodeAlias) return false;
+  const kodeMar = Object.keys(STATE.colorCodeMap).find(k => normalisasiNamaUtkBanding(STATE.colorCodeMap[k]) === 'BURGUNDY MAROON');
+  if (!kodeMar) return false; // kode BURGUNDY MAROON belum terdaftar sama sekali -- tidak ada yg bisa dituju
+  const kodeLainDgnAliasMaroon = Object.keys(STATE.colorCodeAlias).find(k => k !== kodeMar && (STATE.colorCodeAlias[k] || []).some(a => normalisasiNamaUtkBanding(a) === 'MAROON'));
+  if (!kodeLainDgnAliasMaroon) return false; // tidak ada konflik (alias "MAROON" tidak nyangkut di kode lain)
+  const sudahAdaDiMar = (STATE.colorCodeAlias[kodeMar] || []).some(a => normalisasiNamaUtkBanding(a) === 'MAROON');
+  if (sudahAdaDiMar) return false; // sudah benar, tidak perlu apa2
+  STATE.colorCodeAlias[kodeLainDgnAliasMaroon] = (STATE.colorCodeAlias[kodeLainDgnAliasMaroon] || []).filter(a => normalisasiNamaUtkBanding(a) !== 'MAROON');
+  STATE.colorCodeAlias[kodeMar] = (STATE.colorCodeAlias[kodeMar] || []).concat(['MAROON']);
+  return true;
+}
 // "Kualifier" nama produk (2026-11-22 round 20, Setiawan: "disini ga perlu ada tulisan tanpa hijab lagi di
 // warna, kan di judul sudah jelas rovee tanpa hijab") -- kata ke-2 dst nama produk (mis. "ROVEE TANPA HIJAB"
 // -> "TANPA HIJAB") dianggap kualifier pembeda dari produk "induk"-nya (kata pertama). Kalau teks warna
@@ -1249,16 +1281,29 @@ function sinkronkanPreOrderListKeProduksiPO(rekap) {
 // bukan-ukuran-standar (mis. "L/XL" varian Rovee) diurutkan alfabet di belakangnya -- TANPA ini, Array.sort()
 // polos mengurutkan alfabet apa adanya ("3XL,4XL,...,L,M,S,XL,XXL" -- salah urut spt dilaporkan Setiawan dari
 // screenshot produk OSWALD, 2026-11-22), krn "3" < "L" secara karakter walau S/M/L seharusnya duluan.
+// (2026-11-22 round 20 lanjutan lagi lagi lagi lagi lagi) peta ukuran custom ROVEE ("S/M","L/XL" -- lihat
+// ukuranKanonis) ke "posisi urutan" ukuran standar yg setara, KHUSUS utk pengurutan tampilan di sini -- teks
+// tampilan TETAP "S/M"/"L/XL", cuma urutannya ikut S/L spy jatuh sebelum XXL (bukan ke-sort alfabetis polos
+// yg bikin "L/XL" > "S/M" > ... jatuh SETELAH "XXL").
+const URUTAN_ALIAS_UKURAN_CUSTOM = { 'S/M': 'S', 'L/XL': 'L' };
 function urutkanUkuranStandarDulu(daftarUkuran) {
-  const ukuranStandar = SIZES.filter(s => daftarUkuran.includes(s));
-  const ukuranLain = daftarUkuran.filter(u => !SIZES.includes(u)).sort();
+  const posisiStandar = u => SIZES.indexOf(URUTAN_ALIAS_UKURAN_CUSTOM[u] || u);
+  const ukuranStandar = daftarUkuran.filter(u => posisiStandar(u) !== -1).sort((a, b) => posisiStandar(a) - posisiStandar(b));
+  const ukuranLain = daftarUkuran.filter(u => posisiStandar(u) === -1).sort();
   return [...ukuranStandar, ...ukuranLain];
 }
 function daftarWarnaUkuranProduk(produkNama) {
   if (!produkNama) return { warnas: [], ukurans: [] };
   const { rows } = ratakanStokProduksi(STATE.produksiStockRaw || [], STATE.produksiStockMapping || { groups: {}, variants: {} });
   const warnaSet = new Set(), ukuranSet = new Set();
-  rows.forEach(r => { if (r.produkNama === produkNama) { if (r.warna) warnaSet.add(r.warna); if (r.ukuranLabel) ukuranSet.add(r.ukuranLabel); } });
+  // (2026-11-22 round 20 lanjutan lagi lagi lagi lagi lagi) FIX -- Setiawan: form "Tambah WIP"/"Tambah PO" utk
+  // produk ROVEE/ROVEE TANPA HIJAB nampilin grid ukuran "S, L, XXL" polos (bukan "S/M, L/XL, XXL"), beda dari
+  // skema ukuran custom ROVEE yg sebenarnya -- krn fungsi ini ambil r.ukuranLabel MENTAH dari ratakanStokProduksi
+  // (langsung dari sheet stok, via jalur vm.ukuran / SIZES standar) tanpa pernah lewat ukuranKanonis (baru
+  // diterapkan di jalur rekomendasi produksi sejak round 20, lihat ukuranKanonis()). Kalau sheet kebetulan
+  // nyebut ukurannya "S"/"L" polos, pakai ukuranKanonis spy tampil (dan ke-dedup dgn baris lain yg sudah
+  // "S/M"/"L/XL") sbg "S/M"/"L/XL" jg -- konsisten dgn rekomendasi produksi & kartu.
+  rows.forEach(r => { if (r.produkNama === produkNama) { if (r.warna) warnaSet.add(r.warna); if (r.ukuranLabel) ukuranSet.add(ukuranKanonis(r.produkNama, r.ukuranLabel)); } });
   return { warnas: Array.from(warnaSet).sort(), ukurans: urutkanUkuranStandarDulu(Array.from(ukuranSet)) };
 }
 // Bangun HTML <option> utk dropdown Warna/Ukuran form WIP/PO -- nilai yg sedang aktif (mis. saat Edit)
@@ -2381,6 +2426,9 @@ async function loadState(fileIdOverride) {
     produksiStockFetchedAt: null, produksiSheetFileId: null, produksiSettings: { targetMinggu: 4, windowMinggu: 8 },
     preOrderListRaw: [], preOrderListFetchedAt: null, preOrderListSyncedAt: null, preOrderListSheetFileId: null, preOrderListWarnaBaris: {}, produksiOverrideQty: {} };
   STATE = Object.assign({}, DEFAULT_STATE, loaded);
+  // (2026-11-22 round 20 lanjutan lagi lagi) migrasi housekeeping OTOMATIS, lihat migrasiOtomatisAliasMaroon --
+  // gagal simpan di sini TIDAK menghalangi load (migrasi akan dicoba lagi otomatis next load, idempotent).
+  if (migrasiOtomatisAliasMaroon()) saveState().catch(() => {});
 }
 
 async function saveState() {
@@ -2763,8 +2811,23 @@ async function fetchDanProsesPreOrderListDariSheet() {
     } catch (eWarna) {
       catatanWarna = ` (catatan: deteksi baris "batal" via warna sel gagal -- ${eWarna.message})`;
     }
+    // (2026-11-22 round 20 lanjutan lagi lagi lagi lagi lagi lagi) AUTO-SINKRON ke Daftar PO tiap kali fetch
+    // sheet sukses -- Setiawan: "kenapa disini sedikit, padahal di sheet banyak" utk BURGUNDY MAROON S/M.
+    // ROOT CAUSE (bukan salah hitung): panel "Prioritas #1 -- Sudah Ada PO" baca dari STATE.produksiPO, yaitu
+    // SNAPSHOT hasil klik tombol "Sinkronkan N Baris ke Daftar PO" TERAKHIR -- BUKAN live dari rekap sheet.
+    // Kalau user fetch data baru (order2 baru masuk) tapi belum/lupa klik "Sinkronkan" lagi scr terpisah,
+    // Prioritas PO msh nampilin angka snapshot LAMA, padahal rekap di panel "Impor Pre-Order List" di atasnya
+    // (dihitung ulang tiap render dari STATE.preOrderListRaw) sudah benar/terbaru -- bikin 2 tabel di 1 halaman
+    // terlihat beda sendiri. FIX: sinkron otomatis dipanggil di sini jg, setiap fetch sukses -- aman (idempotent,
+    // hanya mengganti entri bertanda sumberImport='preOrderList', entri PO manual TIDAK disentuh/dihapus, lihat
+    // sinkronkanPreOrderListKeProduksiPO). Tombol manual "Sinkronkan" tetap ada (jaga2 kalau user ganti baris
+    // WARNA sel scr manual di sheet tanpa fetch ulang / mau paksa sinkron ulang kapan saja), tapi user TIDAK
+    // WAJIB klik itu lagi setelah fetch spy Prioritas PO langsung reflek data terbaru.
+    const { rekap: rekapAutoSinkron } = hitungRekapPreOrderList(STATE.preOrderListRaw);
+    sinkronkanPreOrderListKeProduksiPO(rekapAutoSinkron);
+    STATE.preOrderListSyncedAt = new Date().toISOString();
     await saveState();
-    if (msg) showMsg(msg, 'ok', `Berhasil ambil ${rows.length} baris order dari sheet "ROVEE".${catatanWarna}`);
+    if (msg) showMsg(msg, 'ok', `Berhasil ambil ${rows.length} baris order dari sheet "ROVEE", dan otomatis disinkronkan ke Daftar PO.${catatanWarna}`);
     renderProduksi(document.getElementById('app'));
   } catch (e) {
     if (msg) showMsg(msg, 'err', `Gagal mengambil data sheet: ${e.message}. Kalau ini pertama kali dipakai setelah update, coba logout lalu login lagi dulu (izin akses Sheets baru perlu di-approve ulang).`);
@@ -10704,6 +10767,15 @@ function hitungRekomendasiProduksi() {
     wipByKunci[kunci] = (wipByKunci[kunci] || 0) + (w.qty || 0);
     if (!wipMeta[kunci]) wipMeta[kunci] = { produkNama: w.produkNama, warna: warnaK, ukuran: ukuranK };
   });
+  // (2026-11-23) Setiawan: "jangan sampai ada penulisan 2 ... burgundy maroon dan maroon" -- warna di WIP/PO yg
+  // TIDAK ketemu di Kode Warna (nama utama/alias) tidak bisa disatukan otomatis dgn warna kanoniknya, jadi muncul
+  // sbg kolom/baris terpisah di kartu & Prioritas PO. Dulu diam2; sekarang selalu dilaporkan di Peringatan
+  // beserta cara memperbaikinya (tambah alias), supaya penyebab "tulisan dobel" langsung kelihatan.
+  const warnaBelumTerdaftarWipPo = new Set();
+  [...(STATE.produksiWip || []).map(w => ({ sumber: 'WIP', produkNama: w.produkNama, warna: w.warna })), ...(STATE.produksiPO || []).map(po => ({ sumber: 'PO', produkNama: po.produkNama, warna: po.warna }))].forEach(e => {
+    if (e.warna && !cariKodeWarnaByNama(e.warna)) warnaBelumTerdaftarWipPo.add(`Warna "${e.warna}" (${e.sumber} produk ${e.produkNama}) belum ada di Kode Warna -> tampil terpisah dari warna kanoniknya. Tambahkan "${e.warna}" sbg alias ke kode warna yg sama lewat Produk &amp; Kontrak > Kode Warna > "+ Tambah Alias Warna".`);
+  });
+  warnings.push(...warnaBelumTerdaftarWipPo);
   const poBySku = {}, poByKunci = {}, poMeta = {};
   // (2026-11-22 round 18, Setiawan: "padahal ada tanggal dan nomor pesanannya jelas kenapa bisa tidak ketemu")
   // tanggalPesanTerlama yg ikut disinkron dari sheet Pre-Order List (lihat sinkronkanPreOrderListKeProduksiPO)
@@ -11452,7 +11524,13 @@ function attachListenersProduksiPO(container) {
     if (!rows.length) { showMsg(msg, 'err', warnings.length ? warnings.join(' ') : 'Tidak ada baris order yg berhasil dibaca.'); return; }
     STATE.preOrderListRaw = rows;
     STATE.preOrderListFetchedAt = new Date().toISOString();
-    await withSaving(msg, `${rows.length} baris order berhasil diproses.`, async () => { await saveState(); });
+    // (2026-11-22 round 20 lanjutan x6) auto-sinkron jg di jalur tempel-teks manual -- lihat komentar di
+    // fetchDanProsesPreOrderListDariSheet utk alasan lengkap (Prioritas PO sebelumnya butuh klik "Sinkronkan"
+    // terpisah, bikin datanya kelihatan "lebih sedikit dari sheet" padahal cuma belum di-sinkron ulang).
+    const { rekap: rekapAutoSinkronPaste } = hitungRekapPreOrderList(STATE.preOrderListRaw);
+    sinkronkanPreOrderListKeProduksiPO(rekapAutoSinkronPaste);
+    STATE.preOrderListSyncedAt = new Date().toISOString();
+    await withSaving(msg, `${rows.length} baris order berhasil diproses, dan otomatis disinkronkan ke Daftar PO.`, async () => { await saveState(); });
     setTimeout(() => renderProduksi(container), 700);
   });
   const btnSinkron = document.getElementById('btnSinkronPreOrderList');
@@ -11569,7 +11647,8 @@ function htmlProduksiRekomendasi() {
             <button type="button" class="btn btn-ghost btn-unduh-kartu" data-kartu-idx="${kIdx}" data-produk="${namaTampil.replace(/"/g, '&quot;')}" style="padding:3px 8px; font-size:11px; flex:none;">Unduh PNG</button>
           </div>
           <div style="overflow-x:auto;">
-          <table class="data compact" style="width:auto;">
+          <table class="data compact kartu-pivot" style="width:${54 + piv.warnaCols.length * 78 + 58}px;">
+            <colgroup><col style="width:54px;">${piv.warnaCols.map(() => '<col style="width:78px;">').join('')}<col style="width:58px;"></colgroup>
             <thead><tr><th>SIZE</th>${piv.warnaCols.map(w => `<th>${w}</th>`).join('')}<th>TOTAL</th></tr></thead>
             <tbody>
               ${piv.ukuranRows.map((u, rIdx) => `<tr>
@@ -11665,7 +11744,20 @@ function attachListenersProduksiRekomendasi(container) {
       const card = document.getElementById(`kartuProduksiCard_${kartuIdx}`);
       if (!card || typeof window.html2canvas !== 'function') { alert('Fitur unduh gambar belum siap (html2canvas belum termuat) -- cek koneksi internet lalu coba lagi.'); return; }
       try {
-        const canvas = await window.html2canvas(card, { backgroundColor: '#ffffff', scale: 2 });
+        // (2026-11-23) onclone: ganti <input> angka di salinan kartu jadi teks biasa rata tengah -- html2canvas
+        // merender <input> dgn posisi teks yg bergeser/turun (kotak besar, angka tidak sejajar dgn kolom TOTAL),
+        // bikin jarak baris/kolom di PNG terlihat tidak rata. Hanya mengubah SALINAN utk gambar, bukan DOM asli.
+        const canvas = await window.html2canvas(card, {
+          backgroundColor: '#ffffff', scale: 2,
+          onclone: (docClone) => {
+            docClone.querySelectorAll('.inp-kartu-qty').forEach(inp => {
+              const span = docClone.createElement('span');
+              span.textContent = inp.value !== '' ? inp.value : '-';
+              span.style.cssText = 'display:block; text-align:center; font-weight:600;' + (inp.value === '' ? ' color:#9ca3af;' : '');
+              inp.parentNode.replaceChild(span, inp);
+            });
+          }
+        });
         const link = document.createElement('a');
         const tanggal = new Date().toISOString().slice(0, 10);
         link.download = `order-produksi-${produk.toLowerCase().replace(/[^a-z0-9]+/g, '-')}-${tanggal}.png`;
