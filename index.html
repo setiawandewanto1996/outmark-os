@@ -435,7 +435,7 @@ let STATE = {
   produksiStockRaw: [],             // hasil parse mentah sheet "DATA" (live Google Sheets ATAU tempel teks fallback): [{groupLabel,variantLabels,items}]
   produksiStockFetchedAt: null,     // ISO string kapan STATE.produksiStockRaw terakhir diambil/diproses
   produksiSheetFileId: null,        // fileId Google Sheet "LIVE UJUSO" yg dipilih user via Picker (scope spreadsheets.readonly)
-  produksiSettings: { targetMinggu: 4, windowMinggu: 8, kapasitasMingguan: 0, bobotProduk: {} }, // (bobotProduk 2026-11-23: bobot kesulitan jahit per produk, kosong=semua 1) (kapasitasMingguan 2026-11-23: kapasitas produksi per minggu, 0=belum diisi) target cadangan stok (minggu) & jendela histori kecepatan jual (minggu)
+  produksiSettings: { targetMinggu: 4, windowMinggu: 8, kapasitasMingguan: 0, bobotProduk: {}, koreksiStokHabis: true }, // (koreksiStokHabis 2026-11-23: forecast varian stok-habis pakai rata-rata minggu yg ada penjualan) (bobotProduk 2026-11-23: bobot kesulitan jahit per produk, kosong=semua 1) (kapasitasMingguan 2026-11-23: kapasitas produksi per minggu, 0=belum diisi) target cadangan stok (minggu) & jendela histori kecepatan jual (minggu)
   preOrderListRaw: [],              // hasil parse mentah sheet "Pre-Order List" > tab ROVEE (live Google Sheets ATAU tempel teks fallback): [{no,tglOrder,username,artikel,warnaRaw,sizeRaw,qtyRaw,noPesanan,status,warehouse}]
   preOrderListFetchedAt: null,      // ISO string kapan STATE.preOrderListRaw terakhir diambil/diproses (2026-11-22, fitur "Impor Pre-Order List")
   preOrderListSheetFileId: null,    // fileId spreadsheet "Pre-Order List" yg dipilih user via Picker (2026-11-22 round 16, scope spreadsheets.readonly sama spt sheet stok)
@@ -2459,7 +2459,7 @@ async function loadState(fileIdOverride) {
   // tidak jadi undefined pas dimuat. Tiap kali nambah field baru ke STATE, tambahkan juga di sini.
   const DEFAULT_STATE = { capitalPartners: [], stores: [], products: [], contracts: [], colorCodeMap: {}, colorCodeAlias: {}, pembagiPctManual: {}, orderDb: [], pendingOrderSku: {}, payouts: [], vendorPayouts: [], adsMingguan: [], biayaOperasional: [], opexKategori: OPEX_KATEGORI.slice(), alokasiProfit: [], alokasiKategori: ALOKASI_KATEGORI.slice(), saldoDiluarKontrak: {}, rolloverLog: [], customers: [], biayaRetur: [], karyawan: [], slipGaji: [], slipGajiSettings: { namaPerusahaan: 'UJUSO', alamatBaris: ['Jl. Permana Timur Blok D7 No. 28', 'Kel. Citeureup, Kec. Cimahi Utara', 'Kota Cimahi'], logoDataUri: DEFAULT_LOGO_UJUSO_DATA_URI, emailKontak: 'setiawandewanto@gmail.com' }, invoiceProducts: [], invoices: [], diskon: [], kwitansi: [],
     produksiWip: [], produksiWipRiwayat: [], produksiPO: [], produksiStockMapping: { groups: {}, variants: {}, rowProduk: {} }, produksiStockRaw: [],
-    produksiStockFetchedAt: null, produksiSheetFileId: null, produksiSettings: { targetMinggu: 4, windowMinggu: 8, kapasitasMingguan: 0, bobotProduk: {} },
+    produksiStockFetchedAt: null, produksiSheetFileId: null, produksiSettings: { targetMinggu: 4, windowMinggu: 8, kapasitasMingguan: 0, bobotProduk: {}, koreksiStokHabis: true },
     preOrderListRaw: [], preOrderListFetchedAt: null, preOrderListSyncedAt: null, preOrderListSheetFileId: null, preOrderListWarnaBaris: {}, produksiOverrideQty: {} };
   STATE = Object.assign({}, DEFAULT_STATE, loaded);
   // (2026-11-22 round 20 lanjutan lagi lagi) migrasi housekeeping OTOMATIS, lihat migrasiOtomatisAliasMaroon --
@@ -11179,22 +11179,32 @@ function hitungRencanaForecast(opsi) {
   const windowMinggu = o.windowMinggu || settings.windowMinggu || 8;
   const targetMinggu = o.targetMinggu || settings.targetMinggu || 4;
   const kapasitas = o.kapasitasMingguan != null ? Number(o.kapasitasMingguan) || 0 : (Number(settings.kapasitasMingguan) || 0);
+  const koreksiStokHabis = o.koreksiStokHabis != null ? !!o.koreksiStokHabis : settings.koreksiStokHabis !== false;
   const seriBySku = bangunSeriMingguanPerSku(windowMinggu, o.sekarang);
   const { allRows } = hitungRekomendasiProduksi();
   const baris = [], antrean = [], tanpaData = [];
   allRows.forEach(h => {
     if (h.statusProduksi === 'stop') return;
     const seri = (h.sku && seriBySku[h.sku]) || new Array(windowMinggu).fill(0);
-    const forecast = rataBergerak(seri, windowMinggu);
+    const smaBiasa = rataBergerak(seri, windowMinggu);
     const sma4 = rataBergerak(seri, 4);
     let tren = 'stabil';
-    if (forecast > 0) { const rasio = sma4 / forecast; if (rasio > 1.15) tren = 'naik'; else if (rasio < 0.85) tren = 'turun'; }
+    if (smaBiasa > 0) { const rasio = sma4 / smaBiasa; if (rasio > 1.15) tren = 'naik'; else if (rasio < 0.85) tren = 'turun'; }
     const poSisa = h.poSisa || 0;
     const wipSisa = Math.max(0, (h.wip || 0) - (h.poQty || 0)); // WIP yg sudah dipakai menutup PO tidak dihitung ulang utk restok
     const tersedia = (h.stok || 0) + wipSisa;
+    // KOREKSI STOK HABIS (2026-11-23, Setiawan: "ini mah 5 pcs aja per stok kosong? mana forecasting-nya"): varian yg stoknya
+    // kosong TIDAK bisa terjual, jadi minggu2 nol penjualannya bukan "tidak laku" melainkan "tidak ada barang" -- rata-rata
+    // biasa (SMA) lalu menyusut dan meramal terlalu kecil. Utk varian stok habis, forecast = rata-rata HANYA minggu yg ada
+    // penjualan (permintaan saat barang tersedia), kalau itu lebih tinggi dari SMA biasa. Bisa dimatikan di pengaturan.
+    let forecast = smaBiasa, dikoreksi = false;
+    if (koreksiStokHabis && tersedia <= 0) {
+      const aktif = seri.filter(v => v > 0);
+      if (aktif.length) { const rataAktif = aktif.reduce((t, v) => t + v, 0) / aktif.length; if (rataAktif > smaBiasa + 1e-9) { forecast = rataAktif; dikoreksi = true; } }
+    }
     const restok = Math.max(0, Math.ceil(forecast * targetMinggu - tersedia));
     const coverMinggu = forecast > 0 ? tersedia / forecast : Infinity;
-    const info = { produkNama: h.produkNama, warna: h.warna, ukuran: h.ukuran, sku: h.sku, stok: h.stok || 0, wip: h.wip || 0, poQty: h.poQty || 0, poSisa, seri, forecast, tren, tersedia, coverMinggu, restok };
+    const info = { produkNama: h.produkNama, warna: h.warna, ukuran: h.ukuran, sku: h.sku, stok: h.stok || 0, wip: h.wip || 0, poQty: h.poQty || 0, poSisa, seri, forecast, smaBiasa, dikoreksi, tren, tersedia, coverMinggu, restok };
     baris.push(info);
     if (poSisa > 0) { const u = infoUrgentPOBaris(h, o.sekarang); antrean.push(Object.assign({ tipe: 'PO', qty: poSisa, tanggalPesanTerlama: h.tanggalPesanTerlama || null, urgent: u.urgent, urgentQty: u.urgentQty, hariMenunggu: u.hari }, info)); }
     if (restok > 0) antrean.push(Object.assign({ tipe: 'RESTOK', qty: restok, tanggalPesanTerlama: null }, info));
@@ -11209,7 +11219,7 @@ function hitungRencanaForecast(opsi) {
     if (it.tipe === 'PO') { it.level = 'PO'; it.alasan = it.tanggalPesanTerlama ? 'PO pelanggan menunggu sejak ' + (() => { const t = new Date(it.tanggalPesanTerlama).toISOString().slice(0, 10).split('-'); return t[2] + '/' + t[1] + '/' + t[0].slice(2); })() : 'PO pelanggan menunggu'; }
     else {
       it.level = it.coverMinggu < 1 ? 'KRITIS' : (it.coverMinggu < 2 ? 'SEGERA' : 'NORMAL');
-      const koma = (v) => String(Math.round(v * 10) / 10).replace('.', ','); it.alasan = it.tersedia <= 0 ? 'Stok habis, permintaan ~' + koma(it.forecast) + '/minggu' : 'Stok cukup ' + koma(it.coverMinggu) + ' minggu (target ' + targetMinggu + ')';
+      const koma = (v) => String(Math.round(v * 10) / 10).replace('.', ','); it.alasan = it.tersedia <= 0 ? 'Stok habis, permintaan ~' + koma(it.forecast) + '/minggu' + (it.dikoreksi ? ' (rata-rata minggu yg ada penjualan)' : '') : 'Stok cukup ' + koma(it.coverMinggu) + ' minggu (target ' + targetMinggu + ')';
     }
     it.jadwal = [];
   });
@@ -12108,6 +12118,12 @@ function htmlProduksiRekomendasi() {
   `;
 }
 
+// Teks rumus transparan utk 1 item antrean: "3,6 x 4 minggu - stok 0 = 15" (restok) atau "PO 28 - dijahit 10 = 18" (PO).
+function teksHitunganForecast(it, targetMinggu) {
+  const k = (v) => (Math.round(v * 10) / 10).toString().replace('.', ',');
+  if (it.tipe === 'PO') return 'PO ' + it.poQty + ' - dijahit ' + it.wip + ' = ' + it.qty;
+  return k(it.forecast) + (it.dikoreksi ? '*' : '') + ' \u00d7 ' + targetMinggu + ' mgg - tersedia ' + it.tersedia + ' = ' + it.qty;
+}
 function htmlStatistikKapasitas(st, satuan) {
   if (!st) return '<div class="desc" style="color:#b45309;">Isi minimal 1 angka (lebih dari 0).</div>';
   const k = (v) => (Math.round(v * 10) / 10).toString().replace('.', ',');
@@ -12147,6 +12163,7 @@ function htmlProduksiForecast() {
         <div class="field"><label>Target cadangan stok (minggu)</label><input type="number" id="fc_target" min="1" value="${rs.targetMinggu}"></div>
         <div class="field" style="align-self:end;"><button class="btn btn-primary" id="btnSimpanForecast">Simpan &amp; Hitung Ulang</button></div>
       </div>
+      <label style="display:flex; gap:8px; align-items:flex-start; margin-top:4px; font-size:12.5px; cursor:pointer;"><input type="checkbox" id="fc_koreksi" ${settings.koreksiStokHabis !== false ? 'checked' : ''} style="margin-top:3px;"> <span><b>Koreksi stok habis</b> -- varian yg stoknya kosong tidak bisa terjual, jadi minggu tanpa penjualannya bukan berarti tidak laku. Untuk varian ini forecast memakai rata-rata <u>minggu yg ada penjualan</u> (bukan rata-rata semua minggu), supaya permintaan tidak diramal terlalu kecil. Hasil koreksi diberi tanda <b>*</b>.</span></label>
       <div class="status-box" id="forecastMsg"></div>
     </div>
 
@@ -12192,18 +12209,18 @@ function htmlProduksiForecast() {
     ${!rs.jumlahItem ? '' : `
     <div class="panel">
       <h2>${rs.kapasitas > 0 ? 'Jadwal Produksi per Minggu' : 'Antrean Prioritas'}</h2>
-      ${rs.kapasitas > 0 ? `<div class="desc">Item dikerjakan sesuai urutan prioritas dan dipotong sesuai kapasitas ${rs.kapasitas} ${satuan}/minggu. Tanda &#9888; = stok diperkirakan habis SEBELUM item itu selesai diproduksi.</div>
+      ${rs.kapasitas > 0 ? `<div class="desc">Item dikerjakan sesuai urutan prioritas dan dipotong sesuai kapasitas ${rs.kapasitas} ${satuan}/minggu. Tanda &#9888; = stok diperkirakan habis SEBELUM item itu selesai diproduksi. Kolom <b>Hitungan</b> = forecast/minggu &times; target cadangan &minus; stok &amp; dijahit tersedia. Tanda <b>*</b> = stok kosong, forecast memakai rata-rata minggu yg ada penjualan (lihat pengaturan "Koreksi stok habis").</div>
       ${r.jadwalMinggu.slice(0, 12).map(mg => `
         <div class="forecast-minggu" style="margin-top:12px;">
           <div style="font-weight:700; margin-bottom:4px;">Minggu ${mg.minggu} <span style="font-weight:400; color:var(--ink-soft); font-size:12px;">-- ${rs.adaBobot ? mg.pcs + ' pcs = ' + fmtAngka(mg.terpakai) + ' / ' + mg.kapasitas + ' poin' : mg.terpakai + ' / ' + mg.kapasitas + ' pcs'}</span></div>
-          <table class="data compact"><thead><tr><th class="num">#</th><th>Produk</th><th>Warna</th><th>Ukuran</th><th class="num">Qty minggu ini</th><th>Alasan</th></tr></thead><tbody>
-          ${mg.potongan.map(pt => `<tr><td class="num">${pt.item.prioritas}</td><td>${esc(pt.item.produkNama)}</td><td>${esc(warnaTampilKartu(pt.item.warna, pt.item.produkNama))}</td><td>${esc(pt.item.ukuran)}</td><td class="num"><b>${pt.qty}</b>${pt.qty < pt.item.qty ? ` <span style="color:var(--ink-soft); font-size:11px;">dari ${pt.item.qty}</span>` : ''}</td><td>${chip(pt.item.level)}${pt.item.urgent ? ' <span style="display:inline-block; padding:1px 8px; border-radius:10px; font-size:10.5px; font-weight:700; color:#fff; background:#dc2626;">URGENT ' + pt.item.urgentQty + ' pcs</span>' : ''} ${esc(pt.item.alasan)}${pt.item.terlambatHabis ? ' <span title="Stok diperkirakan habis sebelum item ini selesai">&#9888;</span>' : ''}</td></tr>`).join('')}
+          <table class="data compact"><thead><tr><th class="num">#</th><th>Produk</th><th>Warna</th><th>Ukuran</th><th class="num">Qty minggu ini</th><th>Hitungan</th><th>Alasan</th></tr></thead><tbody>
+          ${mg.potongan.map(pt => `<tr><td class="num">${pt.item.prioritas}</td><td>${esc(pt.item.produkNama)}</td><td>${esc(warnaTampilKartu(pt.item.warna, pt.item.produkNama))}</td><td>${esc(pt.item.ukuran)}</td><td class="num"><b>${pt.qty}</b>${pt.qty < pt.item.qty ? ` <span style="color:var(--ink-soft); font-size:11px;">dari ${pt.item.qty}</span>` : ''}</td><td style="font-size:11.5px; color:var(--ink-soft); white-space:nowrap;">${teksHitunganForecast(pt.item, rs.targetMinggu)}</td><td>${chip(pt.item.level)}${pt.item.urgent ? ' <span style="display:inline-block; padding:1px 8px; border-radius:10px; font-size:10.5px; font-weight:700; color:#fff; background:#dc2626;">URGENT ' + pt.item.urgentQty + ' pcs</span>' : ''} ${esc(pt.item.alasan)}${pt.item.terlambatHabis ? ' <span title="Stok diperkirakan habis sebelum item ini selesai">&#9888;</span>' : ''}</td></tr>`).join('')}
           </tbody></table>
         </div>`).join('')}
       ${r.jadwalMinggu.length > 12 ? `<div class="desc" style="margin-top:8px;">... dan ${r.jadwalMinggu.length - 12} minggu berikutnya (total ${rs.jumlahMinggu} minggu) -- naikkan kapasitas atau kurangi item kalau terlalu panjang.</div>` : ''}`
       : `<div class="desc">Isi "Kapasitas produksi per minggu" di atas supaya antrean ini otomatis dipotong jadi jadwal mingguan. Sementara ini tampil urutan prioritas + kumulatif qty.</div>
-      <table class="data compact" style="margin-top:8px;"><thead><tr><th class="num">#</th><th>Produk</th><th>Warna</th><th>Ukuran</th><th class="num">Qty</th><th class="num">Kumulatif</th><th>Alasan</th></tr></thead><tbody>
-      ${(() => { let kum = 0; return r.antrean.map(it => { kum += it.qty; return `<tr><td class="num">${it.prioritas}</td><td>${esc(it.produkNama)}</td><td>${esc(warnaTampilKartu(it.warna, it.produkNama))}</td><td>${esc(it.ukuran)}</td><td class="num"><b>${it.qty}</b></td><td class="num">${kum}</td><td>${chip(it.level)}${it.urgent ? ' <span style="display:inline-block; padding:1px 8px; border-radius:10px; font-size:10.5px; font-weight:700; color:#fff; background:#dc2626;">URGENT ' + it.urgentQty + ' pcs</span>' : ''} ${esc(it.alasan)}</td></tr>`; }).join(''); })()}
+      <table class="data compact" style="margin-top:8px;"><thead><tr><th class="num">#</th><th>Produk</th><th>Warna</th><th>Ukuran</th><th class="num">Qty</th><th class="num">Kumulatif</th><th>Hitungan</th><th>Alasan</th></tr></thead><tbody>
+      ${(() => { let kum = 0; return r.antrean.map(it => { kum += it.qty; return `<tr><td class="num">${it.prioritas}</td><td>${esc(it.produkNama)}</td><td>${esc(warnaTampilKartu(it.warna, it.produkNama))}</td><td>${esc(it.ukuran)}</td><td class="num"><b>${it.qty}</b></td><td class="num">${kum}</td><td style="font-size:11.5px; color:var(--ink-soft); white-space:nowrap;">${teksHitunganForecast(it, rs.targetMinggu)}</td><td>${chip(it.level)}${it.urgent ? ' <span style="display:inline-block; padding:1px 8px; border-radius:10px; font-size:10.5px; font-weight:700; color:#fff; background:#dc2626;">URGENT ' + it.urgentQty + ' pcs</span>' : ''} ${esc(it.alasan)}</td></tr>`; }).join(''); })()}
       </tbody></table>`}
     </div>`}
 
@@ -12211,7 +12228,7 @@ function htmlProduksiForecast() {
       <h2>Forecast Permintaan per Varian</h2>
       <div class="desc">${barisForecast.length ? `Diurutkan dari permintaan tertinggi${barisForecast.length > tampilanTerbatas.length ? ` (menampilkan ${tampilanTerbatas.length} dari ${barisForecast.length} varian)` : ''}. "Penjualan" = qty per minggu, dari yg tertua ke terbaru (maks. 8 minggu terakhir). Cover = stok &divide; forecast.` : 'Belum ada riwayat penjualan yg cocok ke varian manapun (cek: data pesanan sudah diimpor? SKU varian sudah terpetakan di Stok &amp; Pemetaan?).'}</div>
       ${barisForecast.length ? `<div style="overflow-x:auto;"><table class="data compact" style="margin-top:8px; min-width:640px;"><thead><tr><th>Produk</th><th>Warna</th><th>Ukuran</th><th>Penjualan / minggu</th><th class="num">Forecast / minggu</th><th>Tren</th><th class="num">Stok</th><th class="num">Dijahit</th><th class="num">Cover (minggu)</th></tr></thead><tbody>
-      ${tampilanTerbatas.map(b => `<tr><td>${esc(b.produkNama)}</td><td>${esc(warnaTampilKartu(b.warna, b.produkNama))}</td><td>${esc(b.ukuran)}</td><td style="font-size:11.5px; color:var(--ink-soft);">${b.seri.slice(-8).join(' &middot; ')}</td><td class="num"><b>${fmt1(b.forecast)}</b></td><td style="color:${trenWarna[b.tren]}; font-size:12px;">${trenTeks[b.tren]}</td><td class="num">${b.stok}</td><td class="num">${b.wip || '-'}</td><td class="num" style="${b.coverMinggu < 1 ? 'color:#dc2626; font-weight:700;' : ''}">${isFinite(b.coverMinggu) ? fmt1(b.coverMinggu) : '-'}</td></tr>`).join('')}
+      ${tampilanTerbatas.map(b => `<tr><td>${esc(b.produkNama)}</td><td>${esc(warnaTampilKartu(b.warna, b.produkNama))}</td><td>${esc(b.ukuran)}</td><td style="font-size:11.5px; color:var(--ink-soft);">${b.seri.slice(-8).join(' &middot; ')}</td><td class="num"><b>${fmt1(b.forecast)}</b>${b.dikoreksi ? '<span title="Stok kosong: memakai rata-rata minggu yg ada penjualan (SMA biasa: ' + fmt1(b.smaBiasa) + ')" style="color:#d97706; font-weight:700;">*</span>' : ''}</td><td style="color:${trenWarna[b.tren]}; font-size:12px;">${trenTeks[b.tren]}</td><td class="num">${b.stok}</td><td class="num">${b.wip || '-'}</td><td class="num" style="${b.coverMinggu < 1 ? 'color:#dc2626; font-weight:700;' : ''}">${isFinite(b.coverMinggu) ? fmt1(b.coverMinggu) : '-'}</td></tr>`).join('')}
       </tbody></table></div>` : ''}
       ${r.tanpaData.length ? `<div class="desc" style="margin-top:10px; color:#b45309;">&#9888; ${r.tanpaData.length} varian stok &amp; dijahit = 0 tetapi TIDAK punya riwayat penjualan (tidak dijadwalkan, krn tidak ada dasar permintaan) -- cek manual kalau memang masih ingin diproduksi.</div>` : ''}
     </div>
@@ -12244,7 +12261,7 @@ function attachListenersProduksiForecast(container) {
     const targetMinggu = Math.max(1, Number(document.getElementById('fc_target').value) || 4);
     const bobotProduk = {};
     container.querySelectorAll('.inp-bobot-produk').forEach(el => { const v = Number(el.value); if (v > 0 && isFinite(v) && Math.abs(v - 1) > 1e-9) bobotProduk[el.dataset.produk] = Math.round(v * 100) / 100; });
-    STATE.produksiSettings = Object.assign({}, STATE.produksiSettings, { kapasitasMingguan, windowMinggu, targetMinggu, bobotProduk });
+    STATE.produksiSettings = Object.assign({}, STATE.produksiSettings, { kapasitasMingguan, windowMinggu, targetMinggu, bobotProduk, koreksiStokHabis: !!document.getElementById('fc_koreksi').checked });
     await withSaving(msg, 'Pengaturan disimpan, forecast dihitung ulang.', async () => { await saveState(); });
     setTimeout(() => renderProduksi(container), 700);
   });
