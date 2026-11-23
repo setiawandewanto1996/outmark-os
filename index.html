@@ -184,6 +184,8 @@
   .kartu-produksi-card table.kartu-pivot input.inp-kartu-qty { width: 100% !important; max-width: 56px; text-align: center !important; box-sizing: border-box; margin: 0 auto; display: block; }
   .kartu-produksi-card tbody tr:nth-child(even) td { background: rgba(17,24,39,.025); }
   .kartu-produksi-card tbody tr:last-child td { background: rgba(17,24,39,.05); font-weight: 700; }
+  .kartu-produksi-card table.kartu-rincian-tbl tbody tr:last-child td { background: transparent; }
+  .kartu-produksi-card table.kartu-rincian-tbl tbody tr:last-child td:not(:last-child) { font-weight: 400; }
   .btn-unduh-kartu { border-radius: 999px !important; font-weight: 600; border-color: var(--accent) !important; color: var(--accent-ink) !important; }
   .kartu-produksi-card.purple .btn-unduh-kartu { border-color: var(--accent-purple) !important; color: #4C3FBF !important; }
   .kartu-produksi-card.amber .btn-unduh-kartu { border-color: var(--accent-amber) !important; color: #92400E !important; }
@@ -689,7 +691,17 @@ function cariKodeWarnaByNama(namaWarna) {
   // > Kode Warna (lihat renderColorCodeList + handler "+ Tambah Alias Warna").
   const aliasEntry = Object.entries(STATE.colorCodeAlias || {}).find(([kode, aliases]) =>
     (aliases || []).some(a => normalisasiNamaUtkBanding(a) === target));
-  return aliasEntry ? aliasEntry[0] : null;
+  if (aliasEntry) return aliasEntry[0];
+  // (2026-11-23) Setiawan: warna PO/WIP produk ROVEE TANPA HIJAB tersimpan sbg "Black - Tanpa Hijab", "Maroon -
+  // Tanpa Hijab", "Pink - Tanpa Hijab", "Green - Tanpa Hijab" (label sheet/baris dgn akhiran kualifier produk) --
+  // padahal "Black"/"Maroon"/"Pink"/"Green" SUDAH terdaftar (nama utama/alias), jadi tetap kepisah jadi kolom
+  // sendiri & kena Peringatan. Kualifier "TANPA HIJAB" di AKHIR teks bukan bagian nama warna (itu nama produk,
+  // sama spt yg dibuang warnaTampilKartu utk tampilan) -> kalau cocok persis & alias GAGAL, coba lagi TANPA
+  // akhiran itu. Sempit & aman: hanya akhiran "[-] TANPA HIJAB", dan hanya dicoba SETELAH exact/alias gagal
+  // (nama/alias yg memang sengaja didaftarkan lengkap dgn akhiran itu tetap menang).
+  const tanpaKualifier = target.replace(/\s*[-\u2013\u2014]?\s*TANPA\s+HIJAB\s*$/, '').trim();
+  if (tanpaKualifier && tanpaKualifier !== target) return cariKodeWarnaByNama(tanpaKualifier);
+  return null;
 }
 // Nama UTAMA kode warna (2026-11-22 round 19, Setiawan: "green, olive green, mesh green itu sama" + "kenapa
 // puregrey ada 2") -- dipakai utk MENYATUKAN warna yg SAMA kode tapi beda literal teks per sumber data (mis.
@@ -10838,7 +10850,13 @@ function hitungRekomendasiProduksi() {
       // sendiri sama sekali & tidak py sumber lain utk estimasi urgensi).
       tanggalPesanTerlama = dariPO || dariPendingOrder || null;
     }
-    return { produkNama, warna, ukuran, sku, stok, wip, poQty, velocityPerMinggu: velocity, target, qtyNeeded, stokKritis, statusProduksi, tanggalPesanTerlama };
+    // (2026-11-23) Setiawan: "kalau sedang dijahit kan artinya tidak perlu order lagi dulu" -- qty PO yg SUDAH
+    // sedang dijahit (WIP, produk+warna+ukuran sama) tidak perlu diorder lagi ke konveksi. Sebelumnya WIP cuma
+    // dikurangkan di jalur restock (qtyNeeded), TIDAK di jalur PO, jadi kartu Order Produksi tetap menampilkan
+    // qty PO penuh walau sebagian/seluruhnya sudah dijahit. poQty (angka PO mentah) tetap dipertahankan utk
+    // tabel Prioritas PO; poSisa = yg MASIH perlu diorder = max(0, poQty - wip).
+    const poSisa = Math.max(0, poQty - wip);
+    return { produkNama, warna, ukuran, sku, stok, wip, poQty, poSisa, velocityPerMinggu: velocity, target, qtyNeeded, stokKritis, statusProduksi, tanggalPesanTerlama };
   };
 
   // (round 19) warna baris stok fisik jg disamakan via warnaKanonis sebelum masuk hitungBarisRekomendasi --
@@ -10940,10 +10958,15 @@ function hitungKartuProduksi() {
   const idxUkuran = (u) => { const i = SIZES.indexOf(u); return i === -1 ? SIZES.length : i; };
   const perProduk = {};
   const urutanProduk = [];
+  const rincianPerProduk = {}; // (2026-11-23) rincian PO - sedang dijahit = sisa, termasuk baris yg sisanya 0 (tidak tampil di pivot)
   allRows.forEach(h => {
     if (h.statusProduksi === 'stop') return;
+    if (h.poQty > 0) {
+      (rincianPerProduk[h.produkNama] = rincianPerProduk[h.produkNama] || []).push({ warna: warnaTampilKartu(h.warna, h.produkNama), ukuran: h.ukuran, po: h.poQty, wip: h.wip || 0, sisa: h.poSisa });
+    }
     const kunci = kunciKartuProduksi(h.produkNama, h.warna, h.ukuran);
-    const sistem = h.poQty > 0 ? h.poQty : h.qtyNeeded;
+    // (2026-11-23) PO sudah dikurangi yg sedang dijahit (poSisa); kalau PO ada tapi SEMUANYA sudah dijahit -> 0 (tidak perlu order lagi), BUKAN jatuh balik ke rekomendasi restock.
+    const sistem = h.poQty > 0 ? h.poSisa : h.qtyNeeded;
     const adaOverride = Object.prototype.hasOwnProperty.call(overrides, kunci);
     const final = adaOverride ? (Number(overrides[kunci]) || 0) : sistem;
     if (!final && !adaOverride) return; // ringkas: blm pernah disentuh & memang 0 -> sembunyikan, bukan noise
@@ -10955,14 +10978,19 @@ function hitungKartuProduksi() {
     const warnaTampil = warnaTampilKartu(h.warna, h.produkNama);
     perProduk[h.produkNama].push({ warna: warnaTampil, ukuran: h.ukuran, sistem, final, adaOverride, kunci, stokKritis: h.stokKritis });
   });
+  // Produk yg PO-nya SEMUA sudah sedang dijahit (tidak ada baris di pivot) tetap dimunculkan kartunya supaya
+  // user melihat rincian (PO - sedang dijahit = 0), bukan hilang diam2.
+  Object.keys(rincianPerProduk).forEach(n => { if (!perProduk[n] && rincianPerProduk[n].some(r => r.wip > 0)) { perProduk[n] = []; urutanProduk.push(n); } });
+  const idxUk = (u) => { const i = SIZES.indexOf(URUTAN_ALIAS_UKURAN_CUSTOM[u] || u); return i === -1 ? SIZES.length : i; };
   return urutanProduk.map(produkNama => {
+    const rincian = (rincianPerProduk[produkNama] || []).slice().sort((a, b) => (a.warna < b.warna ? -1 : a.warna > b.warna ? 1 : idxUk(a.ukuran) - idxUk(b.ukuran)));
     const baris = perProduk[produkNama].slice().sort((a, b) => {
       if (a.warna !== b.warna) return a.warna < b.warna ? -1 : 1;
       const ia = idxUkuran(a.ukuran), ib = idxUkuran(b.ukuran);
       return ia !== ib ? ia - ib : (a.ukuran < b.ukuran ? -1 : (a.ukuran > b.ukuran ? 1 : 0));
     });
     const total = baris.reduce((s, b) => s + (Number(b.final) || 0), 0);
-    return { produkNama, baris, total };
+    return { produkNama, baris, total, rincian };
   });
 }
 
@@ -11437,10 +11465,10 @@ function htmlPrioritasPO(poItemsOverride) {
       <div class="desc">Diurutkan dari tanggal pesanan pelanggan TERLAMA (paling mendesak dikerjakan) -- dicocokkan dgn data "Update Daftar Pesanan" yg sudah diupload.</div>
       ${!poItems.length ? '<div class="empty-note">Tidak ada PO yg cocok dgn pesanan pelanggan saat ini.</div>' : `
       <table class="data compact">
-        <thead><tr><th>Produk</th><th>Warna</th><th>Ukuran</th><th class="num">Qty PO</th><th>Tgl Pesanan Terlama</th></tr></thead>
+        <thead><tr><th>Produk</th><th>Warna</th><th>Ukuran</th><th class="num">Qty PO</th><th class="num">Sedang Dijahit</th><th class="num">Sisa Perlu Order</th><th>Tgl Pesanan Terlama</th></tr></thead>
         <tbody>
           ${poItems.map(h => `<tr>
-            <td>${h.produkNama}</td><td>${warnaTampilKartu(h.warna, h.produkNama)}</td><td>${h.ukuran}</td><td class="num">${h.poQty}</td>
+            <td>${h.produkNama}</td><td>${warnaTampilKartu(h.warna, h.produkNama)}</td><td>${h.ukuran}</td><td class="num">${h.poQty}</td><td class="num">${h.wip || '-'}</td><td class="num" style="font-weight:700;">${h.poSisa}</td>
             <td>${h.tanggalPesanTerlama ? fmtTanggal(h.tanggalPesanTerlama, { short: true }) : '<span style="color:var(--ink-soft);">belum ketemu pesanan cocok</span>'}</td>
           </tr>`).join('')}
         </tbody>
@@ -11646,7 +11674,8 @@ function htmlProduksiRekomendasi() {
             </div>
             <button type="button" class="btn btn-ghost btn-unduh-kartu" data-kartu-idx="${kIdx}" data-produk="${namaTampil.replace(/"/g, '&quot;')}" style="padding:3px 8px; font-size:11px; flex:none;">Unduh PNG</button>
           </div>
-          <div style="overflow-x:auto;">
+          ${!piv.ukuranRows.length ? '<div class="desc" style="margin:6px 0;">Semua PO produk ini sudah sedang dijahit -- tidak perlu order lagi (lihat rincian di bawah).</div>' : ''}
+          <div style="overflow-x:auto;${!piv.ukuranRows.length ? ' display:none;' : ''}">
           <table class="data compact kartu-pivot" style="width:${54 + piv.warnaCols.length * 78 + 58}px;">
             <colgroup><col style="width:54px;">${piv.warnaCols.map(() => '<col style="width:78px;">').join('')}<col style="width:58px;"></colgroup>
             <thead><tr><th>SIZE</th>${piv.warnaCols.map(w => `<th>${w}</th>`).join('')}<th>TOTAL</th></tr></thead>
@@ -11678,6 +11707,15 @@ function htmlProduksiRekomendasi() {
             </tbody>
           </table>
           </div>
+          ${(k.rincian || []).some(r => r.wip > 0) ? `
+          <div class="kartu-rincian" style="margin-top:10px;">
+            <div style="font-size:11px; font-weight:700; color:var(--ink-soft); margin-bottom:4px;">RINCIAN: PO &minus; SEDANG DIJAHIT = SISA ORDER</div>
+            <table class="data compact kartu-rincian-tbl" style="width:100%; table-layout:fixed;">
+              <colgroup><col style="width:34%;"><col style="width:14%;"><col style="width:16%;"><col style="width:18%;"><col style="width:18%;"></colgroup>
+              <thead><tr><th style="text-align:left;">Warna</th><th>Ukuran</th><th>PO</th><th>&minus; Dijahit</th><th>= Sisa</th></tr></thead>
+              <tbody>${k.rincian.map(r => `<tr><td style="text-align:left; white-space:normal;">${r.warna}</td><td style="text-align:center;">${r.ukuran}</td><td style="text-align:center;">${r.po}</td><td style="text-align:center;">${r.wip || '-'}</td><td style="text-align:center; font-weight:700;">${r.sisa}</td></tr>`).join('')}</tbody>
+            </table>
+          </div>` : ''}
         </div>`;
         }).join('')}
       </div>
