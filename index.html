@@ -105,6 +105,20 @@
   table.data td { padding: 9px 8px; border-bottom: 1px solid var(--line-soft); }
   /* Tabel Prioritas PO (2026-11-23, Setiawan: "ada slider geser-geser, bagaimana agar tidak ribet"): TANPA scroll samping --
      kolom ringkas boleh wrap, Keterangan dipindah jadi baris penuh di bawah barisnya (bukan kolom lebar di kanan). */
+  /* Tampilan stok per produk ala spreadsheet (2026-11-23, Setiawan: "klik Oswald, lihat stok apa saja yg ada & tidak ada, seperti di spreadsheet") */
+  tr.stok-produk-row { cursor: pointer; }
+  tr.stok-produk-row:hover td { background: rgba(15,118,110,.06); }
+  tr.stok-produk-row td:first-child { font-weight: 600; }
+  table.stok-pivot { border-collapse: collapse; font-size: 12px; margin: 4px 0 10px; }
+  table.stok-pivot th, table.stok-pivot td { border: 1px solid var(--line); padding: 5px 4px; text-align: center; min-width: 44px; white-space: nowrap; }
+  table.stok-pivot th { background: var(--paper); font-weight: 700; }
+  table.stok-pivot td.warna { text-align: left; font-weight: 700; padding-left: 8px; padding-right: 12px; background: var(--paper); }
+  table.stok-pivot td.s-habis { background: #f87171; color: #7f1d1d; }
+  table.stok-pivot td.s-tipis { background: #fde047; color: #713f12; font-weight: 600; }
+  table.stok-pivot td.s-aman { background: #fff; }
+  table.stok-pivot td.s-kosong { background: #f3f4f6; color: #9ca3af; }
+  table.stok-pivot tr.total td, table.stok-pivot td.total { font-weight: 700; background: var(--paper); }
+  .stok-legend span { display: inline-block; padding: 1px 8px; margin-right: 6px; border-radius: 4px; font-size: 11px; border: 1px solid var(--line); }
   table.data.po-tbl { table-layout: auto; width: 100%; }
   table.data.po-tbl th, table.data.po-tbl td { white-space: normal; padding: 6px 6px; line-height: 1.25; vertical-align: top; }
   table.data.po-tbl th.num, table.data.po-tbl td.num { text-align: center; }
@@ -10722,6 +10736,7 @@ let editingPOId = null;
 // Grup sheet yg panel detail pemetaannya sedang dibuka manual (2026-11-22, permintaan Setiawan: grup yg
 // sudah dipetakan di-collapse otomatis biar tidak perlu scroll jauh -- UI saja, TIDAK disimpan/persisten).
 let produksiStokGroupExpanded = {};
+let produksiStokProdukExpanded = {}; // (2026-11-23) produk mana yg sedang dibuka di tabel Ringkasan Stok per Produk (klik baris -> tampilan spreadsheet)
 // Baseline qty saran minimal saat "Stok Kritis" (stok+WIP sudah habis) TAPI kecepatan jual historis blm bisa
 // dipercaya (2026-11-22, Setiawan: "bukan berarti jika tidak ada historis tidak di produksi, tapi bisa juga
 // krn stok habis dan kemampuan produksi tidak terkejar" ... "kalau tidak ada historis tidak apa apa jika
@@ -11105,7 +11120,7 @@ function pivotKartuProduksi(k) {
    ========================================================================= */
 function bangunSeriMingguanPerSku(jumlahMinggu, sekarang) {
   const n = jumlahMinggu > 0 ? Math.floor(jumlahMinggu) : 8;
-  const now = sekarang instanceof Date ? sekarang : new Date();
+  const now = (sekarang && typeof sekarang.getTime === 'function') ? sekarang : new Date();
   const MS_MINGGU = 7 * 86400000;
   const seri = {};
   (STATE.orderDb || []).forEach(r => {
@@ -11173,7 +11188,7 @@ function statistikKapasitas(angka) {
 // Realisasi otomatis dari Riwayat WIP (Tandai Selesai): poin & pcs per minggu (0 = 7 hari terakhir).
 function realisasiSelesaiPerMinggu(jumlahMinggu, sekarang) {
   const n = jumlahMinggu > 0 ? Math.floor(jumlahMinggu) : 6;
-  const now = sekarang instanceof Date ? sekarang : new Date();
+  const now = (sekarang && typeof sekarang.getTime === 'function') ? sekarang : new Date();
   const hasil = [];
   for (let i = 0; i < n; i++) hasil.push({ idxMundur: i, poin: 0, pcs: 0 });
   (STATE.produksiWipRiwayat || []).forEach(r => {
@@ -11271,6 +11286,53 @@ function hitungRencanaForecast(opsi) {
   const totalBeban = Math.round(urut.reduce((s, i) => s + i.beban, 0) * 100) / 100;
   const ringkasan = { totalPO, totalRestok, total: totalPO + totalRestok, totalBeban, adaBobot: adaBobotKustom(), kapasitas, jumlahMinggu: kapasitas > 0 ? (jadwalMinggu.length || Math.ceil(totalBeban / kapasitas)) : null, jumlahItem: urut.length, windowMinggu, targetMinggu };
   return { baris, antrean: urut, jadwalMinggu, tanpaData, ringkasan };
+}
+
+// Pivot stok 1 produk: baris = WARNA, kolom = UKURAN, isi = qty (seperti sheet stok asli). Warna disatukan via
+// warnaKanonis (+ tampilan tanpa kualifier produk), ukuran via ukuranKanonis (ROVEE: S/M, L/XL). Baris stok yg
+// kanonisnya sama dijumlahkan. Kombinasi warna x ukuran yg TIDAK ada di sheet = sel kosong (null), beda dari stok 0.
+// HANYA membaca stockRows -- tidak menyentuh STATE/kontrak/payout.
+const BATAS_STOK_MENIPIS = 4; // 0 = habis (merah), 1..4 = menipis (kuning), >=5 = aman -- sama dgn pewarnaan sheet asli
+function pivotStokProduk(stockRows, produkNama) {
+  const cell = {}, skuMap = {};
+  const warnaSet = new Set(), ukuranSet = new Set();
+  (stockRows || []).filter(r => r.produkNama === produkNama).forEach(r => {
+    const w = warnaTampilKartu(warnaKanonis(r.warna), produkNama);
+    const u = ukuranKanonis(produkNama, r.ukuranLabel);
+    warnaSet.add(w); ukuranSet.add(u);
+    const k = w + '||' + u;
+    cell[k] = (cell[k] || 0) + (Number(r.qtyStok) || 0);
+    if (r.sku && !skuMap[k]) skuMap[k] = r.sku;
+  });
+  const warnaRows = Array.from(warnaSet).sort((a, b) => a < b ? -1 : (a > b ? 1 : 0));
+  const ukuranCols = urutkanUkuranStandarDulu(Array.from(ukuranSet));
+  const totalWarna = {}, totalUkuran = {};
+  let total = 0, jmlHabis = 0, jmlTipis = 0;
+  warnaRows.forEach(w => ukuranCols.forEach(u => {
+    const v = cell[w + '||' + u];
+    if (v == null) return;
+    totalWarna[w] = (totalWarna[w] || 0) + v; totalUkuran[u] = (totalUkuran[u] || 0) + v; total += v;
+    if (v <= 0) jmlHabis++; else if (v <= BATAS_STOK_MENIPIS) jmlTipis++;
+  }));
+  return { warnaRows, ukuranCols, cell, skuMap, totalWarna, totalUkuran, total, jmlHabis, jmlTipis };
+}
+function htmlPivotStokProduk(stockRows, produkNama) {
+  const pv = pivotStokProduk(stockRows, produkNama);
+  const esc = (t) => String(t == null ? '' : t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
+  if (!pv.warnaRows.length) return '<div class="empty-note">Belum ada baris stok utk produk ini.</div>';
+  const kelas = (v) => v == null ? 's-kosong' : (v <= 0 ? 's-habis' : (v <= BATAS_STOK_MENIPIS ? 's-tipis' : 's-aman'));
+  return `
+    <div class="stok-legend" style="margin:4px 0 6px; font-size:11.5px; color:var(--ink-soft);">
+      <span style="background:#f87171; color:#7f1d1d;">0 = habis</span><span style="background:#fde047; color:#713f12;">1&ndash;${BATAS_STOK_MENIPIS} = menipis</span><span>&ge; ${BATAS_STOK_MENIPIS + 1} = aman</span><span style="background:#f3f4f6; color:#9ca3af;">&ndash; = tidak ada di sheet</span>
+      &nbsp; <b>${pv.jmlHabis}</b> kombinasi habis, <b>${pv.jmlTipis}</b> menipis dari ${pv.warnaRows.length * pv.ukuranCols.length} kotak.
+    </div>
+    <div style="overflow-x:auto;"><table class="stok-pivot">
+      <thead><tr><th style="text-align:left; padding-left:8px;">${esc(produkNama)}</th>${pv.ukuranCols.map(u => `<th>${esc(u)}</th>`).join('')}<th>TOTAL</th></tr></thead>
+      <tbody>
+        ${pv.warnaRows.map(w => `<tr><td class="warna">${esc(w)}</td>${pv.ukuranCols.map(u => { const v = pv.cell[w + '||' + u]; const sku = pv.skuMap[w + '||' + u]; return `<td class="${kelas(v)}"${sku ? ` title="SKU ${esc(sku)}"` : ''}>${v == null ? '&ndash;' : v}</td>`; }).join('')}<td class="total">${pv.totalWarna[w] || 0}</td></tr>`).join('')}
+        <tr class="total"><td class="warna">TOTAL</td>${pv.ukuranCols.map(u => `<td>${pv.totalUkuran[u] || 0}</td>`).join('')}<td>${pv.total}</td></tr>
+      </tbody>
+    </table></div>`;
 }
 
 function htmlProduksiStok(groups, stockRows, warnings) {
@@ -11398,6 +11460,7 @@ function htmlProduksiStok(groups, stockRows, warnings) {
 
     <div class="panel">
       <h2>Ringkasan Stok per Produk (hasil pemetaan)</h2>
+      <div class="desc">Klik nama produk untuk melihat stok per <b>warna &times; ukuran</b> seperti di spreadsheet (merah = habis, kuning = menipis).</div>
       ${!Object.keys(totalByProduk).length ? '<div class="empty-note">Belum ada stok yg berhasil dipetakan.</div>' : `
       <table class="data compact">
         <thead><tr><th>Produk</th><th class="num">Total Stok (semua warna/ukuran)</th><th class="num">Nilai Stok (stok &times; modal konveksi)</th><th>Status Produksi</th></tr></thead>
@@ -11407,7 +11470,9 @@ function htmlProduksiStok(groups, stockRows, warnings) {
             const stop = p && p.statusProduksi === 'stop';
             const nilai = nilaiByProduk[nama] || 0;
             const nilaiTxt = fmtRp(nilai) + (nilaiKurang[nama] ? ' <span title="Sebagian baris blm ada harga konveksinya -- nilai ini blm lengkap" style="color:#b45309;">&#9888;</span>' : '');
-            return `<tr><td>${nama}</td><td class="num">${total}</td><td class="num">${nilaiTxt}</td><td>${stop ? '<span class="pill off">Stop Produksi</span>' : '<span class="pill ok">Aktif</span>'}</td></tr>`;
+            const terbuka = !!produksiStokProdukExpanded[nama];
+            const namaAttr = nama.replace(/"/g, '&quot;');
+            return `<tr class="stok-produk-row" data-stok-produk="${namaAttr}" title="Klik utk lihat stok per warna &amp; ukuran"><td><span style="display:inline-block; width:14px; color:var(--ink-soft);">${terbuka ? '&#9662;' : '&#9656;'}</span>${nama}</td><td class="num">${total}</td><td class="num">${nilaiTxt}</td><td>${stop ? '<span class="pill off">Stop Produksi</span>' : '<span class="pill ok">Aktif</span>'}</td></tr>${terbuka ? `<tr class="stok-detail"><td colspan="4" style="padding:6px 8px 10px 22px; background:rgba(17,24,39,.02);">${htmlPivotStokProduk(stockRows, nama)}</td></tr>` : ''}`;
           }).join('')}
           <tr style="font-weight:700; border-top:2px solid var(--line);">
             <td>TOTAL</td>
@@ -11423,6 +11488,13 @@ function htmlProduksiStok(groups, stockRows, warnings) {
 }
 
 function attachListenersProduksiStok(container) {
+  container.querySelectorAll('tr.stok-produk-row').forEach(tr => {
+    tr.addEventListener('click', () => {
+      const nama = tr.dataset.stokProduk;
+      produksiStokProdukExpanded[nama] = !produksiStokProdukExpanded[nama];
+      renderProduksi(container);
+    });
+  });
   container.querySelectorAll('.btn-toggle-group-produksi').forEach(btn => {
     btn.addEventListener('click', () => {
       const label = btn.dataset.groupLabel;
@@ -11537,7 +11609,7 @@ function attachListenersProduksiStok(container) {
 // (4) pengingat di tab Forecast. Fungsi2 di bawah pure (hanya mengubah STATE.produksiWip/produksiWipRiwayat).
 const BATAS_HARI_WIP_CURIGA = 14;
 function analisisUsiaWip(w, sekarang) {
-  const now = sekarang instanceof Date ? sekarang : new Date();
+  const now = (sekarang && typeof sekarang.getTime === 'function') ? sekarang : new Date();
   const masuk = new Date(w.createdAt || w.updatedAt || now.toISOString());
   const hari = isNaN(masuk.getTime()) ? 0 : Math.max(0, Math.floor((now.getTime() - masuk.getTime()) / 86400000));
   const stokBaruSejakMasuk = !!(STATE.produksiStockFetchedAt && new Date(STATE.produksiStockFetchedAt) > masuk);
@@ -11547,7 +11619,7 @@ function analisisUsiaWip(w, sekarang) {
 function jumlahWipCuriga(sekarang) { return (STATE.produksiWip || []).filter(w => analisisUsiaWip(w, sekarang).curiga).length; }
 function tandaiWipSelesai(ids, sekarang) {
   const set = new Set(ids || []);
-  const now = (sekarang instanceof Date ? sekarang : new Date()).toISOString();
+  const now = ((sekarang && typeof sekarang.getTime === 'function') ? sekarang : new Date()).toISOString();
   const pindah = (STATE.produksiWip || []).filter(w => set.has(w.id));
   if (!pindah.length) return { ok: false, jumlah: 0, qty: 0 };
   STATE.produksiWipRiwayat = (STATE.produksiWipRiwayat || []).concat(pindah.map(w => Object.assign({}, w, { selesaiAt: now }))).slice(-300);
@@ -11820,7 +11892,7 @@ function hariPoMenunggu(tanggalISO, sekarang) {
   if (!tanggalISO) return null;
   const d = new Date(tanggalISO);
   if (isNaN(d.getTime())) return null;
-  const now = sekarang instanceof Date ? sekarang : new Date();
+  const now = (sekarang && typeof sekarang.getTime === 'function') ? sekarang : new Date();
   const hari = Math.floor((now.getTime() - d.getTime()) / 86400000);
   return hari < 0 ? 0 : hari;
 }
