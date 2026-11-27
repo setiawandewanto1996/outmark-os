@@ -333,10 +333,12 @@
       <button data-tab="pelanggan"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"></circle><path d="M4 20c0-4.4 3.6-7 8-7s8 2.6 8 7"></path></svg><span>Pelanggan</span></button>
       <button data-tab="invoice"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M7 2h10a1 1 0 0 1 1 1v18l-3-2-2 2-2-2-2 2-2-2-3 2V3a1 1 0 0 1 1-1z"></path><path d="M9 7h6M9 11h6M9 15h3"></path></svg><span>Invoice</span></button>
       <button data-tab="laporan"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3h12v18l-3-2-3 2-3-2-3 2V3z"></path><path d="M9 8h6M9 12h6"></path></svg><span>Laporan Penarikan</span></button>
+      <button data-tab="penjualanluar"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2 3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z"></path><path d="M3 6h18"></path><path d="M16 10a4 4 0 0 1-8 0"></path></svg><span>Penjualan Luar E-commerce</span></button>
       <div class="sidebar-group-label">Operasional</div>
       <button data-tab="ads"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9v6h3l9 4V5L6 9H3z"></path><path d="M16 9a4 4 0 0 1 0 6"></path></svg><span>Ads Mingguan</span></button>
       <button data-tab="opex"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="6" width="18" height="13" rx="2"></rect><path d="M3 10h18"></path><circle cx="16.5" cy="14" r="1"></circle></svg><span>Biaya Operasional</span></button>
       <button data-tab="alokasi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v20"></path><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"></path></svg><span>Investasi &amp; Dividen</span></button>
+      <button data-tab="mutasibank"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10 12 4l9 6"></path><path d="M5 10v8"></path><path d="M10 10v8"></path><path d="M14 10v8"></path><path d="M19 10v8"></path><path d="M3 20h18"></path></svg><span>Mutasi Bank</span></button>
       <button data-tab="pnl"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20V10"></path><path d="M12 20V4"></path><path d="M20 20v-6"></path></svg><span>PNL</span></button>
       <div class="sidebar-group-label">Karyawan</div>
       <button data-tab="gaji"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.2"></circle><path d="M3.5 19a5.5 5.5 0 0 1 11 0"></path><circle cx="17" cy="9" r="2.6"></circle><path d="M15.5 13.2A4.6 4.6 0 0 1 20.5 19"></path></svg><span>Slip Gaji</span></button>
@@ -417,6 +419,9 @@ let STATE = {
   vendorPayouts: [],              // kewajiban bayar ke konveksi/supplier: {id, brand, produk, qty, total, tanggalDihitung, tanggalDibayar}
   adsMingguan: [],                 // biaya iklan per periode per toko: {id, tanggalDari, tanggalSampai, storeId, storeName, platform, biaya, catatan}
   biayaOperasional: [],            // biaya operasional periodik: {id, tanggalDari, tanggalSampai, kategori, jumlah, catatan}
+  mutasiBank: [],                  // Mutasi rekening (upload PDF Jago, 2026-11-27): {id (ID# bank), tanggal, jam, nama, akun, rincian, catatan, jumlah (+masuk/-keluar), saldo, arah, pindahKantong, rekening, klas:{jenis:'opex'|'alokasi'|'abaikan',kategori,entriId}|null}
+  mutasiBankAturan: {},            // aturan ingatan klasifikasi: {kunci ('c:catatan' / 'n:nama'): {jenis, kategori}}
+  penjualanLuar: [],               // Penjualan di luar e-commerce, diinput manual (2026-11-27): {id, tanggal, kanal, produkNama|null, namaItem, ukuran, qty, hargaJual (satuan), modalSatuan, modalManual, customerId|null, catatan, createdAt}
   opexKategori: OPEX_KATEGORI.slice(), // daftar kategori Biaya Operasional, dikelola user sendiri (tab Data Master)
   alokasiProfit: [],               // Investasi/Dividen (alokasi dari profit, posisi spt Payout Capital Partner): {id, tanggalDari, tanggalSampai, kategori, jumlah, catatan}
   alokasiKategori: ALOKASI_KATEGORI.slice(), // daftar kategori Investasi & Dividen, dikelola user sendiri (tab Data Master)
@@ -2480,7 +2485,7 @@ async function loadState(fileIdOverride) {
   const loaded = text ? JSON.parse(text) : {};
   // DEFAULT_STATE mencakup SEMUA field yg pernah ada -- supaya file lama (dari sebelum field baru ditambahkan)
   // tidak jadi undefined pas dimuat. Tiap kali nambah field baru ke STATE, tambahkan juga di sini.
-  const DEFAULT_STATE = { capitalPartners: [], stores: [], products: [], contracts: [], colorCodeMap: {}, colorCodeAlias: {}, pembagiPctManual: {}, orderDb: [], pendingOrderSku: {}, payouts: [], vendorPayouts: [], adsMingguan: [], biayaOperasional: [], opexKategori: OPEX_KATEGORI.slice(), alokasiProfit: [], alokasiKategori: ALOKASI_KATEGORI.slice(), saldoDiluarKontrak: {}, rolloverLog: [], customers: [], biayaRetur: [], karyawan: [], slipGaji: [], slipGajiSettings: { namaPerusahaan: 'UJUSO', alamatBaris: ['Jl. Permana Timur Blok D7 No. 28', 'Kel. Citeureup, Kec. Cimahi Utara', 'Kota Cimahi'], logoDataUri: DEFAULT_LOGO_UJUSO_DATA_URI, emailKontak: 'setiawandewanto@gmail.com' }, invoiceProducts: [], invoices: [], diskon: [], kwitansi: [],
+  const DEFAULT_STATE = { capitalPartners: [], stores: [], products: [], contracts: [], colorCodeMap: {}, colorCodeAlias: {}, pembagiPctManual: {}, orderDb: [], pendingOrderSku: {}, payouts: [], vendorPayouts: [], adsMingguan: [], biayaOperasional: [], penjualanLuar: [], mutasiBank: [], mutasiBankAturan: {}, opexKategori: OPEX_KATEGORI.slice(), alokasiProfit: [], alokasiKategori: ALOKASI_KATEGORI.slice(), saldoDiluarKontrak: {}, rolloverLog: [], customers: [], biayaRetur: [], karyawan: [], slipGaji: [], slipGajiSettings: { namaPerusahaan: 'UJUSO', alamatBaris: ['Jl. Permana Timur Blok D7 No. 28', 'Kel. Citeureup, Kec. Cimahi Utara', 'Kota Cimahi'], logoDataUri: DEFAULT_LOGO_UJUSO_DATA_URI, emailKontak: 'setiawandewanto@gmail.com' }, invoiceProducts: [], invoices: [], diskon: [], kwitansi: [],
     produksiWip: [], produksiWipRiwayat: [], produksiPO: [], produksiStockMapping: { groups: {}, variants: {}, rowProduk: {} }, produksiStockRaw: [],
     produksiStockFetchedAt: null, produksiSheetFileId: null, produksiSettings: { targetMinggu: 4, windowMinggu: 8, kapasitasMingguan: 0, bobotProduk: {}, koreksiStokHabis: true },
     preOrderListRaw: [], preOrderListFetchedAt: null, preOrderListSyncedAt: null, preOrderListSheetFileId: null, preOrderListWarnaBaris: {}, produksiOverrideQty: {} };
@@ -8909,6 +8914,247 @@ function renderAds(container) {
 }
 
 /* =========================================================================
+   TAB: PENJUALAN LUAR E-COMMERCE
+   ========================================================================= */
+let penjualanLuarFilter = { preset: 'bulan_ini', dari: '', sampai: '', kanal: '' };
+let editingPenjualanLuarId = null;
+let penjualanLuarDraft = { tanggal: '', kanal: '' }; // ingat tanggal & kanal terakhir, spy input banyak transaksi sekali jalan tidak ulang
+function renderPenjualanLuar(container) {
+  const f = penjualanLuarFilter;
+  if (f.preset !== 'custom' && f.preset !== 'semua') Object.assign(f, pnlDateRangeFromPreset(f.preset));
+  if (f.preset === 'semua') { f.dari = ''; f.sampai = ''; }
+  const rekap = computePenjualanLuar(f.dari, f.sampai, f.kanal);
+  const daftar = rekap.rows.slice().sort((a, b) => String(b.tanggal || '').localeCompare(String(a.tanggal || '')) || String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
+  const e = editingPenjualanLuarId ? (STATE.penjualanLuar || []).find(x => x.id === editingPenjualanLuarId) : null;
+  const eLain = !!(e && !e.produkNama);
+  const hariIni = new Date().toISOString().slice(0, 10);
+  const tglDefault = e ? String(e.tanggal).slice(0, 10) : (penjualanLuarDraft.tanggal || hariIni);
+  const kanalDefault = e ? (e.kanal || '') : (penjualanLuarDraft.kanal || KANAL_PENJUALAN_LUAR[0]);
+  const customersAktif = (STATE.customers || []).filter(c => c.status !== 'Nonaktif');
+  const margin = (laba, pend) => pend > 0 ? (laba / pend * 100).toFixed(1) + '%' : '-';
+  const namaPelanggan = (id) => { const c = (STATE.customers || []).find(x => x.id === id); return c ? c.nama : ''; };
+
+  container.innerHTML = `
+    <div class="panel">
+      <h2>${e ? 'Edit Penjualan Luar E-commerce' : 'Tambah Penjualan Luar E-commerce'}</h2>
+      <div class="desc">Catat penjualan yang terjadi di luar Shopee/TikTok/Tokopedia (toko offline, bazaar, WhatsApp, reseller, dll). Setiap entri otomatis masuk <b>Pendapatan</b> dan <b>Biaya Modal</b> di PNL. Modal diisi otomatis dari harga konveksi produk (bisa dikoreksi). Penjualan ini tidak memengaruhi kontrak / payout capital partner.</div>
+      <form id="formPL">
+        <div class="grid2">
+          <div class="field"><label>Tanggal</label><input type="date" id="pl_tanggal" value="${tglDefault}"></div>
+          <div class="field"><label>Kanal / Sumber</label>
+            <input type="text" id="pl_kanal" list="pl_kanalList" value="${escapeHtmlPL(kanalDefault)}" placeholder="mis. Bazaar / Event">
+            <datalist id="pl_kanalList">${KANAL_PENJUALAN_LUAR.map(k => `<option value="${escapeHtmlPL(k)}"></option>`).join('')}</datalist>
+          </div>
+        </div>
+        <div class="grid2">
+          <div class="field"><label>Produk</label>
+            <select id="pl_produk">
+              <option value="">Pilih produk</option>
+              ${STATE.products.map(pr => `<option value="${escapeHtmlPL(pr.nama)}" ${e && e.produkNama === pr.nama ? 'selected' : ''}>${escapeHtmlPL(pr.nama)}</option>`).join('')}
+              <option value="${PENJUALAN_LUAR_PRODUK_LAIN}" ${eLain ? 'selected' : ''}>+ Lainnya (produk di luar Data Master)</option>
+            </select>
+          </div>
+          <div class="field" id="pl_ukuranWrap"><label>Ukuran</label><select id="pl_ukuran"></select></div>
+        </div>
+        <div class="grid2" id="pl_lainWrap" style="${eLain ? '' : 'display:none;'}">
+          <div class="field"><label>Nama Barang</label><input type="text" id="pl_namaLain" value="${eLain ? escapeHtmlPL(e.namaItem) : ''}" placeholder="mis. Tote bag merchandise"></div>
+          <div class="field"><label>Ukuran / Varian (opsional)</label><input type="text" id="pl_ukuranLain" value="${eLain && e.ukuran ? escapeHtmlPL(e.ukuran) : ''}"></div>
+        </div>
+        <div class="grid2">
+          <div class="field"><label>Qty (pcs)</label><input type="number" id="pl_qty" min="1" step="1" value="${e ? e.qty : ''}"></div>
+          <div class="field"><label>Harga Jual per pcs (Rp)</label><input type="number" id="pl_harga" min="0" value="${e ? e.hargaJual : ''}"></div>
+        </div>
+        <div class="grid2">
+          <div class="field"><label>Modal per pcs (Rp)</label><input type="number" id="pl_modal" min="0" value="${e && e.modalSatuan != null ? e.modalSatuan : ''}" placeholder="otomatis dari harga konveksi">
+            <div class="desc" id="pl_modalHint" style="margin-top:4px;"></div>
+          </div>
+          <div class="field"><label>Pelanggan (opsional)</label>
+            <select id="pl_customer"><option value="">-</option>${customersAktif.map(c => `<option value="${c.id}" ${e && e.customerId === c.id ? 'selected' : ''}>${escapeHtmlPL(c.nama)}</option>`).join('')}</select>
+          </div>
+        </div>
+        <div class="field"><label>Catatan (opsional)</label><input type="text" id="pl_catatan" value="${e && e.catatan ? escapeHtmlPL(e.catatan) : ''}" placeholder="mis. bazaar kampus, bayar tunai"></div>
+        <div class="desc" id="pl_preview" style="font-weight:600;"></div>
+        <button type="submit" class="btn btn-primary">${e ? 'Simpan Perubahan' : '+ Tambah Penjualan'}</button>
+        ${e ? `<button type="button" class="btn btn-ghost" id="btnBatalEditPL" style="margin-top:8px;">Batal Edit</button>` : ''}
+        <div class="status-box" id="plMsg"></div>
+      </form>
+    </div>
+
+    <div class="panel">
+      <h2>Rekap Penjualan &amp; Modal</h2>
+      <div class="grid2">
+        <div class="field"><label>Periode</label>
+          <select id="plPreset">
+            <option value="minggu_ini" ${f.preset === 'minggu_ini' ? 'selected' : ''}>Minggu Ini</option>
+            <option value="bulan_ini" ${f.preset === 'bulan_ini' ? 'selected' : ''}>Bulan Ini</option>
+            <option value="bulan_lalu" ${f.preset === 'bulan_lalu' ? 'selected' : ''}>Bulan Lalu</option>
+            <option value="semua" ${f.preset === 'semua' ? 'selected' : ''}>Semua Waktu</option>
+            <option value="custom" ${f.preset === 'custom' ? 'selected' : ''}>Custom</option>
+          </select>
+        </div>
+        <div class="field"><label>Kanal</label>
+          <select id="plFilterKanal"><option value="">Semua Kanal</option>${Array.from(new Set(KANAL_PENJUALAN_LUAR.concat((STATE.penjualanLuar || []).map(r => r.kanal).filter(Boolean)))).map(k => `<option value="${escapeHtmlPL(k)}" ${f.kanal === k ? 'selected' : ''}>${escapeHtmlPL(k)}</option>`).join('')}</select>
+        </div>
+      </div>
+      <div class="grid2">
+        <div class="field"><label>Dari Tanggal</label><input type="date" id="plDari" value="${f.dari}"></div>
+        <div class="field"><label>Sampai Tanggal</label><input type="date" id="plSampai" value="${f.sampai}"></div>
+      </div>
+      <div class="kpi-row">
+        <div class="kpi"><div class="kpi-label">Total Penjualan</div><div class="kpi-value" id="plKpiPendapatan">${fmtRp(rekap.pendapatan)}</div></div>
+        <div class="kpi"><div class="kpi-label">Total Modal</div><div class="kpi-value" id="plKpiModal">${fmtRp(rekap.modal)}</div></div>
+        <div class="kpi"><div class="kpi-label">Laba Kotor (${margin(rekap.laba, rekap.pendapatan)})</div><div class="kpi-value" id="plKpiLaba">${fmtRp(rekap.laba)}</div></div>
+        <div class="kpi"><div class="kpi-label">Pcs Terjual / Transaksi</div><div class="kpi-value">${rekap.pcs.toLocaleString('id-ID')} / ${rekap.nTransaksi}</div></div>
+      </div>
+      ${rekap.nTanpaModal ? `<div class="desc" style="color:var(--err);">&#9888; ${rekap.nTanpaModal} entri belum punya modal (harga konveksi belum terisi) -- modalnya dihitung 0. Klik Edit dan isi Modal per pcs.</div>` : ''}
+      <div class="desc">Angka di atas otomatis ikut masuk PNL pada periode yang sama (baris Pendapatan dan Biaya Modal).</div>
+      ${renderRincianBar(rekap.byKanal, 'Penjualan per Kanal')}
+      <h3 style="margin:14px 0 6px; font-size:14px;">Rekap Modal per Produk</h3>
+      <div style="overflow-x:auto;">
+      ${!rekap.byProduk.length ? '<div class="empty-note">Belum ada penjualan luar e-commerce di periode ini.</div>' : `
+      <table class="data compact" id="plRekapProduk">
+        <thead><tr><th>Produk</th><th class="num">Pcs</th><th class="num">Penjualan</th><th class="num">Modal</th><th class="num">Laba Kotor</th><th class="num">Margin</th></tr></thead>
+        <tbody>
+          ${rekap.byProduk.map(g => `<tr><td>${escapeHtmlPL(g.produk)}</td><td class="num">${g.pcs.toLocaleString('id-ID')}</td><td class="num">${fmtRp(g.pendapatan)}</td><td class="num">${fmtRp(g.modal)}</td><td class="num">${fmtRp(g.laba)}</td><td class="num" style="color:var(--ink-soft); font-size:11px;">${margin(g.laba, g.pendapatan)}</td></tr>`).join('')}
+          <tr class="total" style="font-weight:700; border-top:2px solid var(--ink);"><td>TOTAL</td><td class="num">${rekap.pcs.toLocaleString('id-ID')}</td><td class="num">${fmtRp(rekap.pendapatan)}</td><td class="num">${fmtRp(rekap.modal)}</td><td class="num">${fmtRp(rekap.laba)}</td><td class="num" style="font-size:11px;">${margin(rekap.laba, rekap.pendapatan)}</td></tr>
+        </tbody>
+      </table>`}
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>Daftar Penjualan</h2>
+      <div style="overflow-x:auto;">
+      ${!daftar.length ? '<div class="empty-note">Belum ada data.</div>' : `
+      <table class="data compact" id="plDaftar">
+        <thead><tr><th>Tanggal</th><th>Kanal</th><th>Produk</th><th class="num">Qty</th><th class="num">Harga</th><th class="num">Modal/pcs</th><th class="num">Penjualan</th><th class="num">Modal</th><th class="num">Laba</th><th></th></tr></thead>
+        <tbody>
+          ${daftar.map(r => { const h = r._h; const nm = r.produkNama || r.namaItem || '-'; const uk = r.ukuran && r.ukuran !== UKURAN_TANPA_SIZE_KEY ? ' &middot; ' + escapeHtmlPL(r.ukuran) : ''; const plg = namaPelanggan(r.customerId);
+            return `<tr>
+            <td style="white-space:nowrap;">${escapeHtmlPL(String(r.tanggal).slice(0, 10))}</td>
+            <td>${escapeHtmlPL(r.kanal || '-')}</td>
+            <td>${escapeHtmlPL(nm)}${uk}${plg ? `<div style="font-size:10.5px; color:var(--ink-soft);">${escapeHtmlPL(plg)}</div>` : ''}${r.catatan ? `<div style="font-size:10.5px; color:var(--ink-soft);">${escapeHtmlPL(r.catatan)}</div>` : ''}</td>
+            <td class="num">${h.qty}</td><td class="num">${fmtRp(r.hargaJual)}</td>
+            <td class="num">${fmtRp(h.modalSatuan)}${r.modalManual ? '<span title="Modal diisi/dikoreksi manual"> *</span>' : ''}</td>
+            <td class="num">${fmtRp(h.pendapatan)}</td><td class="num">${fmtRp(h.modal)}</td><td class="num">${fmtRp(h.laba)}</td>
+            <td style="white-space:nowrap;">
+              <button class="btn btn-ghost" data-edit-pl="${r.id}" style="padding:3px 8px; font-size:11px;">Edit</button>
+              <button class="icon-del" data-del-pl="${r.id}">✕</button>
+            </td>
+          </tr>`; }).join('')}
+        </tbody>
+      </table>
+      <div class="desc" style="margin-top:6px;">* = modal diisi / dikoreksi manual (bukan dari harga konveksi).</div>`}
+      </div>
+    </div>
+  `;
+
+  const elProduk = document.getElementById('pl_produk');
+  const elUkuran = document.getElementById('pl_ukuran');
+  const elModal = document.getElementById('pl_modal');
+  // Mode edit: modal yg tersimpan (snapshot) DIPERTAHANKAN apa adanya -- jangan diam2 diganti harga konveksi terbaru;
+  // baru di-reset ke otomatis kalau user mengganti produk/ukuran (lihat listener di bawah).
+  elModal.dataset.manual = e ? '1' : '';
+  const isLain = () => elProduk.value === PENJUALAN_LUAR_PRODUK_LAIN;
+  function isiUkuran() {
+    const lain = isLain();
+    document.getElementById('pl_ukuranWrap').style.display = lain ? 'none' : '';
+    document.getElementById('pl_lainWrap').style.display = lain ? '' : 'none';
+    const daftarUk = elProduk.value && !lain ? ukuranPilihanPenjualanLuar(elProduk.value) : [];
+    const pilih = (e && e.produkNama === elProduk.value) ? e.ukuran : elUkuran.value;
+    elUkuran.innerHTML = (daftarUk.length ? '' : '<option value="">-</option>') + daftarUk.map(u => `<option value="${escapeHtmlPL(u)}" ${u === pilih ? 'selected' : ''}>${u === UKURAN_TANPA_SIZE_KEY ? 'Tanpa Ukuran' : escapeHtmlPL(u)}</option>`).join('');
+  }
+  function autoModalSaatIni() {
+    if (!elProduk.value || isLain()) return null;
+    return modalSatuanOtomatisPenjualanLuar(elProduk.value, elUkuran.value);
+  }
+  function updateModalDanPreview() {
+    const auto = autoModalSaatIni();
+    const hint = document.getElementById('pl_modalHint');
+    if (isLain()) hint.textContent = 'Produk di luar Data Master: isi modal per pcs manual.';
+    else if (!elProduk.value) hint.textContent = '';
+    else if (auto == null) hint.textContent = 'Harga konveksi produk/ukuran ini belum diisi -- isi modal per pcs manual.';
+    else hint.textContent = 'Otomatis dari harga konveksi: ' + fmtRp(auto) + ' per pcs.';
+    if (elModal.dataset.manual !== '1') elModal.value = auto == null ? '' : auto;
+    const qty = Number(document.getElementById('pl_qty').value) || 0;
+    const harga = Number(document.getElementById('pl_harga').value) || 0;
+    const modalPcs = elModal.value === '' ? (auto == null ? 0 : auto) : Number(elModal.value);
+    const pend = qty * harga, mod = qty * modalPcs;
+    document.getElementById('pl_preview').textContent = qty > 0 ? `Penjualan ${fmtRp(pend)} · Modal ${fmtRp(mod)} · Laba kotor ${fmtRp(pend - mod)}` : '';
+  }
+  isiUkuran();
+  if (!e) updateModalDanPreview(); else { updateModalDanPreview(); }
+  elProduk.addEventListener('change', () => { elModal.dataset.manual = ''; isiUkuran(); updateModalDanPreview(); });
+  elUkuran.addEventListener('change', () => { elModal.dataset.manual = ''; updateModalDanPreview(); });
+  elModal.addEventListener('input', () => { elModal.dataset.manual = '1'; updateModalDanPreview(); });
+  document.getElementById('pl_qty').addEventListener('input', updateModalDanPreview);
+  document.getElementById('pl_harga').addEventListener('input', updateModalDanPreview);
+
+  document.getElementById('formPL').addEventListener('submit', async (ev) => {
+    ev.preventDefault();
+    const msg = document.getElementById('plMsg');
+    const tgl = document.getElementById('pl_tanggal').value;
+    const kanal = document.getElementById('pl_kanal').value.trim();
+    const lain = isLain();
+    const produkNama = lain ? null : elProduk.value;
+    const namaItem = lain ? document.getElementById('pl_namaLain').value.trim() : elProduk.value;
+    const ukuran = lain ? (document.getElementById('pl_ukuranLain').value.trim() || null) : (elUkuran.value || null);
+    const qty = Number(document.getElementById('pl_qty').value);
+    const hargaStr = document.getElementById('pl_harga').value;
+    if (!tgl) { showMsg(msg, 'err', 'Isi tanggal dulu.'); return; }
+    if (!kanal) { showMsg(msg, 'err', 'Isi kanal / sumber penjualan dulu.'); return; }
+    if (!elProduk.value) { showMsg(msg, 'err', 'Pilih produk dulu.'); return; }
+    if (lain && !namaItem) { showMsg(msg, 'err', 'Isi nama barang dulu.'); return; }
+    if (!(qty > 0)) { showMsg(msg, 'err', 'Qty harus lebih dari 0.'); return; }
+    if (hargaStr === '' || isNaN(Number(hargaStr)) || Number(hargaStr) < 0) { showMsg(msg, 'err', 'Isi harga jual per pcs dulu.'); return; }
+    const auto = autoModalSaatIni();
+    let modalSatuan;
+    if (elModal.value !== '') modalSatuan = Number(elModal.value);
+    else if (auto != null) modalSatuan = auto;
+    else { showMsg(msg, 'err', 'Harga konveksi produk ini belum diisi -- isi Modal per pcs manual.'); return; }
+    if (isNaN(modalSatuan) || modalSatuan < 0) { showMsg(msg, 'err', 'Modal per pcs tidak valid.'); return; }
+    let modalManual = auto == null || modalSatuan !== auto;
+    if (editingPenjualanLuarId) { // edit tanpa ganti produk/ukuran/modal -> status manual/otomatis entri lama dipertahankan
+      const lama = STATE.penjualanLuar.find(x => x.id === editingPenjualanLuarId);
+      if (lama && lama.produkNama === produkNama && (lama.ukuran || null) === ukuran && lama.modalSatuan === modalSatuan) modalManual = !!lama.modalManual;
+    }
+    const customerId = document.getElementById('pl_customer').value || null;
+    const catatan = document.getElementById('pl_catatan').value.trim();
+    const data = { tanggal: new Date(tgl).toISOString(), kanal, produkNama, namaItem, ukuran, qty, hargaJual: Number(hargaStr), modalSatuan, modalManual, customerId, catatan: catatan || null };
+    STATE.penjualanLuar = STATE.penjualanLuar || [];
+    const wasEditing = !!editingPenjualanLuarId;
+    if (editingPenjualanLuarId) {
+      const row = STATE.penjualanLuar.find(x => x.id === editingPenjualanLuarId);
+      Object.assign(row, data);
+    } else {
+      STATE.penjualanLuar.push({ id: uid('pl'), ...data, createdAt: new Date().toISOString() });
+    }
+    editingPenjualanLuarId = null;
+    penjualanLuarDraft = { tanggal: tgl, kanal };
+    await withSaving(msg, wasEditing ? 'Penjualan diperbarui.' : 'Penjualan ditambahkan.', async () => { await saveState(); });
+    setTimeout(() => renderPenjualanLuar(container), 800);
+  });
+  const btnBatal = document.getElementById('btnBatalEditPL');
+  if (btnBatal) btnBatal.addEventListener('click', () => { editingPenjualanLuarId = null; renderPenjualanLuar(container); });
+  document.getElementById('plPreset').addEventListener('change', (ev) => { f.preset = ev.target.value; renderPenjualanLuar(container); });
+  document.getElementById('plFilterKanal').addEventListener('change', (ev) => { f.kanal = ev.target.value; renderPenjualanLuar(container); });
+  document.getElementById('plDari').addEventListener('change', (ev) => { f.preset = 'custom'; f.dari = ev.target.value; renderPenjualanLuar(container); });
+  document.getElementById('plSampai').addEventListener('change', (ev) => { f.preset = 'custom'; f.sampai = ev.target.value; renderPenjualanLuar(container); });
+  container.querySelectorAll('[data-edit-pl]').forEach(btn => {
+    btn.addEventListener('click', () => { editingPenjualanLuarId = btn.dataset.editPl; renderPenjualanLuar(container); });
+  });
+  container.querySelectorAll('[data-del-pl]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      if (!confirm('Hapus entri penjualan ini? Pendapatan & modalnya juga hilang dari PNL.')) return;
+      if (editingPenjualanLuarId === btn.dataset.delPl) editingPenjualanLuarId = null;
+      STATE.penjualanLuar = (STATE.penjualanLuar || []).filter(x => x.id !== btn.dataset.delPl);
+      await saveState();
+      renderPenjualanLuar(container);
+    });
+  });
+}
+
+/* =========================================================================
    TAB: BIAYA OPERASIONAL
    ========================================================================= */
 let opexFilter = { kategori: '', tglDari: '', tglSampai: '' };
@@ -9446,6 +9692,606 @@ function renderRincianBar(byMap, label, opts) {
   `;
 }
 
+
+/* =========================================================================
+   MUTASI BANK (2026-11-27) -- parser PDF "Pocket Transactions History" Bank Jago
+   Setiawan: "data dari sini aku tinggal upload, nanti aku yang menentukan ini kategori apa & biaya operasional apa,
+   atau ini investasi atau dividen, jadi aku merekapnya lebih mudah".
+   Parser bekerja di atas POSISI teks hasil pdf.js (bukan teks datar): PDF Jago berupa tabel 6 kolom
+   (Tanggal&Waktu | Sumber/Tujuan | Rincian | Catatan | Jumlah | Saldo), 1 transaksi = beberapa baris teks.
+   Fungsi di sini MURNI (tanpa DOM / pdf.js) supaya bisa diuji dgn PDF asli di Node.
+   ========================================================================= */
+const BULAN_MUTASI = { jan: 1, feb: 2, mar: 3, apr: 4, mei: 5, may: 5, jun: 6, jul: 7, agu: 8, agt: 8, aug: 8, sep: 9, okt: 10, oct: 10, nov: 11, des: 12, dec: 12 };
+const MUTASI_DATE_RE = /^(\d{1,2})\s+([A-Za-z]{3,4})\s+(\d{4})$/;
+function tanggalIsoMutasi(teks) {
+  const m = MUTASI_DATE_RE.exec(String(teks || '').trim());
+  if (!m) return null;
+  const bln = BULAN_MUTASI[m[2].toLowerCase()];
+  if (!bln) return null;
+  return m[3] + '-' + String(bln).padStart(2, '0') + '-' + String(Number(m[1])).padStart(2, '0');
+}
+// "+19.560.000,00" -> 19560000 ; "-1.585.000" -> -1585000 ; "35.700.000" -> 35700000
+function parseAngkaMutasi(teks) {
+  let t = String(teks == null ? '' : teks).trim().replace(/\s+/g, '');
+  if (!t) return null;
+  let sign = 1;
+  if (t[0] === '-') { sign = -1; t = t.slice(1); } else if (t[0] === '+') t = t.slice(1);
+  t = t.replace(/^(IDR|Rp\.?)/i, '').replace(/\./g, '').replace(',', '.');
+  if (!/^\d+(\.\d+)?$/.test(t)) return null;
+  return sign * Number(t);
+}
+function bersihkanTeksMutasi(teks) {
+  let t = String(teks == null ? '' : teks);
+  t = t.replace(/&#(\d+);/g, (_, n) => String.fromCharCode(Number(n)))
+       .replace(/&#x([0-9a-f]+);/gi, (_, n) => String.fromCharCode(parseInt(n, 16)))
+       .replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&apos;/g, "'");
+  try { t = t.normalize('NFKC'); } catch (e) { /* abaikan */ }
+  return t.replace(/\s+/g, ' ').trim();
+}
+// Hasil pdf.js getTextContent() -> [{str,x,y,w}] (buang item kosong/spasi)
+function itemsDariTextContent(tc) {
+  const out = [];
+  ((tc && tc.items) || []).forEach(it => {
+    const s = it.str == null ? '' : String(it.str).trim();
+    if (!s) return;
+    out.push({ str: s, x: it.transform[4], y: it.transform[5], w: it.width || 0 });
+  });
+  return out;
+}
+const MUTASI_INFO_AKUN_RE = /^(Bank\s|BCA|BSI|BNI|BRI|Mandiri|CIMB|Permata|Danamon|Jago|Doku|ShopeePay|GoPay|OVO|DANA\b|LinkAja|PLN\b|Pindah uang antar Kantong|Kantong\b|\d{6,})/i;
+
+// Parse SATU halaman -> menambah blok ke ctx.blok (ctx dibawa lintas halaman)
+function parseHalamanMutasi(items, ctx) {
+  const hdrRincian = items.find(i => /^Rincian Transaksi$/i.test(i.str));
+  const hdrCatatan = items.find(i => /^Catatan$/i.test(i.str));
+  const hdrJumlah = items.find(i => /^Jumlah$/i.test(i.str));
+  const hdrSaldo = items.find(i => /^Saldo$/i.test(i.str) && hdrJumlah && i.x > hdrJumlah.x);
+  if (!hdrRincian || !hdrCatatan || !hdrJumlah || !hdrSaldo) return;
+  const headerY = hdrRincian.y;
+  const colRincian = hdrRincian.x, colCatatan = hdrCatatan.x;
+  const jumlahRight = hdrJumlah.x + hdrJumlah.w, saldoRight = hdrSaldo.x + hdrSaldo.w;
+  const numericStart = jumlahRight - 90;
+  const batasJumlahSaldo = (jumlahRight + saldoRight) / 2;
+  const dateItems = items.filter(i => i.y < headerY - 1 && MUTASI_DATE_RE.test(i.str));
+  if (!dateItems.length) return;
+  const tanggalX = Math.min(...dateItems.map(i => i.x));
+  const batasTanggal = tanggalX + 0.3 * (colRincian - tanggalX);
+  const body = items.filter(i => i.y < headerY - 1 && i.y > 45) // buang header halaman (di atas tabel) & footer (y<=45)
+    .slice().sort((a, b) => (Math.round(b.y) - Math.round(a.y)) || (a.x - b.x));
+  const kolomDari = (it) => {
+    if (it.x < batasTanggal) return 'tanggal';
+    if (it.x < colRincian - 4) return 'sumber';
+    if (it.x < colCatatan - 4) return 'rincian';
+    if (it.x < numericStart) return 'catatan';
+    return (it.x + it.w) <= batasJumlahSaldo ? 'jumlah' : 'saldo';
+  };
+  body.forEach(it => {
+    const kol = kolomDari(it);
+    if (kol === 'tanggal') {
+      if (MUTASI_DATE_RE.test(it.str)) { ctx.cur = { tanggalTeks: it.str, jam: null, sumber: [], rincian: [], catatan: [], jumlah: [], saldo: [] }; ctx.blok.push(ctx.cur); return; }
+      if (/^\d{1,2}[.:]\d{2}$/.test(it.str)) { if (ctx.cur && !ctx.cur.jam) ctx.cur.jam = it.str.replace('.', ':'); return; }
+      if (/^[A-Za-z]+\s+\d{4}$/.test(it.str)) return; // label bulan ("November 2026")
+      if (it.str.length > 15) ctx.cur = null; // paragraf penutup ("Info Penting ...") -> akhiri blok
+      return;
+    }
+    if (!ctx.cur) return;
+    ctx.cur[kol].push(it);
+  });
+}
+function teksKolomMutasi(arr) { // urut atas->bawah, lalu kiri->kanan
+  return arr.slice().sort((a, b) => (Math.round(b.y) - Math.round(a.y)) || (a.x - b.x));
+}
+function barisKolomMutasi(arr) { // pecah per baris visual
+  const sorted = teksKolomMutasi(arr); const lines = []; let lastY = null;
+  sorted.forEach(it => { const ry = Math.round(it.y); if (lastY === null || ry !== lastY) { lines.push([it.str]); lastY = ry; } else lines[lines.length - 1].push(it.str); });
+  return lines.map(l => bersihkanTeksMutasi(l.join(' '))).filter(Boolean);
+}
+function bangunTransaksiDariBlok(b, urut) {
+  const tanggal = tanggalIsoMutasi(b.tanggalTeks);
+  const jumlah = parseAngkaMutasi(b.jumlah.map(i => i.str).join(''));
+  const saldo = parseAngkaMutasi(b.saldo.map(i => i.str).join(''));
+  if (!tanggal || jumlah == null) return { error: 'Baris tidak terbaca: ' + b.tanggalTeks };
+  const sumberLines = barisKolomMutasi(b.sumber);
+  let idx = sumberLines.findIndex((l, i) => i > 0 && MUTASI_INFO_AKUN_RE.test(l));
+  if (idx < 0) idx = sumberLines.length;
+  const nama = sumberLines.slice(0, idx).join(' ');
+  const akun = sumberLines.slice(idx).join(' ');
+  const rincLines = barisKolomMutasi(b.rincian);
+  let refId = null; const jenisLines = [];
+  rincLines.forEach(l => {
+    const m = /^ID#\s*(\S+)/.exec(l);
+    if (m) refId = m[1];
+    else if (refId && /^\S+$/.test(l) && l.replace(/[^A-Za-z0-9-]/g, '')) refId += l.replace(/[^A-Za-z0-9-]/g, ''); // ID panjang (mis. pembayaran PLN) terpotong ke baris berikutnya -> sambung (glyph aneh dibuang spy ID stabil)
+    else jenisLines.push(l);
+  });
+  const catatan = barisKolomMutasi(b.catatan).join(' ');
+  const rincian = jenisLines.join(' ');
+  const t = {
+    id: refId || ('nr_' + tanggal + '_' + (b.jam || '') + '_' + jumlah + '_' + (saldo == null ? '' : saldo)),
+    tanggal, jam: b.jam || null, nama, akun, rincian, catatan: catatan || '',
+    jumlah, saldo, arah: jumlah >= 0 ? 'masuk' : 'keluar',
+    pindahKantong: /kantong/i.test(rincian) || /kantong/i.test(akun) || /kantong/i.test(nama),
+    urut,
+  };
+  return { transaksi: t };
+}
+// pages: array (per halaman) dari [{str,x,y,w}]. Return {rekening, periode:{dari,sampai}, saldoAkhirHeader, transaksi, peringatan, validasi}
+function parseMutasiJago(pages) {
+  const ctx = { blok: [], cur: null };
+  const hasil = { rekening: null, periode: null, saldoAkhirHeader: null, transaksi: [], peringatan: [], validasi: { cocok: null, saldoAwal: null, urutan: null, salah: 0 } };
+  (pages || []).forEach((items, pi) => {
+    if (pi === 0) {
+      const hdr = items.find(i => /^Rincian Transaksi$/i.test(i.str));
+      const atas = hdr ? items.filter(i => i.y > hdr.y + 1) : items;
+      const per = atas.find(i => /^\d{1,2}\s+[A-Za-z]{3,4}\s+\d{4}\s*-\s*\d{1,2}\s+[A-Za-z]{3,4}\s+\d{4}$/.test(i.str));
+      if (per) { const p = per.str.split('-').map(s => tanggalIsoMutasi(s.trim())); hasil.periode = { dari: p[0], sampai: p[1] }; }
+      const rek = atas.find(i => /\s\d{8,}$/.test(i.str) && !/Saldo|Menampilkan|Pocket/i.test(i.str));
+      if (rek) hasil.rekening = bersihkanTeksMutasi(rek.str.replace(/\s*\d{8,}$/, ''));
+      const idr = atas.find(i => /^IDR\s*[\d.,]+$/.test(i.str));
+      if (idr) hasil.saldoAkhirHeader = parseAngkaMutasi(idr.str);
+    }
+    ctx.cur = pi === 0 ? null : ctx.cur;
+    parseHalamanMutasi(items, ctx);
+  });
+  ctx.blok.forEach((b, i) => {
+    const r = bangunTransaksiDariBlok(b, i);
+    if (r.error) hasil.peringatan.push(r.error); else hasil.transaksi.push(r.transaksi);
+  });
+  // Validasi: saldo berjalan harus nyambung (saldo[i-1] + jumlah[i] == saldo[i]); dicoba urutan lama->baru, lalu baru->lama.
+  const T = hasil.transaksi;
+  const cek = (arr) => { let salah = 0; for (let i = 1; i < arr.length; i++) { if (arr[i].saldo == null || arr[i - 1].saldo == null || Math.abs(arr[i - 1].saldo + arr[i].jumlah - arr[i].saldo) > 0.5) salah++; } return salah; };
+  if (T.length) {
+    const sAsc = cek(T), rev = T.slice().reverse(), sDesc = cek(rev);
+    if (sAsc <= sDesc) { hasil.validasi.urutan = 'naik'; hasil.validasi.salah = sAsc; hasil.validasi.saldoAwal = T[0].saldo == null ? null : T[0].saldo - T[0].jumlah; }
+    else { hasil.validasi.urutan = 'turun'; hasil.validasi.salah = sDesc; hasil.transaksi = rev; hasil.validasi.saldoAwal = rev[0].saldo == null ? null : rev[0].saldo - rev[0].jumlah; }
+    hasil.transaksi.forEach((t, i) => { t.urut = i; });
+    hasil.validasi.cocok = hasil.validasi.salah === 0;
+    const akhir = hasil.transaksi[hasil.transaksi.length - 1];
+    if (hasil.saldoAkhirHeader != null && akhir && akhir.saldo != null && akhir.saldo !== hasil.saldoAkhirHeader) {
+      hasil.peringatan.push('Saldo transaksi terakhir (' + akhir.saldo + ') beda dgn "Saldo terbaru" di header (' + hasil.saldoAkhirHeader + ') -- kemungkinan ada transaksi setelah periode/halaman kurang.');
+    }
+  }
+  if (hasil.validasi.cocok === false) hasil.peringatan.push(hasil.validasi.salah + ' baris saldo tidak nyambung -- cek hasil parsing sebelum dipakai.');
+  return hasil;
+}
+
+/* ---- Muat pdf.js saat dibutuhkan (tidak membebani load awal aplikasi); cadangan CDN kedua kalau yg pertama gagal ---- */
+const PDFJS_SUMBER_MUTASI = [
+  { lib: 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js', worker: 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js' },
+  { lib: 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js', worker: 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js' },
+];
+function muatPdfJsMutasi() {
+  if (typeof window.pdfjsLib !== 'undefined') return Promise.resolve(window.pdfjsLib);
+  return new Promise((resolve, reject) => {
+    let i = 0;
+    const coba = () => {
+      if (i >= PDFJS_SUMBER_MUTASI.length) { reject(new Error('Pembaca PDF gagal dimuat (butuh koneksi internet). Coba lagi atau muat ulang halaman.')); return; }
+      const sumber = PDFJS_SUMBER_MUTASI[i++];
+      const el = document.createElement('script');
+      el.src = sumber.lib;
+      el.onload = () => {
+        if (typeof window.pdfjsLib === 'undefined') { coba(); return; }
+        window.pdfjsLib.GlobalWorkerOptions.workerSrc = sumber.worker;
+        resolve(window.pdfjsLib);
+      };
+      el.onerror = () => { el.remove(); coba(); };
+      document.head.appendChild(el);
+    };
+    coba();
+  });
+}
+async function ekstrakItemsPdfMutasi(arrayBuffer) {
+  const lib = await muatPdfJsMutasi();
+  const doc = await lib.getDocument({ data: new Uint8Array(arrayBuffer) }).promise;
+  const pages = [];
+  for (let i = 1; i <= doc.numPages; i++) {
+    const pg = await doc.getPage(i);
+    pages.push(itemsDariTextContent(await pg.getTextContent()));
+  }
+  return pages;
+}
+
+/* ---- Data & klasifikasi ---- */
+const MUTASI_PER_HALAMAN = 50;
+function normTeksMutasi(s) { return String(s == null ? '' : s).toLowerCase().replace(/\s+/g, ' ').trim(); }
+// Kunci "aturan ingatan": catatan (tanpa angka di ujung, spy "Dana Investor 20/21/22" jadi 1 aturan) -- kalau
+// catatan kosong, pakai nama tujuan (mis. "Biaya Transfer Keluar" selalu Biaya Bank).
+function kunciAturanMutasi(m) {
+  const cat = normTeksMutasi(m.catatan).replace(/[\s\d]+$/, '').trim();
+  if (cat) return 'c:' + cat;
+  return 'n:' + normTeksMutasi(m.nama);
+}
+function kategoriValidMutasi(jenis, kategori) {
+  if (jenis === 'opex') return (STATE.opexKategori || []).includes(kategori);
+  if (jenis === 'alokasi') return (STATE.alokasiKategori || []).includes(kategori);
+  return false;
+}
+function entriTerkaitMutasi(m) {
+  if (!m.klas || !m.klas.entriId) return null;
+  const daftar = m.klas.jenis === 'opex' ? STATE.biayaOperasional : (m.klas.jenis === 'alokasi' ? STATE.alokasiProfit : null);
+  if (!daftar) return null;
+  return daftar.find(e => e.id === m.klas.entriId) || null;
+}
+// Status klasifikasi yg BERLAKU: null kalau belum ditentukan, atau entri tertaut sudah dihapus dari tab Biaya Operasional / Investasi & Dividen.
+function statusMutasi(m) {
+  if (!m.klas) return null;
+  if (m.klas.jenis === 'abaikan') return m.klas;
+  return entriTerkaitMutasi(m) ? m.klas : null;
+}
+function saranMutasi(m) {
+  const aturan = (STATE.mutasiBankAturan || {})[kunciAturanMutasi(m)];
+  if (aturan && (aturan.jenis === 'abaikan' || (m.arah === 'keluar' && kategoriValidMutasi(aturan.jenis, aturan.kategori)))) return { jenis: aturan.jenis, kategori: aturan.kategori || null };
+  if (m.arah === 'masuk' || m.pindahKantong) return { jenis: 'abaikan', kategori: null };
+  return null;
+}
+function labelKlasifikasiMutasi(k) {
+  if (!k) return 'Belum ditentukan';
+  if (k.jenis === 'abaikan') return 'Diabaikan';
+  return (k.jenis === 'opex' ? 'Biaya Operasional' : 'Investasi & Dividen') + ' ▸ ' + k.kategori;
+}
+function hapusEntriTerkaitMutasi(m) {
+  if (!m.klas || !m.klas.entriId) return;
+  STATE.biayaOperasional = STATE.biayaOperasional.filter(e => e.id !== m.klas.entriId);
+  STATE.alokasiProfit = STATE.alokasiProfit.filter(e => e.id !== m.klas.entriId);
+}
+// pilihan: null (batalkan) | {jenis:'abaikan'} | {jenis:'opex'|'alokasi', kategori}. Membuat/menggantikan/menghapus entri tertaut
+// di STATE.biayaOperasional / STATE.alokasiProfit (id entri disimpan di m.klas.entriId) -> PNL otomatis ikut.
+function terapkanKlasifikasiMutasi(m, pilihan) {
+  hapusEntriTerkaitMutasi(m);
+  if (!pilihan) { m.klas = null; return { ok: true }; }
+  if (pilihan.jenis === 'abaikan') { m.klas = { jenis: 'abaikan', kategori: null, entriId: null }; return { ok: true }; }
+  if (m.arah !== 'keluar') { m.klas = null; return { ok: false, error: 'Uang masuk tidak bisa dijadikan biaya / alokasi (hanya "Abaikan").' }; }
+  if (!kategoriValidMutasi(pilihan.jenis, pilihan.kategori)) { m.klas = null; return { ok: false, error: 'Kategori "' + pilihan.kategori + '" tidak ada di daftar (Data Master).' }; }
+  const iso = new Date(m.tanggal).toISOString();
+  const catatan = '[Mutasi ' + (m.rekening || 'Bank') + '] ' + (m.nama || '') + (m.catatan ? ' — ' + m.catatan : '');
+  const entri = { id: uid(pilihan.jenis === 'opex' ? 'opex' : 'alokasi'), tanggalDari: iso, tanggalSampai: iso, kategori: pilihan.kategori, jumlah: Math.abs(m.jumlah), catatan, sumberMutasiId: m.id };
+  if (pilihan.jenis === 'opex') STATE.biayaOperasional.push(entri); else STATE.alokasiProfit.push(entri);
+  m.klas = { jenis: pilihan.jenis, kategori: pilihan.kategori, entriId: entri.id };
+  return { ok: true };
+}
+function ingatAturanMutasi(m, pilihan) {
+  if (!pilihan) return;
+  STATE.mutasiBankAturan = STATE.mutasiBankAturan || {};
+  STATE.mutasiBankAturan[kunciAturanMutasi(m)] = { jenis: pilihan.jenis, kategori: pilihan.kategori || null };
+}
+function hapusMutasi(id) {
+  const m = (STATE.mutasiBank || []).find(x => x.id === id);
+  if (m) hapusEntriTerkaitMutasi(m);
+  STATE.mutasiBank = (STATE.mutasiBank || []).filter(x => x.id !== id);
+}
+// Gabung hasil parse ke STATE.mutasiBank; transaksi yg ID-nya sudah ada DILEWATI (klasifikasinya tidak disentuh) -> aman upload ulang / periode tumpang tindih.
+function gabungkanMutasiBaru(parsed, namaFile) {
+  STATE.mutasiBank = STATE.mutasiBank || [];
+  const ada = new Set(STATE.mutasiBank.map(m => m.id));
+  let baru = 0, duplikat = 0;
+  const sekarang = new Date().toISOString();
+  parsed.transaksi.forEach(t => {
+    if (ada.has(t.id)) { duplikat++; return; }
+    ada.add(t.id);
+    STATE.mutasiBank.push({ ...t, rekening: parsed.rekening || null, sumberFile: namaFile || null, importedAt: sekarang, klas: null });
+    baru++;
+  });
+  return { baru, duplikat };
+}
+function hitungRekapMutasi(dari, sampai) {
+  const inRange = (t) => { const d = String(t || '').slice(0, 10); return (!dari || d >= dari) && (!sampai || d <= sampai); };
+  const rows = (STATE.mutasiBank || []).filter(m => inRange(m.tanggal));
+  const z = () => ({ n: 0, rp: 0 });
+  const out = { rows, masuk: z(), keluar: z(), opex: { ...z(), byKategori: {} }, alokasi: { ...z(), byKategori: {} }, abaikanKeluar: z(), belumKeluar: z(), belumSemua: 0, saranTersedia: 0 };
+  rows.forEach(m => {
+    const rp = Math.abs(m.jumlah);
+    (m.arah === 'masuk' ? out.masuk : out.keluar).n++; (m.arah === 'masuk' ? out.masuk : out.keluar).rp += rp;
+    const st = statusMutasi(m);
+    if (!st) { out.belumSemua++; if (m.arah === 'keluar') { out.belumKeluar.n++; out.belumKeluar.rp += rp; } if (saranMutasi(m)) out.saranTersedia++; return; }
+    if (m.arah !== 'keluar') return;
+    if (st.jenis === 'abaikan') { out.abaikanKeluar.n++; out.abaikanKeluar.rp += rp; return; }
+    const g = st.jenis === 'opex' ? out.opex : out.alokasi;
+    g.n++; g.rp += rp; g.byKategori[st.kategori] = (g.byKategori[st.kategori] || 0) + rp;
+  });
+  return out;
+}
+function ubahPilihanMutasiDariValue(v) {
+  if (!v) return null;
+  if (v === 'abaikan') return { jenis: 'abaikan', kategori: null };
+  const i = v.indexOf('::');
+  return i < 0 ? null : { jenis: v.slice(0, i), kategori: v.slice(i + 2) };
+}
+function valueDariKlasMutasi(k) { return !k ? '' : (k.jenis === 'abaikan' ? 'abaikan' : k.jenis + '::' + k.kategori); }
+
+/* ---- Tab: Mutasi Bank ---- */
+let mutasiFilter = { preset: 'semua', dari: '', sampai: '', status: '', arah: '', q: '', page: 1 };
+let mutasiTerpilih = new Set();
+let mutasiPesan = null; // pesan status yg dibawa ke render berikutnya ({type,text}), spy tidak hilang saat tampilan dirender ulang
+function opsiKlasifikasiMutasiHtml(arah, valueTerpilih) {
+  const esc = escapeHtmlPL;
+  const sel = (v) => v === valueTerpilih ? ' selected' : '';
+  let h = `<option value=""${sel('')}>— Belum ditentukan —</option>`;
+  if (arah === 'keluar') {
+    h += '<optgroup label="Biaya Operasional">' + (STATE.opexKategori || []).map(k => `<option value="${esc('opex::' + k)}"${sel('opex::' + k)}>Opex \u25B8 ${esc(k)}</option>`).join('') + '</optgroup>';
+    h += '<optgroup label="Investasi &amp; Dividen">' + (STATE.alokasiKategori || []).map(k => `<option value="${esc('alokasi::' + k)}"${sel('alokasi::' + k)}>Inv/Div \u25B8 ${esc(k)}</option>`).join('') + '</optgroup>';
+  }
+  h += `<option value="abaikan"${sel('abaikan')}>Abaikan (bukan biaya / sudah terhitung)</option>`;
+  return h;
+}
+function renderMutasiBank(container) {
+  const f = mutasiFilter;
+  if (f.preset !== 'custom' && f.preset !== 'semua') Object.assign(f, pnlDateRangeFromPreset(f.preset));
+  if (f.preset === 'semua') { f.dari = ''; f.sampai = ''; }
+  const rekap = hitungRekapMutasi(f.dari, f.sampai);
+  const q = normTeksMutasi(f.q);
+  let daftar = rekap.rows.filter(m => {
+    const st = statusMutasi(m);
+    if (f.status === 'belum' && st) return false;
+    if (f.status && f.status !== 'belum' && (!st || st.jenis !== f.status)) return false;
+    if (f.arah && m.arah !== f.arah) return false;
+    if (q && !normTeksMutasi([m.nama, m.akun, m.catatan, m.rincian].join(' ')).includes(q)) return false;
+    return true;
+  }).slice().sort((a, b) => String(a.tanggal).localeCompare(String(b.tanggal)) || String(a.jam || '').localeCompare(String(b.jam || '')) || (a.urut || 0) - (b.urut || 0));
+  const totalHal = Math.max(1, Math.ceil(daftar.length / MUTASI_PER_HALAMAN));
+  f.page = Math.min(Math.max(1, f.page), totalHal);
+  const halaman = daftar.slice((f.page - 1) * MUTASI_PER_HALAMAN, f.page * MUTASI_PER_HALAMAN);
+  const esc = escapeHtmlPL;
+  const jumlahSemua = (STATE.mutasiBank || []).length;
+
+  container.innerHTML = `
+    <div class="panel">
+      <h2>Mutasi Bank</h2>
+      <div class="desc">Upload PDF <b>Riwayat Transaksi (Pocket Transactions History) Bank Jago</b>, lalu tentukan sendiri tiap transaksi uang keluar: masuk ke <b>Biaya Operasional</b> (pilih kategori), <b>Investasi &amp; Dividen</b> (pilih kategori), atau <b>Abaikan</b>. Yang kamu tentukan otomatis menjadi entri di tab Biaya Operasional / Investasi &amp; Dividen, jadi langsung terhitung di PNL. Upload ulang / periode yang tumpang tindih aman -- transaksi yang sudah ada tidak dobel.</div>
+      <div class="field"><label>File PDF mutasi</label><input type="file" id="mbFile" accept="application/pdf,.pdf"></div>
+      <div class="desc" style="color:var(--err);">&#9888; Transfer ke capital partner / konveksi yang sudah terhitung lewat <i>Payout Capital Partner</i> atau <i>Biaya Modal</i> sebaiknya diberi <b>Abaikan</b>, supaya tidak terhitung dua kali di PNL.</div>
+      <div class="status-box" id="mbMsg"></div>
+    </div>
+
+    ${!jumlahSemua ? '<div class="panel"><div class="empty-note">Belum ada mutasi. Upload PDF di atas untuk mulai.</div></div>' : `
+    <div class="panel">
+      <h2>Rekap</h2>
+      <div class="grid2">
+        <div class="field"><label>Periode</label>
+          <select id="mbPreset">
+            <option value="semua" ${f.preset === 'semua' ? 'selected' : ''}>Semua Waktu</option>
+            <option value="minggu_ini" ${f.preset === 'minggu_ini' ? 'selected' : ''}>Minggu Ini</option>
+            <option value="bulan_ini" ${f.preset === 'bulan_ini' ? 'selected' : ''}>Bulan Ini</option>
+            <option value="bulan_lalu" ${f.preset === 'bulan_lalu' ? 'selected' : ''}>Bulan Lalu</option>
+            <option value="custom" ${f.preset === 'custom' ? 'selected' : ''}>Custom</option>
+          </select>
+        </div>
+        <div class="grid2" style="gap:8px;">
+          <div class="field"><label>Dari</label><input type="date" id="mbDari" value="${f.dari}"></div>
+          <div class="field"><label>Sampai</label><input type="date" id="mbSampai" value="${f.sampai}"></div>
+        </div>
+      </div>
+      <div class="kpi-row">
+        <div class="kpi"><div class="kpi-label">Uang Masuk (${rekap.masuk.n})</div><div class="kpi-value" id="mbKpiMasuk">${fmtRp(rekap.masuk.rp)}</div></div>
+        <div class="kpi"><div class="kpi-label">Uang Keluar (${rekap.keluar.n})</div><div class="kpi-value" id="mbKpiKeluar">${fmtRp(rekap.keluar.rp)}</div></div>
+        <div class="kpi"><div class="kpi-label">Belum Ditentukan (keluar, ${rekap.belumKeluar.n})</div><div class="kpi-value" id="mbKpiBelum" style="${rekap.belumKeluar.n ? 'color:var(--err);' : ''}">${fmtRp(rekap.belumKeluar.rp)}</div></div>
+      </div>
+      <div class="kpi-row">
+        <div class="kpi"><div class="kpi-label">Biaya Operasional (${rekap.opex.n})</div><div class="kpi-value" id="mbKpiOpex">${fmtRp(rekap.opex.rp)}</div></div>
+        <div class="kpi"><div class="kpi-label">Investasi &amp; Dividen (${rekap.alokasi.n})</div><div class="kpi-value" id="mbKpiAlokasi">${fmtRp(rekap.alokasi.rp)}</div></div>
+        <div class="kpi"><div class="kpi-label">Diabaikan (${rekap.abaikanKeluar.n})</div><div class="kpi-value" id="mbKpiAbaikan">${fmtRp(rekap.abaikanKeluar.rp)}</div></div>
+      </div>
+      ${renderRincianBar(rekap.opex.byKategori, 'Biaya Operasional per Kategori')}
+      ${renderRincianBar(rekap.alokasi.byKategori, 'Investasi & Dividen per Kategori')}
+      <div style="margin-top:12px;">
+        <button type="button" class="btn btn-primary" id="mbTerapkanSaran" ${rekap.saranTersedia ? '' : 'disabled'}>Terapkan saran ke ${rekap.saranTersedia} transaksi</button>
+        <span class="desc" style="margin-left:8px;">Saran = aturan yang diingat dari pilihanmu sebelumnya (catatan/tujuan yang sama), plus uang masuk &amp; pindah kantong &rarr; Abaikan.</span>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>Daftar Transaksi</h2>
+      <div class="grid2">
+        <div class="field"><label>Status</label>
+          <select id="mbStatus">
+            <option value="">Semua</option>
+            <option value="belum" ${f.status === 'belum' ? 'selected' : ''}>Belum ditentukan</option>
+            <option value="opex" ${f.status === 'opex' ? 'selected' : ''}>Biaya Operasional</option>
+            <option value="alokasi" ${f.status === 'alokasi' ? 'selected' : ''}>Investasi &amp; Dividen</option>
+            <option value="abaikan" ${f.status === 'abaikan' ? 'selected' : ''}>Diabaikan</option>
+          </select>
+        </div>
+        <div class="field"><label>Arah</label>
+          <select id="mbArah"><option value="">Masuk &amp; Keluar</option><option value="keluar" ${f.arah === 'keluar' ? 'selected' : ''}>Uang Keluar</option><option value="masuk" ${f.arah === 'masuk' ? 'selected' : ''}>Uang Masuk</option></select>
+        </div>
+      </div>
+      <div class="field"><label>Cari (nama / catatan)</label><input type="text" id="mbCari" value="${esc(f.q)}" placeholder="mis. profit, CSR, tripod"></div>
+      <div id="mbBulkBar" style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin:8px 0;">
+        <select id="mbBulkPilihan" style="max-width:320px;">${opsiKlasifikasiMutasiHtml('keluar', '')}</select>
+        <button type="button" class="btn btn-ghost" id="mbBulkTerapkan">Terapkan ke terpilih (<span id="mbBulkN">${mutasiTerpilih.size}</span>)</button>
+        <span class="desc">${daftar.length} transaksi cocok filter &middot; hal ${f.page}/${totalHal}</span>
+      </div>
+      <div style="overflow-x:auto;">
+      ${!halaman.length ? '<div class="empty-note">Tidak ada transaksi yang cocok.</div>' : `
+      <table class="data compact" id="mbTabel">
+        <thead><tr><th><input type="checkbox" id="mbPilihSemua" title="Pilih semua di halaman ini"></th><th>Tanggal</th><th>Tujuan / Sumber</th><th>Catatan</th><th class="num">Jumlah</th><th>Klasifikasi</th><th></th></tr></thead>
+        <tbody>
+          ${halaman.map(m => { const st = statusMutasi(m); const sar = !st ? saranMutasi(m) : null; const rp = Math.abs(m.jumlah);
+            return `<tr data-mb-row="${esc(m.id)}">
+            <td><input type="checkbox" data-mb-pilih="${esc(m.id)}" ${mutasiTerpilih.has(m.id) ? 'checked' : ''}></td>
+            <td style="white-space:nowrap; font-size:11.5px;">${esc(m.tanggal)}<div style="color:var(--ink-soft);">${esc(m.jam || '')}</div></td>
+            <td style="font-size:12px;">${esc(m.nama || '-')}${m.akun ? `<div style="font-size:10.5px; color:var(--ink-soft);">${esc(m.akun)}</div>` : ''}</td>
+            <td style="font-size:12px;">${m.catatan ? `<b>${esc(m.catatan)}</b>` : ''}<div style="font-size:10.5px; color:var(--ink-soft);">${esc(m.rincian || '')}</div></td>
+            <td class="num" style="white-space:nowrap; color:${m.arah === 'masuk' ? '#16A34A' : 'var(--ink)'};">${m.arah === 'masuk' ? '+' : '-'}${fmtRp(rp)}</td>
+            <td style="min-width:190px;">
+              <select data-mb-klas="${esc(m.id)}" style="max-width:240px;">${opsiKlasifikasiMutasiHtml(m.arah, valueDariKlasMutasi(st))}</select>
+              ${sar ? `<div><a href="#" data-mb-saran="${esc(m.id)}" style="font-size:10.5px; color:var(--accent);" title="Klik untuk menerapkan saran">Saran: ${esc(labelKlasifikasiMutasi(sar))}</a></div>` : ''}
+            </td>
+            <td><button class="icon-del" data-mb-hapus="${esc(m.id)}" title="Hapus transaksi dari daftar">✕</button></td>
+          </tr>`; }).join('')}
+        </tbody>
+      </table>`}
+      </div>
+      ${totalHal > 1 ? `<div style="display:flex; gap:8px; margin-top:10px; align-items:center;"><button type="button" class="btn btn-ghost" id="mbPrev" ${f.page <= 1 ? 'disabled' : ''}>&laquo; Sebelumnya</button><span class="desc">Halaman ${f.page} dari ${totalHal}</span><button type="button" class="btn btn-ghost" id="mbNext" ${f.page >= totalHal ? 'disabled' : ''}>Berikutnya &raquo;</button></div>` : ''}
+    </div>`}
+  `;
+
+  const msg = document.getElementById('mbMsg');
+  if (mutasiPesan) { showMsg(msg, mutasiPesan.type, mutasiPesan.text); mutasiPesan = null; }
+  const ulang = () => renderMutasiBank(container);
+  document.getElementById('mbFile').addEventListener('change', async (ev) => {
+    const file = ev.target.files && ev.target.files[0];
+    if (!file) return;
+    showMsg(msg, 'info', 'Membaca PDF...');
+    try {
+      const pages = await ekstrakItemsPdfMutasi(await file.arrayBuffer());
+      const hasil = parseMutasiJago(pages);
+      if (!hasil.transaksi.length) { showMsg(msg, 'err', 'Tidak ada transaksi yang terbaca. Saat ini format yang didukung: "Pocket Transactions History" Bank Jago (PDF dari aplikasi Jago).'); return; }
+      const g = gabungkanMutasiBaru(hasil, file.name);
+      let teks = `${hasil.transaksi.length} transaksi terbaca (${g.baru} baru, ${g.duplikat} sudah ada).`;
+      teks += hasil.validasi.cocok ? ' Saldo berjalan cocok ✓.' : ' ⚠ ' + hasil.peringatan.join(' ');
+      if (hasil.validasi.cocok && hasil.peringatan.length) teks += ' ⚠ ' + hasil.peringatan.join(' ');
+      showMsg(msg, 'info', 'Menyimpan ke Google Drive...');
+      await saveState();
+      mutasiPesan = { type: hasil.validasi.cocok && !hasil.peringatan.length ? 'ok' : 'err', text: teks };
+      ulang();
+    } catch (e) {
+      const nama = e && e.name;
+      showMsg(msg, 'err', nama === 'PasswordException' ? 'PDF terkunci password -- buka kuncinya dulu lalu upload lagi.' : 'Gagal membaca PDF: ' + (e && e.message ? e.message : e));
+    }
+  });
+  if (!jumlahSemua) return;
+  // Jalankan perubahan, simpan ke Drive, lalu render ulang membawa pesan hasil (pesanFn dipanggil SETELAH perubahan, spy bisa memuat hitungan).
+  const simpanLalu = async (fnUbah, pesanFn) => {
+    fnUbah();
+    showMsg(msg, 'info', 'Menyimpan ke Google Drive...');
+    try { await saveState(); mutasiPesan = pesanFn(); } catch (e) { mutasiPesan = { type: 'err', text: 'Gagal simpan: ' + e.message }; }
+    ulang();
+  };
+  document.getElementById('mbPreset').addEventListener('change', (ev) => { f.preset = ev.target.value; f.page = 1; ulang(); });
+  document.getElementById('mbDari').addEventListener('change', (ev) => { f.preset = 'custom'; f.dari = ev.target.value; f.page = 1; ulang(); });
+  document.getElementById('mbSampai').addEventListener('change', (ev) => { f.preset = 'custom'; f.sampai = ev.target.value; f.page = 1; ulang(); });
+  document.getElementById('mbStatus').addEventListener('change', (ev) => { f.status = ev.target.value; f.page = 1; ulang(); });
+  document.getElementById('mbArah').addEventListener('change', (ev) => { f.arah = ev.target.value; f.page = 1; ulang(); });
+  document.getElementById('mbCari').addEventListener('change', (ev) => { f.q = ev.target.value; f.page = 1; ulang(); });
+  const prev = document.getElementById('mbPrev'), next = document.getElementById('mbNext');
+  if (prev) prev.addEventListener('click', () => { f.page--; ulang(); });
+  if (next) next.addEventListener('click', () => { f.page++; ulang(); });
+  const cariMutasi = (id) => STATE.mutasiBank.find(x => x.id === id);
+  container.querySelectorAll('[data-mb-klas]').forEach(sel => {
+    sel.addEventListener('change', async () => {
+      const m = cariMutasi(sel.dataset.mbKlas); if (!m) return;
+      const pilihan = ubahPilihanMutasiDariValue(sel.value);
+      const r = terapkanKlasifikasiMutasi(m, pilihan);
+      if (!r.ok) { showMsg(msg, 'err', r.error); ulang(); return; }
+      ingatAturanMutasi(m, pilihan);
+      await simpanLalu(() => {}, () => ({ type: 'ok', text: 'Tersimpan: ' + labelKlasifikasiMutasi(statusMutasi(m)) + '.' }));
+    });
+  });
+  container.querySelectorAll('[data-mb-saran]').forEach(a => {
+    a.addEventListener('click', async (ev) => {
+      ev.preventDefault();
+      const m = cariMutasi(a.dataset.mbSaran); if (!m) return;
+      const sar = saranMutasi(m); if (!sar) return;
+      const r = terapkanKlasifikasiMutasi(m, sar);
+      if (!r.ok) { showMsg(msg, 'err', r.error); return; }
+      await simpanLalu(() => {}, () => ({ type: 'ok', text: 'Saran diterapkan: ' + labelKlasifikasiMutasi(statusMutasi(m)) + '.' }));
+    });
+  });
+  document.getElementById('mbTerapkanSaran').addEventListener('click', async () => {
+    let n = 0;
+    await simpanLalu(() => {
+      rekap.rows.forEach(m => { if (statusMutasi(m)) return; const sar = saranMutasi(m); if (!sar) return; if (terapkanKlasifikasiMutasi(m, sar).ok) n++; });
+    }, () => ({ type: 'ok', text: n + ' transaksi diklasifikasikan sesuai saran.' }));
+  });
+  container.querySelectorAll('[data-mb-pilih]').forEach(cb => {
+    cb.addEventListener('change', () => { if (cb.checked) mutasiTerpilih.add(cb.dataset.mbPilih); else mutasiTerpilih.delete(cb.dataset.mbPilih); document.getElementById('mbBulkN').textContent = mutasiTerpilih.size; });
+  });
+  const pilihSemua = document.getElementById('mbPilihSemua');
+  if (pilihSemua) pilihSemua.addEventListener('change', () => {
+    container.querySelectorAll('[data-mb-pilih]').forEach(cb => { cb.checked = pilihSemua.checked; if (cb.checked) mutasiTerpilih.add(cb.dataset.mbPilih); else mutasiTerpilih.delete(cb.dataset.mbPilih); });
+    document.getElementById('mbBulkN').textContent = mutasiTerpilih.size;
+  });
+  document.getElementById('mbBulkTerapkan').addEventListener('click', async () => {
+    const pilihan = ubahPilihanMutasiDariValue(document.getElementById('mbBulkPilihan').value);
+    if (!mutasiTerpilih.size) { showMsg(msg, 'err', 'Centang dulu transaksi yang mau diklasifikasikan.'); return; }
+    if (!pilihan) { showMsg(msg, 'err', 'Pilih klasifikasinya dulu.'); return; }
+    let ok = 0, lewat = 0;
+    await simpanLalu(() => {
+      Array.from(mutasiTerpilih).forEach(id => {
+        const m = cariMutasi(id); if (!m) return;
+        const r = terapkanKlasifikasiMutasi(m, pilihan);
+        if (r.ok) { ok++; ingatAturanMutasi(m, pilihan); } else lewat++;
+      });
+      mutasiTerpilih = new Set();
+    }, () => ({ type: lewat ? 'err' : 'ok', text: ok + ' transaksi diklasifikasikan' + (lewat ? ', ' + lewat + ' dilewati (uang masuk tidak bisa jadi biaya/alokasi).' : '.') }));
+  });
+  container.querySelectorAll('[data-mb-hapus]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      if (!confirm('Hapus transaksi ini dari daftar? Entri biaya/alokasi yang terkait juga ikut terhapus.')) return;
+      mutasiTerpilih.delete(btn.dataset.mbHapus);
+      hapusMutasi(btn.dataset.mbHapus);
+      await saveState();
+      ulang();
+    });
+  });
+}
+
+/* =========================================================================
+   PENJUALAN LUAR E-COMMERCE (2026-11-27)
+   Setiawan: "menu penjualan di luar ecommerce yang aku input sendiri, otomatis terhitung ke PNL serta otomatis
+   menghitung modal juga di PNL" + "aku bisa dapat rekapan modalnya berapa dari penjualan offline tersebut".
+   Data: STATE.penjualanLuar. Modal satuan di-SNAPSHOT saat input (dari harga konveksi produk terbaru, bisa
+   dikoreksi manual) -- pola sama dgn orderDb[].hargaKonveksi, jadi laporan lama tidak berubah kalau harga
+   konveksi naik belakangan. SENGAJA tidak menyentuh kontrak/payout investor (data ini tidak pernah masuk
+   orderDb/allocateUnitsToContracts/computePembagiPct) dan tidak dikenai fee platform.
+   ========================================================================= */
+const KANAL_PENJUALAN_LUAR = ['Toko Offline', 'Bazaar / Event', 'WhatsApp / Langsung', 'Reseller / Grosir', 'Lainnya'];
+const PENJUALAN_LUAR_PRODUK_LAIN = '__lain';
+function escapeHtmlPL(v) {
+  return String(v == null ? '' : v).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+// Ukuran yg ditawarkan di form utk 1 produk: produk Tanpa Ukuran -> 1 pilihan tunggal; selain itu ukuran yg
+// sudah punya harga konveksi (kalau belum ada satupun, semua SIZES supaya tetap bisa diinput + modal manual).
+function ukuranPilihanPenjualanLuar(produkNama) {
+  const pr = findProduct(produkNama);
+  if (!pr) return [];
+  if (pr.tanpaUkuran) return [UKURAN_TANPA_SIZE_KEY];
+  const adaHarga = SIZES.filter(sz => pr.hargaKonveksi && pr.hargaKonveksi[sz] && pr.hargaKonveksi[sz].length);
+  return adaHarga.length ? adaHarga : SIZES.slice();
+}
+// Modal satuan otomatis dari harga konveksi TERBARU (null kalau belum pernah diisi / produk tak dikenal).
+function modalSatuanOtomatisPenjualanLuar(produkNama, ukuran) {
+  const pr = findProduct(produkNama);
+  if (!pr) return null;
+  const h = getCurrentHarga(produkNama, pr.tanpaUkuran ? UKURAN_TANPA_SIZE_KEY : ukuran);
+  return h == null ? null : h;
+}
+function hitungBarisPenjualanLuar(r) {
+  const qty = Number(r.qty) || 0;
+  const pendapatan = qty * (Number(r.hargaJual) || 0);
+  let modalSatuan = r.modalSatuan;
+  let tanpaModal = false;
+  if (modalSatuan == null || isNaN(Number(modalSatuan))) {
+    // data tanpa snapshot modal (mis. diedit manual di Drive) -> coba harga konveksi terkini, kalau tidak ada = 0 & ditandai
+    const auto = r.produkNama ? modalSatuanOtomatisPenjualanLuar(r.produkNama, r.ukuran) : null;
+    if (auto == null) { modalSatuan = 0; tanpaModal = true; } else modalSatuan = auto;
+  }
+  const modal = qty * Number(modalSatuan);
+  return { qty, pendapatan, modal, laba: pendapatan - modal, modalSatuan: Number(modalSatuan), tanpaModal };
+}
+// Rekap penjualan luar e-commerce utk 1 periode (dari/sampai 'YYYY-MM-DD', kosong = tak dibatasi). Dipakai
+// computePNL (Pendapatan + Biaya Modal) dan tab "Penjualan Luar E-commerce" -- 1 sumber angka, tidak mungkin beda.
+function computePenjualanLuar(dari, sampai, kanal) {
+  const inRange = (iso) => { if (!iso) return false; const d = String(iso).slice(0, 10); return (!dari || d >= dari) && (!sampai || d <= sampai); };
+  let rows = (STATE.penjualanLuar || []).filter(r => inRange(r.tanggal));
+  if (kanal) rows = rows.filter(r => r.kanal === kanal);
+  const out = { rows: [], pendapatan: 0, modal: 0, laba: 0, pcs: 0, nTransaksi: rows.length, nTanpaModal: 0, byProduk: [], byKanal: {} };
+  const prodMap = {};
+  rows.forEach(r => {
+    const h = hitungBarisPenjualanLuar(r);
+    out.rows.push({ ...r, _h: h });
+    out.pendapatan += h.pendapatan; out.modal += h.modal; out.laba += h.laba; out.pcs += h.qty;
+    if (h.tanpaModal) out.nTanpaModal++;
+    const k = r.kanal || 'Lainnya';
+    out.byKanal[k] = (out.byKanal[k] || 0) + h.pendapatan;
+    const nama = r.produkNama || r.namaItem || '(tanpa nama)';
+    if (!prodMap[nama]) prodMap[nama] = { produk: nama, pcs: 0, pendapatan: 0, modal: 0, laba: 0 };
+    prodMap[nama].pcs += h.qty; prodMap[nama].pendapatan += h.pendapatan; prodMap[nama].modal += h.modal; prodMap[nama].laba += h.laba;
+  });
+  out.byProduk = Object.values(prodMap).sort((a, b) => b.pendapatan - a.pendapatan);
+  return out;
+}
+
 function computePNL(dari, sampai, dateBasis) {
   const inRange = (isoStr) => { if (!isoStr) return false; const d = isoStr.slice(0,10); return (!dari || d >= dari) && (!sampai || d <= sampai); };
   const overlaps = (dariStr, sampaiStr) => { // utk entri ber-rentang (ads/opex): overlap dgn rentang filter
@@ -9458,7 +10304,10 @@ function computePNL(dari, sampai, dateBasis) {
   const orderRows = pakaiTglPesan
     ? STATE.orderDb.filter(r => inRange(r.tanggalPesan || r.tanggalPenarikan))
     : STATE.orderDb.filter(r => inRange(r.tanggalPenarikan));
-  const pendapatan = orderRows.reduce((s,r) => s + (r.pendapatan||0), 0);
+  const pendapatanEcom = orderRows.reduce((s,r) => s + (r.pendapatan||0), 0);
+  // Penjualan Luar E-commerce (2026-11-27): input manual, 1 tanggal per entri -> ikut periode apapun basis tanggalnya.
+  const luar = computePenjualanLuar(dari, sampai);
+  const pendapatan = pendapatanEcom + luar.pendapatan;
 
   let biayaModal;
   if (pakaiTglPesan) {
@@ -9468,6 +10317,8 @@ function computePNL(dari, sampai, dateBasis) {
     const vendorRows = STATE.vendorPayouts.filter(v => inRange(v.tanggalDihitung));
     biayaModal = vendorRows.reduce((s,v) => s + (v.total||0), 0);
   }
+  const biayaModalEcom = biayaModal;
+  biayaModal += luar.modal; // modal penjualan luar (snapshot harga konveksi saat input)
 
   // NB: komisiPlatform/biayaLayanan/biayaPembayaran/komisiAfiliasi/komisiDinamis/pajak diambil APA ADANYA dari
   // laporan settlement Shopee/TikTok, yg menuliskan biaya² itu sbg angka NEGATIF (krn memang pengurang settlement).
@@ -9503,7 +10354,7 @@ function computePNL(dari, sampai, dateBasis) {
 
   const profitAkhir = nettMargin - payoutInvestor - alokasiProfit;
 
-  return { pendapatan, biayaModal, grossMargin, komisiPlatform, biayaLayanan, biayaPembayaran, komisiAfiliasi, komisiDinamis, pajak, biayaIklan, biayaRetur, bebanPenjualan, biayaOperasional, nettMargin, payoutInvestor, alokasiProfit, profitAkhir, nOrder: orderRows.length };
+  return { pendapatanEcom, biayaModalEcom, pendapatanLuar: luar.pendapatan, modalLuar: luar.modal, nLuar: luar.nTransaksi, pendapatan, biayaModal, grossMargin, komisiPlatform, biayaLayanan, biayaPembayaran, komisiAfiliasi, komisiDinamis, pajak, biayaIklan, biayaRetur, bebanPenjualan, biayaOperasional, nettMargin, payoutInvestor, alokasiProfit, profitAkhir, nOrder: orderRows.length };
 }
 
 function renderPnl(container) {
@@ -9601,7 +10452,7 @@ function renderPnl(container) {
           <option value="pesan" ${pnlFilter.basis==='pesan'?'selected':''}>Tanggal Pesan (Operasional)</option>
         </select>
       </div>
-      <div class="desc">${p.nOrder.toLocaleString('id-ID')} baris transaksi dalam periode ini.</div>
+      <div class="desc">${p.nOrder.toLocaleString('id-ID')} baris transaksi dalam periode ini${p.nLuar ? ` + ${p.nLuar.toLocaleString('id-ID')} transaksi Penjualan Luar E-commerce (input manual, ikut masuk Pendapatan &amp; Biaya Modal)` : ''}.</div>
       ${pnlFilter.basis==='pesan' ? `<div class="desc" style="color:var(--err);">&#9888; Basis Tanggal Pesan: pesanan yg BELUM cair (belum ada di Database Penjualan) belum ikut terhitung di sini, jadi angka periode yg masih baru bisa kelihatan lebih kecil &amp; ikut naik belakangan begitu pesanan lama itu cair. Utk laporan resmi/final, pakai basis Tanggal Cair.</div>` : ''}
     </div>
 
@@ -9611,7 +10462,9 @@ function renderPnl(container) {
         <thead><tr><th></th><th class="num">Rp</th><th class="num">% dari Pendapatan</th></tr></thead>
         <tbody>
           <tr><td>Pendapatan</td><td class="num">${fmtRp(p.pendapatan)}</td><td class="num" style="color:var(--ink-soft); font-size:11px;">${pct(p.pendapatan)}</td></tr>
+          ${p.nLuar ? `<tr class="pnl-luar-row"><td style="padding-left:36px; color:var(--ink-soft); font-size:12px;">&#8627; termasuk Penjualan Luar E-commerce (${p.nLuar} transaksi)</td><td class="num" style="color:var(--ink-soft); font-size:12px;">${fmtRp(p.pendapatanLuar)}</td><td></td></tr>` : ''}
           <tr><td style="padding-left:20px; color:var(--ink-soft);">Biaya Modal (Konveksi/Supplier)</td><td class="num">(${fmtRp(p.biayaModal)})</td><td class="num" style="color:var(--ink-soft); font-size:11px;">${pct(p.biayaModal)}</td></tr>
+          ${p.nLuar ? `<tr class="pnl-luar-row"><td style="padding-left:52px; color:var(--ink-soft); font-size:12px;">&#8627; termasuk modal Penjualan Luar E-commerce</td><td class="num" style="color:var(--ink-soft); font-size:12px;">(${fmtRp(p.modalLuar)})</td><td></td></tr>` : ''}
           <tr style="font-weight:600; border-top:1px solid var(--ink);"><td>Gross Margin</td><td class="num">${fmtRp(p.grossMargin)}</td><td class="num" style="font-size:11px;">${pct(p.grossMargin)}</td></tr>
           <tr><td style="padding-top:14px; padding-left:20px; color:var(--ink-soft);">Komisi Platform</td><td class="num" style="padding-top:14px;">(${fmtRp(p.komisiPlatform)})</td><td class="num" style="padding-top:14px; color:var(--ink-soft); font-size:11px;">${pct(p.komisiPlatform)}</td></tr>
           <tr><td style="padding-left:20px; color:var(--ink-soft);">Biaya Layanan</td><td class="num">(${fmtRp(p.biayaLayanan)})</td><td class="num" style="color:var(--ink-soft); font-size:11px;">${pct(p.biayaLayanan)}</td></tr>
@@ -12524,7 +13377,7 @@ function renderProduksi(container) {
   if (produksiSubTab === 'forecast') attachListenersProduksiForecast(container);
 }
 
-const renderers = { master: renderMaster, kontrak: renderKontrak, produksi: renderProduksi, import: renderImport, database: renderDatabase, pelanggan: renderPelanggan, invoice: renderInvoiceTab, laporan: renderLaporan, ads: renderAds, opex: renderOpex, alokasi: renderAlokasiProfit, pnl: renderPnl, dashboard: renderDashboard, gaji: renderGaji };
+const renderers = { mutasibank: renderMutasiBank, penjualanluar: renderPenjualanLuar, master: renderMaster, kontrak: renderKontrak, produksi: renderProduksi, import: renderImport, database: renderDatabase, pelanggan: renderPelanggan, invoice: renderInvoiceTab, laporan: renderLaporan, ads: renderAds, opex: renderOpex, alokasi: renderAlokasiProfit, pnl: renderPnl, dashboard: renderDashboard, gaji: renderGaji };
 function switchTab(tab) {
   document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
   renderers[tab](document.getElementById('app'));
